@@ -1,0 +1,23 @@
+[project]
+name = "ed-api"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic",
+  "python-multipart",
+  "torch",
+  "transformers",
+  "sentence-transformers",
+  "onnxruntime",
+  "faiss-cpu",
+  "qdrant-client",
+  "opencv-python",
+  "pytesseract",
+  "scikit-learn",
+  "pandas",
+  "indic-nlp-library",
+  "python-dotenv",
+  "psycopg[binary]"
+]
