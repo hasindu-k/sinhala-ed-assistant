@@ -19,7 +19,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.33.0"
+          flutter-version: "3.24.0"
           channel: "stable"
       # Move into the mobile app folder
       - name: Set working directory
