@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/providers/theme_provider.dart';
 import '../../core/utils/dialogs.dart';
-import '../routes/app_routes.dart';
 import '../../core/theme/theme.dart';
+import '../../core/i18n/app_language.dart';
 
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
@@ -140,7 +140,7 @@ class ProfilePage extends StatelessWidget {
         icon: Icons.language,
         title: 'Language',
         subtitle: 'English',
-        onTap: () => _comingSoon(context, 'Language settings'),
+        onTap: () => _showLanguageDialog(context),
       ),
       _buildSettingsTile(
         context,
@@ -154,7 +154,7 @@ class ProfilePage extends StatelessWidget {
         icon: Icons.dark_mode,
         title: 'Theme',
         subtitle: context.watch<ThemeProvider>().themeModeDisplayName,
-        onTap: () => Navigator.pushNamed(context, AppRoutes.themeSettings),
+        onTap: () => _showThemeModeDialog(context),
       ),
       _buildSettingsTile(
         context,
@@ -259,5 +259,63 @@ class ProfilePage extends StatelessWidget {
   void _comingSoon(BuildContext context, String what) {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text('$what coming soon!')));
+  }
+}
+
+void _showThemeModeDialog(BuildContext context) async {
+  final themeProvider = context.read<ThemeProvider>();
+  final current = themeProvider.themeMode;
+
+  final selected = await AppDialogs.chooseOption<AppThemeMode>(
+    context,
+    title: 'Choose Theme',
+    options: AppThemeMode.values,
+    selected: current,
+    getLabel: (mode) {
+      switch (mode) {
+        case AppThemeMode.light:
+          return 'Light';
+        case AppThemeMode.dark:
+          return 'Dark';
+        case AppThemeMode.system:
+          return 'System Default';
+      }
+    },
+    getIcon: (mode) {
+      switch (mode) {
+        case AppThemeMode.light:
+          return Icons.light_mode;
+        case AppThemeMode.dark:
+          return Icons.dark_mode;
+        case AppThemeMode.system:
+          return Icons.brightness_auto;
+      }
+    },
+  );
+
+  if (selected != null) {
+    themeProvider.setThemeMode(selected);
+  }
+}
+
+Future<void> _showLanguageDialog(BuildContext context) async {
+  final selected = await AppDialogs.chooseOption<AppLanguage>(
+    context,
+    title: 'Choose Language',
+    options: AppLanguage.values,
+    selected: null, // later: pass your current language from provider
+    getLabel: langLabel,
+    getIcon: langIcon,
+  );
+
+  if (!context.mounted) return;
+
+  if (selected != null) {
+    // For now, just show "coming soon"
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${langLabel(selected)} support coming soon!')),
+    );
+
+    // TODO: later -> context.read<LanguageProvider>().setLanguage(selected);
   }
 }
