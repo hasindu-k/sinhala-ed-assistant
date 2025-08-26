@@ -12,7 +12,7 @@ class SinhalaEdApp extends StatelessWidget {
     return MaterialApp(
       title: 'Sinhala Ed Assistant',
       debugShowCheckedModeBanner: false,
-      initialRoute: AppRoutes.login,
+      initialRoute: AppRoutes.splash,
       navigatorKey: NavigationService.navigatorKey,
       routes: AppPages.routes,
       onGenerateRoute: RouteGenerator.generateRoute,

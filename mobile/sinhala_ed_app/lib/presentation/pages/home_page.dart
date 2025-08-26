@@ -14,6 +14,7 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         title: const Text('Sinhala Ed Assistant'),
+        automaticallyImplyLeading: false,
       ),
       body: const Center(
         child: Column(

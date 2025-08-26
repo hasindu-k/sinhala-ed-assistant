@@ -8,14 +8,11 @@ class LoginPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("Login"),
-        // automaticallyImplyLeading: false,
-      ),
+      appBar: AppBar(title: const Text("Login")),
       body: Center(
         child: ElevatedButton(
           onPressed: () {
-            NavigationService.navigateTo(AppRoutes.home);
+            NavigationService.navigateToReplacement(AppRoutes.home);
           },
           child: const Text("Login → Home"),
         ),
