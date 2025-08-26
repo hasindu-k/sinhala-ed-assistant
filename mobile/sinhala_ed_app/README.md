@@ -1,16 +1,50 @@
 # sinhala_ed_app
 
-A new Flutter project.
+SinhalaLearn Mobile Application
 
-## Getting Started
+```
 
-This project is a starting point for a Flutter application.
+lib/
+│── main.dart                  # Entry point
+│
+├── core/                      # Core utilities shared across app
+│   ├── constants/             # App-wide constants (strings, colors, spacing)
+│   ├── utils/                 # Helper functions, formatters, validators
+│   ├── theme/                 # App themes, typography, styles
+│   └── error/                 # Custom error handling
+│
+├── data/                      # Data layer (API, DB, Models, Repositories)
+│   ├── models/                # Data models (User, Task, etc.)
+│   ├── services/              # Remote/local services (API calls, DB access)
+│   ├── repositories/          # Repository classes combining multiple services
+│   └── providers/             # API clients (Dio/HTTP/Firebase, etc.)
+│
+├── domain/                    # Business logic (optional if following Clean Arch)
+│   ├── entities/              # Core entities (abstract models)
+│   ├── usecases/              # Application-specific logic
+│   └── repositories/          # Abstract repo contracts
+│
+├── presentation/              # UI Layer
+│   ├── pages/                 # Screens (HomePage, LoginPage, etc.)
+│   │   └── widgets/           # Page-specific widgets
+│   ├── widgets/               # Shared/common widgets
+│   ├── controllers/           # State management (Bloc, Provider, Riverpod, GetX)
+│   └── routes/                # Route definitions, navigation
+│
+├── config/                    # Environment & app configuration
+│   ├── environment.dart       # Env variables
+│   └── app_config.dart        # App-specific config
+│
+└── injections/                # Dependency injection setup (get_it, riverpod, etc.)
 
-A few resources to get you started if this is your first Flutter project:
+assets/
+│── images/                    # Image assets
+│── icons/                     # Icon assets
+│── fonts/                     # Custom fonts
+│── animations/                # Lottie or Rive animations
+│── translations/              # i18n files
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+test/                          # Unit and widget tests
+integration_test/              # Integration tests
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```
