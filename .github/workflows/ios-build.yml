@@ -11,29 +11,23 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      # Checkout your code
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Setup Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.24.0"
           channel: "stable"
-      # Move into the mobile app folder
-      - name: Set working directory
-        run: cd mobile/sinhala_ed_app
 
-      # Install dependencies
       - name: Install dependencies
+        working-directory: mobile/sinhala_ed_app
         run: flutter pub get
 
-      # Build iOS app (debug/release)
       - name: Build iOS
+        working-directory: mobile/sinhala_ed_app
         run: flutter build ios --release --no-codesign
 
-      # Upload build artifacts
       - name: Upload iOS build
         uses: actions/upload-artifact@v4
         with:
