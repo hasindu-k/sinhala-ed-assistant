@@ -1,11 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum AppThemeMode {
-  light,
-  dark,
-  system,
-}
+enum AppThemeMode { light, dark, system }
 
 class ThemeProvider extends ChangeNotifier {
   static const String _themeKey = 'theme_mode';
@@ -39,8 +35,9 @@ class ThemeProvider extends ChangeNotifier {
   Future<void> initializeTheme() async {
     final prefs = await SharedPreferences.getInstance();
     final savedThemeIndex = prefs.getInt(_themeKey);
-    
-    if (savedThemeIndex != null && savedThemeIndex < AppThemeMode.values.length) {
+
+    if (savedThemeIndex != null &&
+        savedThemeIndex < AppThemeMode.values.length) {
       _themeMode = AppThemeMode.values[savedThemeIndex];
       notifyListeners();
     }
@@ -49,10 +46,10 @@ class ThemeProvider extends ChangeNotifier {
   /// Change theme mode and save to preferences
   Future<void> setThemeMode(AppThemeMode mode) async {
     if (_themeMode == mode) return;
-    
+
     _themeMode = mode;
     notifyListeners();
-    
+
     // Save to shared preferences
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_themeKey, mode.index);
@@ -60,8 +57,8 @@ class ThemeProvider extends ChangeNotifier {
 
   /// Toggle between light and dark theme (excludes system)
   Future<void> toggleTheme() async {
-    final newMode = _themeMode == AppThemeMode.light 
-        ? AppThemeMode.dark 
+    final newMode = _themeMode == AppThemeMode.light
+        ? AppThemeMode.dark
         : AppThemeMode.light;
     await setThemeMode(newMode);
   }

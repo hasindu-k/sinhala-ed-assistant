@@ -8,10 +8,7 @@ class ThemeSettingsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Theme Settings'),
-        elevation: 0,
-      ),
+      appBar: AppBar(title: const Text('Theme Settings'), elevation: 0),
       body: SafeArea(
         child: Consumer<ThemeProvider>(
           builder: (context, themeProvider, child) {
@@ -30,16 +27,18 @@ class ThemeSettingsPage extends StatelessWidget {
                       children: [
                         Text(
                           'Choose Theme',
-                          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 4),
                         Text(
                           'Select your preferred theme mode',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
+                              ),
                         ),
                         const SizedBox(height: 20),
                         ...AppThemeMode.values.map((mode) {
@@ -157,7 +156,9 @@ class ThemeSettingsPage extends StatelessWidget {
                     Text(
                       title,
                       style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                        fontWeight: isSelected
+                            ? FontWeight.w600
+                            : FontWeight.normal,
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -180,9 +181,7 @@ class ThemeSettingsPage extends StatelessWidget {
   Widget _buildPreviewCard(BuildContext context) {
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -212,7 +211,9 @@ class ThemeSettingsPage extends StatelessWidget {
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2),
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.outline.withValues(alpha: 0.2),
                 ),
               ),
               child: Column(
