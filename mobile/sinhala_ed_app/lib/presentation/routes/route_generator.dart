@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../pages/splash_page.dart';
 import '../pages/login_page.dart';
+import '../pages/register_page.dart';
 import '../pages/home/home_page.dart';
 import '../pages/profile_page.dart';
 import 'app_routes.dart';
@@ -12,6 +13,8 @@ class RouteGenerator {
         return MaterialPageRoute(builder: (_) => const SplashPage());
       case AppRoutes.login:
         return MaterialPageRoute(builder: (_) => const LoginPage());
+      case AppRoutes.register:
+      // return MaterialPageRoute(builder: (_) => const RegisterPage());
       case AppRoutes.home:
         return MaterialPageRoute(builder: (_) => const HomePage());
       case AppRoutes.profile:
