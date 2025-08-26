@@ -14,7 +14,7 @@ class RouteGenerator {
       case AppRoutes.login:
         return MaterialPageRoute(builder: (_) => const LoginPage());
       case AppRoutes.register:
-      // return MaterialPageRoute(builder: (_) => const RegisterPage());
+        return MaterialPageRoute(builder: (_) => const RegisterPage());
       case AppRoutes.home:
         return MaterialPageRoute(builder: (_) => const HomePage());
       case AppRoutes.profile:
