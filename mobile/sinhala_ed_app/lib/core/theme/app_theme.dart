@@ -2,10 +2,9 @@ import 'package:flutter/material.dart';
 import 'app_colors.dart';
 import 'app_text_styles.dart';
 
-/// Centralized theme configuration for the Sinhala Ed Assistant app
+/// Centralized theme configuration for the SinhalaLearn app
 class AppTheme {
-  // Private constructor to prevent instantiation
-  AppTheme._();
+  AppTheme._(); // prevent instantiation
 
   /// Light theme configuration
   static ThemeData get lightTheme {
@@ -20,7 +19,7 @@ class AppTheme {
         elevation: 2,
         surfaceTintColor: Colors.transparent,
         titleTextStyle: AppTextStyles.appBarTitle.copyWith(
-          color: AppColors.onSurfaceLight,
+          color: AppColors.black,
         ),
       ),
 
@@ -30,6 +29,8 @@ class AppTheme {
       // Elevated Button Theme
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
+          backgroundColor: AppColors.primaryBlue,
+          foregroundColor: AppColors.white,
           elevation: 2,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -40,6 +41,7 @@ class AppTheme {
       // Text Button Theme
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
+          foregroundColor: AppColors.primaryBlue,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           textStyle: AppTextStyles.buttonText,
@@ -62,10 +64,10 @@ class AppTheme {
           borderRadius: BorderRadius.all(Radius.circular(16)),
         ),
         titleTextStyle: AppTextStyles.headlineMedium.copyWith(
-          color: AppColors.onSurfaceLight,
+          color: AppColors.black,
         ),
         contentTextStyle: AppTextStyles.bodyLarge.copyWith(
-          color: AppColors.onSurfaceLight,
+          color: AppColors.greyDark,
         ),
       ),
 
@@ -104,7 +106,7 @@ class AppTheme {
         elevation: 2,
         surfaceTintColor: Colors.transparent,
         titleTextStyle: AppTextStyles.appBarTitle.copyWith(
-          color: AppColors.onSurfaceDark,
+          color: AppColors.white,
         ),
       ),
 
@@ -114,6 +116,8 @@ class AppTheme {
       // Elevated Button Theme
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
+          backgroundColor: AppColors.primaryBlueLight,
+          foregroundColor: AppColors.black,
           elevation: 2,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -124,6 +128,7 @@ class AppTheme {
       // Text Button Theme
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
+          foregroundColor: AppColors.primaryBlueLight,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           textStyle: AppTextStyles.buttonText,
@@ -146,10 +151,10 @@ class AppTheme {
           borderRadius: BorderRadius.all(Radius.circular(16)),
         ),
         titleTextStyle: AppTextStyles.headlineMedium.copyWith(
-          color: AppColors.onSurfaceDark,
+          color: AppColors.white,
         ),
         contentTextStyle: AppTextStyles.bodyLarge.copyWith(
-          color: AppColors.onSurfaceDark,
+          color: AppColors.greyLight,
         ),
       ),
 
@@ -164,11 +169,11 @@ class AppTheme {
         ),
         errorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.all(Radius.circular(8)),
-          borderSide: BorderSide(color: AppColors.errorLight),
+          borderSide: BorderSide(color: AppColors.error),
         ),
         focusedErrorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.all(Radius.circular(8)),
-          borderSide: BorderSide(color: AppColors.errorLight, width: 2),
+          borderSide: BorderSide(color: AppColors.error, width: 2),
         ),
         contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       ),
@@ -186,24 +191,24 @@ class AppTheme {
     onSecondary: AppColors.white,
     secondaryContainer: AppColors.secondaryGreenContainer,
     onSecondaryContainer: AppColors.secondaryGreenDark,
-    tertiary: AppColors.tertiaryOrange,
-    onTertiary: AppColors.white,
-    tertiaryContainer: AppColors.tertiaryOrangeContainer,
-    onTertiaryContainer: AppColors.tertiaryOrangeDark,
+    tertiary: AppColors.sinhalaGold,
+    onTertiary: AppColors.black,
+    tertiaryContainer: AppColors.sinhalaGoldLight,
+    onTertiaryContainer: AppColors.sinhalaGoldDark,
     error: AppColors.error,
     onError: AppColors.white,
-    errorContainer: AppColors.errorContainer,
-    onErrorContainer: AppColors.errorDark,
-    surface: AppColors.surfaceLight,
-    onSurface: AppColors.onSurfaceLight,
-    surfaceContainerHighest: AppColors.surfaceContainerLight,
-    onSurfaceVariant: AppColors.onSurfaceVariantLight,
-    outline: AppColors.outlineLight,
-    outlineVariant: AppColors.surfaceContainerLight,
+    errorContainer: AppColors.greyLight,
+    onErrorContainer: AppColors.error,
+    surface: AppColors.backgroundLight,
+    onSurface: AppColors.black,
+    surfaceContainerHighest: AppColors.greyLight,
+    onSurfaceVariant: AppColors.greyDark,
+    outline: AppColors.grey,
+    outlineVariant: AppColors.greyLight,
     shadow: AppColors.black,
     scrim: AppColors.black,
-    inverseSurface: AppColors.inverseSurfaceLight,
-    onInverseSurface: AppColors.onInverseSurfaceLight,
+    inverseSurface: AppColors.greyDark,
+    onInverseSurface: AppColors.white,
     inversePrimary: AppColors.primaryBlueLight,
     surfaceTint: AppColors.primaryBlue,
   );
@@ -211,31 +216,31 @@ class AppTheme {
   static const ColorScheme _darkColorScheme = ColorScheme(
     brightness: Brightness.dark,
     primary: AppColors.primaryBlueLight,
-    onPrimary: AppColors.primaryBlueDark,
-    primaryContainer: AppColors.primaryBlueContainerDark,
+    onPrimary: AppColors.black,
+    primaryContainer: AppColors.primaryBlueDark,
     onPrimaryContainer: AppColors.primaryBlueContainer,
     secondary: AppColors.secondaryGreenLight,
-    onSecondary: AppColors.secondaryGreenDark,
-    secondaryContainer: AppColors.secondaryGreenContainerDark,
+    onSecondary: AppColors.black,
+    secondaryContainer: AppColors.secondaryGreenDark,
     onSecondaryContainer: AppColors.secondaryGreenContainer,
-    tertiary: AppColors.tertiaryOrangeLight,
-    onTertiary: AppColors.tertiaryOrangeDark,
-    tertiaryContainer: AppColors.tertiaryOrangeContainerDark,
-    onTertiaryContainer: AppColors.tertiaryOrangeContainer,
-    error: AppColors.errorLight,
-    onError: AppColors.errorDark,
-    errorContainer: AppColors.errorContainerDark,
-    onErrorContainer: AppColors.errorContainer,
-    surface: AppColors.surfaceDark,
-    onSurface: AppColors.onSurfaceDark,
-    surfaceContainerHighest: AppColors.surfaceContainerDark,
-    onSurfaceVariant: AppColors.onSurfaceVariantDark,
-    outline: AppColors.outlineDark,
-    outlineVariant: AppColors.surfaceContainerDark,
+    tertiary: AppColors.sinhalaGoldLight,
+    onTertiary: AppColors.black,
+    tertiaryContainer: AppColors.sinhalaGoldDark,
+    onTertiaryContainer: AppColors.sinhalaGold,
+    error: AppColors.error,
+    onError: AppColors.white,
+    errorContainer: AppColors.greyDark,
+    onErrorContainer: AppColors.error,
+    surface: AppColors.backgroundDark,
+    onSurface: AppColors.white,
+    surfaceContainerHighest: AppColors.greyDark,
+    onSurfaceVariant: AppColors.grey,
+    outline: AppColors.grey,
+    outlineVariant: AppColors.greyDark,
     shadow: AppColors.black,
     scrim: AppColors.black,
-    inverseSurface: AppColors.inverseSurfaceDark,
-    onInverseSurface: AppColors.onInverseSurfaceDark,
+    inverseSurface: AppColors.white,
+    onInverseSurface: AppColors.black,
     inversePrimary: AppColors.primaryBlue,
     surfaceTint: AppColors.primaryBlueLight,
   );

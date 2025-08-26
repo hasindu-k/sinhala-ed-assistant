@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/providers/theme_provider.dart';
-import '../../core/utils/dialogs.dart'; // see below
+import '../../core/utils/dialogs.dart';
 import '../routes/app_routes.dart';
+import '../../core/theme/theme.dart';
 
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
@@ -13,7 +14,7 @@ class ProfilePage extends StatelessWidget {
       appBar: AppBar(title: const Text('Profile'), elevation: 0),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
+          padding: ThemeUtils.getContentPadding(),
           child: Column(
             children: [
               _buildProfileHeader(context),
@@ -32,14 +33,16 @@ class ProfilePage extends StatelessWidget {
 
   Widget _buildProfileHeader(BuildContext context) {
     return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      elevation: 0, // no shadow
+      color: Colors.transparent, // no background
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
             CircleAvatar(
               radius: 50,
-              backgroundColor: Theme.of(context).colorScheme.primary,
+              backgroundColor: ThemeUtils.getPrimaryColor(context),
               child: Icon(
                 Icons.person,
                 size: 50,
@@ -50,16 +53,17 @@ class ProfilePage extends StatelessWidget {
             Text(
               'User Name',
               textAlign: TextAlign.center,
-              style: Theme.of(
-                context,
-              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+              style: AppTextStyles.headlineSmall.copyWith(
+                fontWeight: FontWeight.bold,
+                color: ThemeUtils.getTextColor(context),
+              ),
             ),
             const SizedBox(height: 4),
             SelectableText(
               'user@example.com',
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              style: AppTextStyles.bodyMedium.copyWith(
+                color: ThemeUtils.getSecondaryTextColor(context),
               ),
             ),
           ],
@@ -70,17 +74,20 @@ class ProfilePage extends StatelessWidget {
 
   Widget _buildProfileInfo(BuildContext context) {
     return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      shape: RoundedRectangleBorder(
+          borderRadius: ThemeUtils.getCardBorderRadius()),
+      elevation: ThemeUtils.getCardElevation(context),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: ThemeUtils.getContentPadding(),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               'Profile Information',
-              style: Theme.of(
-                context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+              style: AppTextStyles.titleLarge.copyWith(
+                fontWeight: FontWeight.bold,
+                color: ThemeUtils.getTextColor(context),
+              ),
             ),
             const SizedBox(height: 16),
             _buildInfoRow(context, 'Full Name', 'John Doe'),
@@ -104,9 +111,9 @@ class ProfilePage extends StatelessWidget {
             width: 110,
             child: Text(
               label,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              style: AppTextStyles.bodyMedium.copyWith(
                 fontWeight: FontWeight.w600,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                color: ThemeUtils.getSecondaryTextColor(context),
               ),
             ),
           ),
@@ -114,7 +121,9 @@ class ProfilePage extends StatelessWidget {
           Expanded(
             child: Text(
               value,
-              style: Theme.of(context).textTheme.bodyMedium,
+              style: AppTextStyles.bodyMedium.copyWith(
+                color: ThemeUtils.getTextColor(context),
+              ),
               overflow: TextOverflow.ellipsis,
               maxLines: 2,
             ),
@@ -157,7 +166,9 @@ class ProfilePage extends StatelessWidget {
     ];
 
     return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      shape: RoundedRectangleBorder(
+          borderRadius: ThemeUtils.getCardBorderRadius()),
+      elevation: ThemeUtils.getCardElevation(context),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: Column(
@@ -178,17 +189,21 @@ class ProfilePage extends StatelessWidget {
     required VoidCallback onTap,
   }) {
     return ListTile(
-      leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
-      title: Text(title, style: Theme.of(context).textTheme.bodyLarge),
+      leading: Icon(icon, color: ThemeUtils.getPrimaryColor(context)),
+      title: Text(
+        title,
+        style: AppTextStyles.bodyLarge
+            .copyWith(color: ThemeUtils.getTextColor(context)),
+      ),
       subtitle: Text(
         subtitle,
-        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        style: AppTextStyles.bodyMedium.copyWith(
+          color: ThemeUtils.getSecondaryTextColor(context),
         ),
       ),
       trailing: Icon(
         Icons.chevron_right,
-        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        color: ThemeUtils.getSecondaryTextColor(context),
       ),
       visualDensity: VisualDensity.compact,
       onTap: onTap,
@@ -203,7 +218,7 @@ class ProfilePage extends StatelessWidget {
           child: ElevatedButton.icon(
             onPressed: () => _comingSoon(context, 'Edit profile'),
             icon: const Icon(Icons.edit),
-            label: const Text('Edit Profile'),
+            label: Text('Edit Profile', style: AppTextStyles.buttonText),
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 12),
             ),
@@ -222,16 +237,14 @@ class ProfilePage extends StatelessWidget {
                 okIsDestructive: true,
               );
               if (ok) {
-                // TODO: call your AuthRepository/logout usecase, then navigate
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
-                    content: Text('Logout functionality coming soon!'),
-                  ),
+                      content: Text('Logout functionality coming soon!')),
                 );
               }
             },
             icon: const Icon(Icons.logout),
-            label: const Text('Logout'),
+            label: Text('Logout', style: AppTextStyles.buttonText),
             style: OutlinedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 12),
               foregroundColor: Theme.of(context).colorScheme.error,
@@ -244,8 +257,7 @@ class ProfilePage extends StatelessWidget {
   }
 
   void _comingSoon(BuildContext context, String what) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('$what coming soon!')));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('$what coming soon!')));
   }
 }

@@ -153,12 +153,9 @@ class AppTextStyles {
 
   // Helper methods to get text styles with custom colors
   static TextTheme getTextTheme({required bool isDark}) {
-    final Color primaryTextColor = isDark
-        ? AppColors.onSurfaceDark
-        : AppColors.onSurfaceLight;
-    final Color secondaryTextColor = isDark
-        ? AppColors.onSurfaceVariantDark
-        : AppColors.onSurfaceVariantLight;
+    final Color primaryTextColor = isDark ? AppColors.white : AppColors.black;
+    final Color secondaryTextColor =
+        isDark ? AppColors.greyLight : AppColors.greyDark;
 
     return TextTheme(
       displayLarge: displayLarge.copyWith(color: primaryTextColor),

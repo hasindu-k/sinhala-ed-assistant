@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/providers/theme_provider.dart';
+import '../../core/theme/theme.dart';
 
 class ThemeSettingsPage extends StatelessWidget {
   const ThemeSettingsPage({super.key});
@@ -18,27 +19,27 @@ class ThemeSettingsPage extends StatelessWidget {
                 Card(
                   margin: const EdgeInsets.all(16),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: ThemeUtils.getCardBorderRadius(),
                   ),
+                  elevation: ThemeUtils.getCardElevation(context),
                   child: Padding(
-                    padding: const EdgeInsets.all(16),
+                    padding: ThemeUtils.getContentPadding(),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
                           'Choose Theme',
-                          style: Theme.of(context).textTheme.titleLarge
-                              ?.copyWith(fontWeight: FontWeight.bold),
+                          style: AppTextStyles.titleLarge.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: ThemeUtils.getTextColor(context),
+                          ),
                         ),
                         const SizedBox(height: 4),
                         Text(
                           'Select your preferred theme mode',
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onSurfaceVariant,
-                              ),
+                          style: AppTextStyles.bodyMedium.copyWith(
+                            color: ThemeUtils.getSecondaryTextColor(context),
+                          ),
                         ),
                         const SizedBox(height: 20),
                         ...AppThemeMode.values.map((mode) {
@@ -59,17 +60,6 @@ class ThemeSettingsPage extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 _buildPreviewCard(context),
-                const Spacer(),
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(
-                    'Theme changes will be applied immediately',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
               ],
             );
           },
@@ -115,6 +105,7 @@ class ThemeSettingsPage extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
           child: Row(
             children: [
+              // Custom radio circle
               Container(
                 width: 20,
                 height: 20,
@@ -123,8 +114,8 @@ class ThemeSettingsPage extends StatelessWidget {
                   shape: BoxShape.circle,
                   border: Border.all(
                     color: isSelected
-                        ? Theme.of(context).colorScheme.primary
-                        : Theme.of(context).colorScheme.outline,
+                        ? ThemeUtils.getPrimaryColor(context)
+                        : ThemeUtils.getSecondaryTextColor(context),
                     width: 2,
                   ),
                 ),
@@ -135,37 +126,41 @@ class ThemeSettingsPage extends StatelessWidget {
                           height: 10,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: Theme.of(context).colorScheme.primary,
+                            color: ThemeUtils.getPrimaryColor(context),
                           ),
                         ),
                       )
                     : null,
               ),
+
+              // Icon
               Icon(
                 icon,
                 size: 20,
                 color: isSelected
-                    ? Theme.of(context).colorScheme.primary
-                    : Theme.of(context).colorScheme.onSurfaceVariant,
+                    ? ThemeUtils.getPrimaryColor(context)
+                    : ThemeUtils.getSecondaryTextColor(context),
               ),
               const SizedBox(width: 12),
+
+              // Texts
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       title,
-                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                        fontWeight: isSelected
-                            ? FontWeight.w600
-                            : FontWeight.normal,
+                      style: AppTextStyles.bodyLarge.copyWith(
+                        fontWeight:
+                            isSelected ? FontWeight.w600 : FontWeight.normal,
+                        color: ThemeUtils.getTextColor(context),
                       ),
                     ),
                     const SizedBox(height: 2),
                     Text(
                       subtitle,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      style: AppTextStyles.bodyMedium.copyWith(
+                        color: ThemeUtils.getSecondaryTextColor(context),
                       ),
                     ),
                   ],
@@ -181,9 +176,11 @@ class ThemeSettingsPage extends StatelessWidget {
   Widget _buildPreviewCard(BuildContext context) {
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      shape: RoundedRectangleBorder(
+          borderRadius: ThemeUtils.getCardBorderRadius()),
+      elevation: ThemeUtils.getCardElevation(context),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: ThemeUtils.getContentPadding(),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -191,14 +188,15 @@ class ThemeSettingsPage extends StatelessWidget {
               children: [
                 Icon(
                   Icons.preview,
-                  color: Theme.of(context).colorScheme.primary,
+                  color: ThemeUtils.getPrimaryColor(context),
                   size: 20,
                 ),
                 const SizedBox(width: 8),
                 Text(
                   'Theme Preview',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  style: AppTextStyles.titleMedium.copyWith(
                     fontWeight: FontWeight.bold,
+                    color: ThemeUtils.getTextColor(context),
                   ),
                 ),
               ],
@@ -206,14 +204,13 @@ class ThemeSettingsPage extends StatelessWidget {
             const SizedBox(height: 12),
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(16),
+              padding: ThemeUtils.getContentPadding(),
               decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                color: ThemeUtils.getSurfaceColor(context),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.outline.withValues(alpha: 0.2),
+                  color: ThemeUtils.getSecondaryTextColor(context)
+                      .withValues(alpha: 0.2),
                 ),
               ),
               child: Column(
@@ -221,14 +218,17 @@ class ThemeSettingsPage extends StatelessWidget {
                 children: [
                   Text(
                     'Sample Content',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    style: AppTextStyles.titleSmall.copyWith(
                       fontWeight: FontWeight.w600,
+                      color: ThemeUtils.getTextColor(context),
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     'This is how your content will look with the current theme.',
-                    style: Theme.of(context).textTheme.bodyMedium,
+                    style: AppTextStyles.bodyMedium.copyWith(
+                      color: ThemeUtils.getSecondaryTextColor(context),
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Row(
@@ -237,13 +237,13 @@ class ThemeSettingsPage extends StatelessWidget {
                       Icon(
                         Icons.check_circle,
                         size: 16,
-                        color: Theme.of(context).colorScheme.primary,
+                        color: ThemeUtils.getPrimaryColor(context),
                       ),
                       const SizedBox(width: 4),
                       Text(
                         'Theme applied',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.primary,
+                        style: AppTextStyles.bodySmall.copyWith(
+                          color: ThemeUtils.getPrimaryColor(context),
                         ),
                       ),
                     ],

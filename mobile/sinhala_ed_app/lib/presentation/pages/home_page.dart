@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../controllers/exit_controller.dart';
 import '../routes/app_routes.dart';
+import '../../core/theme/theme.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -11,6 +12,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final _exit = ExitController();
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -43,20 +45,34 @@ class _WelcomeSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            'Welcome to Sinhala Ed Assistant',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-          ),
-          SizedBox(height: 16),
-          Text(
-            'Your educational assistant is ready to help!',
-            style: TextStyle(fontSize: 16),
-          ),
-        ],
+    return Center(
+      child: Padding(
+        padding: ThemeUtils.getLargePadding(),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // Title
+            Text(
+              'Welcome to Sinhala Ed Assistant',
+              textAlign: TextAlign.center,
+              style: AppTextStyles.displaySmall.copyWith(
+                color: ThemeUtils.getTextColor(context),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Subtitle
+            Text(
+              'Your educational assistant is ready to help!',
+              textAlign: TextAlign.center,
+              style: AppTextStyles.bodyLarge.copyWith(
+                color: ThemeUtils.getSecondaryTextColor(context),
+              ),
+            ),
+
+            const SizedBox(height: 24),
+          ],
+        ),
       ),
     );
   }
