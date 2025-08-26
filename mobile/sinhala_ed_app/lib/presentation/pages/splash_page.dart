@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/theme/theme.dart';
 import '../routes/app_routes.dart';
 import '../routes/navigation_service.dart';
 
@@ -18,8 +19,12 @@ class SplashPage extends StatelessWidget {
     });
 
     return Scaffold(
-      backgroundColor: Color(0xFFF3F4F6), // fixed hex color
-      body: Center(child: Image.asset('assets/images/logo-with-bg.png')),
+      backgroundColor: ThemeUtils.getSplashBackgroundColor(context),
+      body: Center(
+        child: Theme.of(context).brightness == Brightness.dark
+            ? Image.asset('assets/images/logo-with-dark-bg.png')
+            : Image.asset('assets/images/logo-with-bg.png'),
+      ),
     );
   }
 }
