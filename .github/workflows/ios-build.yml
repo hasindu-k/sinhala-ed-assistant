@@ -38,4 +38,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ios-build
-          path: mobile/sinhala_ed_appbuild/ios/iphoneos
+          path: mobile/sinhala_ed_app/build/ios/iphoneos
