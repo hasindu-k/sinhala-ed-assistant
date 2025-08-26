@@ -14,8 +14,12 @@ class SplashPage extends StatelessWidget {
       // } else {
       //   Navigator.pushReplacementNamed(context, '/login');
       // }
-      NavigationService.navigateToReplacement(AppRoutes.login);
+      NavigationService.navigateToReplacement(AppRoutes.home);
     });
-    return const Scaffold(body: Center(child: Text("Splash Screen")));
+
+    return Scaffold(
+      backgroundColor: Color(0xFFF3F4F6), // fixed hex color
+      body: Center(child: Image.asset('assets/images/logo-with-bg.png')),
+    );
   }
 }
