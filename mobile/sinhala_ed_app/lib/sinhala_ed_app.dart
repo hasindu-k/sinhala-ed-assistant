@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
-import 'presentation/pages/home_page.dart';
+import 'presentation/routes/app_routes.dart';
+import 'presentation/routes/app_pages.dart';
+import 'presentation/routes/navigation_service.dart';
+import 'presentation/routes/route_generator.dart';
 
 class SinhalaEdApp extends StatelessWidget {
   const SinhalaEdApp({super.key});
@@ -8,11 +11,11 @@ class SinhalaEdApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Sinhala Ed Assistant',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        useMaterial3: true,
-      ),
-      home: const HomePage(),
+      debugShowCheckedModeBanner: false,
+      initialRoute: AppRoutes.login,
+      navigatorKey: NavigationService.navigatorKey,
+      routes: AppPages.routes,
+      onGenerateRoute: RouteGenerator.generateRoute,
     );
   }
 }
