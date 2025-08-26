@@ -2,9 +2,9 @@ name: Build iOS
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   build-ios:
@@ -19,8 +19,11 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.33.0'
-          channel: 'stable'
+          flutter-version: "3.33.0"
+          channel: "stable"
+      # Move into the mobile app folder
+      - name: Set working directory
+        run: cd mobile/sinhala_ed_app
 
       # Install dependencies
       - name: Install dependencies
@@ -35,4 +38,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ios-build
-          path: build/ios/iphoneos
+          path: mobile/sinhala_ed_appbuild/ios/iphoneos
