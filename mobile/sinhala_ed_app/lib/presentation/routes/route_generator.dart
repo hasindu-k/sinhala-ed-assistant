@@ -4,7 +4,6 @@ import '../pages/login_page.dart';
 import '../pages/home_page.dart';
 import 'app_routes.dart';
 
-/// Centralized route generator for custom navigation logic
 class RouteGenerator {
   static Route<dynamic> generateRoute(RouteSettings settings) {
     switch (settings.name) {
@@ -15,27 +14,31 @@ class RouteGenerator {
       case AppRoutes.home:
         return MaterialPageRoute(builder: (_) => const HomePage());
       default:
-        return MaterialPageRoute(
-          builder: (context) => Scaffold(
-            appBar: AppBar(title: const Text('Error')),
-            body: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.error_outline, size: 64, color: Colors.red),
-                  const SizedBox(height: 16),
-                  Text('Route not found: ${settings.name}'),
-                  const SizedBox(height: 16),
-                  ElevatedButton(
-                    onPressed: () =>
-                        Navigator.pushReplacementNamed(context, AppRoutes.home),
-                    child: const Text('Go to Home'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
+        return _errorRoute(settings.name);
     }
+  }
+
+  static MaterialPageRoute _errorRoute(String? routeName) {
+    return MaterialPageRoute(
+      builder: (context) => Scaffold(
+        appBar: AppBar(title: const Text('Error')),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.error_outline, size: 64, color: Colors.red),
+              const SizedBox(height: 16),
+              Text('Route not found: $routeName'),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () =>
+                    Navigator.pushReplacementNamed(context, AppRoutes.home),
+                child: const Text('Go to Home'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
