@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "454849270977",
+    "project_id": "sinhalalearnapp",
+    "storage_bucket": "sinhalalearnapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:454849270977:android:e7108e5ce987f323067040",
+        "android_client_info": {
+          "package_name": "com.example.sinhala_ed_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": ""
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
