@@ -17,6 +17,7 @@ class _LoginPageState extends State<LoginPage> {
   final _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
+  // bool _rememberMe = false;
 
   @override
   void dispose() {
@@ -30,7 +31,11 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _isLoading = true);
 
     try {
-      await auth.signIn(_emailController.text.trim(), _passwordController.text);
+      await auth.signIn(
+        _emailController.text.trim(),
+        _passwordController.text,
+        // rememberMe: _rememberMe,
+      );
       if (auth.currentUser != null) {
         NavigationService.navigateToReplacement(AppRoutes.home);
       }

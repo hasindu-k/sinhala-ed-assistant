@@ -18,8 +18,8 @@ class AuthController extends ChangeNotifier {
     await _authService.signIn(email, password);
   }
 
-  Future<void> signUp(String email, String password) async {
-    await _authService.signUp(email, password);
+  Future<User?> signUp(String email, String password) async {
+    return await _authService.signUp(email, password);
   }
 
   Future<void> signOut() async {
