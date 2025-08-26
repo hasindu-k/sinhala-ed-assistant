@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../pages/splash_page.dart';
 import '../pages/login_page.dart';
 import '../pages/home_page.dart';
+import '../pages/profile_page.dart';
 import 'app_routes.dart';
 
 class RouteGenerator {
@@ -13,6 +14,8 @@ class RouteGenerator {
         return MaterialPageRoute(builder: (_) => const LoginPage());
       case AppRoutes.home:
         return MaterialPageRoute(builder: (_) => const HomePage());
+      case AppRoutes.profile:
+        return MaterialPageRoute(builder: (_) => const ProfilePage());
       default:
         return _errorRoute(settings.name);
     }

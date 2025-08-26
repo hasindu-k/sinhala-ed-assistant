@@ -10,7 +10,15 @@ class ExitController {
   }
 
   Future<void> _confirmAndExit(BuildContext context) async {
-    final shouldExit = await AppDialogs.confirmExit(context);
+    final shouldExit = await AppDialogs.confirm(
+      context,
+      title: 'Exit App',
+      message: 'Are you sure you want to exit?',
+      okText: 'Exit',
+      okIsDestructive: true,
+      barrierDismissible: false,
+    );
+
     if (context.mounted && shouldExit) {
       SystemNavigator.pop();
     }

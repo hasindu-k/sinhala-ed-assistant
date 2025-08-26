@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'core/theme/theme.dart';
+import 'core/providers/theme_provider.dart';
 import 'presentation/routes/app_routes.dart';
 import 'presentation/routes/app_pages.dart';
 import 'presentation/routes/navigation_service.dart';
@@ -10,20 +12,27 @@ class SinhalaEdApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Sinhala Ed Assistant',
-      debugShowCheckedModeBanner: false,
+    return ChangeNotifierProvider(
+      create: (context) => ThemeProvider()..initializeTheme(),
+      child: Consumer<ThemeProvider>(
+        builder: (context, themeProvider, child) {
+          return MaterialApp(
+            title: 'Sinhala Ed Assistant',
+            debugShowCheckedModeBanner: false,
 
-      // Theme configuration
-      theme: AppTheme.lightTheme,
-      darkTheme: AppTheme.darkTheme,
-      themeMode: ThemeMode.system,
+            // Theme configuration
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: themeProvider.materialThemeMode,
 
-      // Navigation configuration
-      initialRoute: AppRoutes.splash,
-      navigatorKey: NavigationService.navigatorKey,
-      routes: AppPages.routes,
-      onGenerateRoute: RouteGenerator.generateRoute,
+            // Navigation configuration
+            initialRoute: AppRoutes.splash,
+            navigatorKey: NavigationService.navigatorKey,
+            routes: AppPages.routes,
+            onGenerateRoute: RouteGenerator.generateRoute,
+          );
+        },
+      ),
     );
   }
 }

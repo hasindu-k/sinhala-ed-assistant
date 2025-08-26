@@ -6,6 +6,7 @@ import 'package:sinhala_ed_app/presentation/routes/navigation_service.dart';
 import 'package:sinhala_ed_app/presentation/pages/splash_page.dart';
 import 'package:sinhala_ed_app/presentation/pages/login_page.dart';
 import 'package:sinhala_ed_app/presentation/pages/home_page.dart';
+import 'package:sinhala_ed_app/presentation/pages/profile_page.dart';
 
 void main() {
   group('RouteGenerator Tests', () {
@@ -49,6 +50,20 @@ void main() {
       );
 
       expect(find.byType(HomePage), findsOneWidget);
+    });
+
+    testWidgets('Profile route returns ProfilePage', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: NavigationService.navigatorKey,
+          onGenerateRoute: RouteGenerator.generateRoute,
+          initialRoute: AppRoutes.profile,
+        ),
+      );
+
+      expect(find.byType(ProfilePage), findsOneWidget);
     });
 
     testWidgets('Unknown route shows error page', (WidgetTester tester) async {

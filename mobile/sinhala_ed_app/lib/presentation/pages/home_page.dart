@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../controllers/exit_controller.dart';
+import '../routes/app_routes.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -19,9 +20,17 @@ class _HomePageState extends State<HomePage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          backgroundColor: Theme.of(context).colorScheme.inversePrimary,
           title: const Text('Sinhala Ed Assistant'),
           automaticallyImplyLeading: false,
+          actions: [
+            IconButton(
+              onPressed: () {
+                Navigator.pushNamed(context, AppRoutes.profile);
+              },
+              icon: const Icon(Icons.person),
+              tooltip: 'Profile',
+            ),
+          ],
         ),
         body: const _WelcomeSection(),
       ),
