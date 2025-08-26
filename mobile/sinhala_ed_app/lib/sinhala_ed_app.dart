@@ -34,7 +34,7 @@ class SinhalaEdApp extends StatelessWidget {
             themeMode: themeProvider.materialThemeMode,
 
             // Navigation configuration
-            initialRoute: AppRoutes.login,
+            initialRoute: AppRoutes.splash,
             navigatorKey: NavigationService.navigatorKey,
             routes: AppPages.routes,
             onGenerateRoute: RouteGenerator.generateRoute,
