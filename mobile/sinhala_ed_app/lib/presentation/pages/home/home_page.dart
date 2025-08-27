@@ -44,7 +44,7 @@ class _HomePageState extends State<HomePage> {
 }
 
 class _WelcomeSection extends StatelessWidget {
-  const _WelcomeSection({super.key});
+  const _WelcomeSection();
 
   @override
   Widget build(BuildContext context) {
