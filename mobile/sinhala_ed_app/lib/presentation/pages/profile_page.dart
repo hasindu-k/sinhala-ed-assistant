@@ -321,8 +321,8 @@ Future<void> _showLanguageDialog(BuildContext context) async {
   }
 }
 
-void _logout(BuildContext context) {
+void _logout(BuildContext context) async {
   final auth = context.read<AuthController>();
-  auth.signOut();
-  NavigationService.navigateToReplacement(AppRoutes.login);
+  await auth.signOut();
+  NavigationService.navigateToAndRemoveUntil(AppRoutes.login);
 }
