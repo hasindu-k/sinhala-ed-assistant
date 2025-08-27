@@ -24,6 +24,13 @@ class NavigationService {
     );
   }
 
+  static Future<dynamic> navigateToAndRemoveUntil(String routeName) {
+    return navigatorKey.currentState!.pushNamedAndRemoveUntil(
+      routeName,
+      (route) => false,
+    );
+  }
+
   static void goBack() {
     return navigatorKey.currentState!.pop();
   }
