@@ -1,4 +1,4 @@
-import './user.dart';
+import 'user.dart';
 
 class Teacher extends User {
   final List<String>? subjects;

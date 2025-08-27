@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'core/theme/theme.dart';
 import 'core/providers/theme_provider.dart';
-import 'presentation/controllers/auth_controller.dart';
+import 'features/auth/controller/auth_controller.dart';
 import 'presentation/routes/app_routes.dart';
 import 'presentation/routes/app_pages.dart';
 import 'presentation/routes/navigation_service.dart';

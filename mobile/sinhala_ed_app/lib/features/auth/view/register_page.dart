@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../../data/models/teacher.dart';
-import '../../data/models/user.dart';
-import '../../data/models/student.dart';
-import '../../data/services/firestore_service.dart';
-import '../controllers/auth_controller.dart';
-import '../routes/app_routes.dart';
-import '../routes/navigation_service.dart';
+import '../../../data/models/teacher.dart';
+import '../../../data/models/user.dart';
+import '../../../data/models/student.dart';
+import '../../../data/services/firestore_service.dart';
+import '../controller/auth_controller.dart';
+import '../../../presentation/routes/app_routes.dart';
+import '../../../presentation/routes/navigation_service.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});

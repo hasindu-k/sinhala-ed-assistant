@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../controllers/exit_controller.dart';
-import '../controllers/auth_controller.dart';
-import '../routes/app_routes.dart';
-import '../routes/navigation_service.dart';
+import '../../../presentation/controllers/exit_controller.dart';
+import '../controller/auth_controller.dart';
+import '../../../presentation/routes/app_routes.dart';
+import '../../../presentation/routes/navigation_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});

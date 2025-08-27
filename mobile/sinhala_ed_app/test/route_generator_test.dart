@@ -4,7 +4,7 @@ import 'package:sinhala_ed_app/presentation/routes/route_generator.dart';
 import 'package:sinhala_ed_app/presentation/routes/app_routes.dart';
 import 'package:sinhala_ed_app/presentation/routes/navigation_service.dart';
 import 'package:sinhala_ed_app/presentation/pages/splash_page.dart';
-import 'package:sinhala_ed_app/presentation/pages/login_page.dart';
+import 'package:sinhala_ed_app/features/auth/view/login_page.dart';
 import 'package:sinhala_ed_app/presentation/pages/home/home_page.dart';
 import 'package:sinhala_ed_app/presentation/pages/profile_page.dart';
 

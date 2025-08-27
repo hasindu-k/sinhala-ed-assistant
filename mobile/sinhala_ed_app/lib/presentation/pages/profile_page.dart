@@ -6,7 +6,7 @@ import '../../core/providers/theme_provider.dart';
 import '../../core/utils/dialogs.dart';
 import '../../core/theme/theme.dart';
 import '../../core/i18n/app_language.dart';
-import '../controllers/auth_controller.dart';
+import '../../features/auth/controller/auth_controller.dart';
 
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
