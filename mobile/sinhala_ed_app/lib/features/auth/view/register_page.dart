@@ -7,6 +7,7 @@ import '../../../data/services/firestore_service.dart';
 import '../controller/auth_controller.dart';
 import '../../../presentation/routes/app_routes.dart';
 import '../../../presentation/routes/navigation_service.dart';
+import 'package:sinhala_ed_app/core/widgets/app_widgets.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -24,7 +25,6 @@ class _RegisterPageState extends State<RegisterPage> {
   UserRole? _selectedRole;
   final _subjectsController = TextEditingController();
   bool _isLoading = false;
-  bool _obscurePassword = true;
 
   @override
   void dispose() {
@@ -111,118 +111,59 @@ class _RegisterPageState extends State<RegisterPage> {
         title: const Text("Register"),
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            const SizedBox(height: 24),
-            Image.asset(
-              'assets/images/logo.png',
-              height: 100,
-            ),
-            const SizedBox(height: 64),
-            TextField(
-              controller: _nameController,
-              decoration: const InputDecoration(labelText: "Full Name"),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _emailController,
-              decoration: const InputDecoration(labelText: "Email"),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _phoneController,
-              decoration: const InputDecoration(labelText: "Phone Number"),
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<UserRole>(
-              value: _selectedRole,
-              decoration: const InputDecoration(labelText: "Select Role"),
-              //only Student role and teacher role for display
-              items: UserRole.values
-                  .where((role) =>
-                      role == UserRole.student || role == UserRole.teacher)
-                  .map((role) {
-                return DropdownMenuItem(
-                  value: role,
-                  child: Text(
-                    role.name[0].toUpperCase() +
-                        role.name.substring(1).toLowerCase(),
-                  ), // shows enum name
-                );
-              }).toList(),
-              onChanged: (role) {
-                setState(() {
-                  _selectedRole = role;
-                });
-              },
-            ),
-            const SizedBox(height: 12),
-            if (_selectedRole == UserRole.student) ...[
-              TextField(
-                controller: _gradeController,
-                decoration: const InputDecoration(labelText: "Grade"),
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            children: [
+              const VSpace(24),
+              const AppLogo(height: 100),
+              const VSpace(32),
+              AppTextField(controller: _nameController, label: 'Full Name'),
+              const VSpace(12),
+              AppTextField(
+                  controller: _emailController,
+                  label: 'Email',
+                  keyboardType: TextInputType.emailAddress),
+              const VSpace(12),
+              AppTextField(
+                  controller: _phoneController,
+                  label: 'Phone Number',
+                  keyboardType: TextInputType.phone),
+              const VSpace(12),
+              RoleDropdown(
+                value: _selectedRole,
+                onChanged: (r) => setState(() => _selectedRole = r),
               ),
-              const SizedBox(height: 12),
-            ] else if (_selectedRole == UserRole.teacher) ...[
-              TextField(
-                controller: _subjectsController,
-                decoration: const InputDecoration(
-                  labelText: "Subjects (comma separated)",
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
-            TextField(
-              controller: _passwordController,
-              obscureText: _obscurePassword,
-              decoration: InputDecoration(
-                labelText: "Password",
-                border: const OutlineInputBorder(),
-                suffixIcon: IconButton(
-                  icon: Icon(
-                    _obscurePassword ? Icons.visibility : Icons.visibility_off,
-                  ),
-                  onPressed: () {
-                    setState(() {
-                      _obscurePassword = !_obscurePassword;
-                    });
-                  },
-                ),
-              ),
-            ),
-            const SizedBox(height: 24),
-            _isLoading
-                ? const CircularProgressIndicator()
-                : SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: _register,
-                      child: const Text("Register"),
-                    ),
-                  ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Text("Already have an account? "),
-                GestureDetector(
-                  onTap: () {
-                    NavigationService.navigateToReplacement(AppRoutes.login);
-                  },
-                  child: const Text(
-                    "Login",
-                    style: TextStyle(
-                      color: Colors.blue,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
+              const VSpace(12),
+              if (_selectedRole == UserRole.student) ...[
+                AppTextField(controller: _gradeController, label: 'Grade'),
+                const VSpace(12),
+              ] else if (_selectedRole == UserRole.teacher) ...[
+                AppTextField(
+                    controller: _subjectsController,
+                    label: 'Subjects (comma separated)'),
+                const VSpace(12),
               ],
-            ),
-          ],
-        ),
-      ),
+              PasswordField(controller: _passwordController),
+              const VSpace(24),
+              LoadingButton(
+                isLoading: _isLoading,
+                onPressed: _register,
+                label: 'Register',
+              ),
+              const VSpace(16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text('Already have an account? '),
+                  LinkText(
+                    text: 'Login',
+                    onTap: () => NavigationService.navigateToReplacement(
+                        AppRoutes.login),
+                  ),
+                ],
+              ),
+            ],
+          )),
     );
   }
 }
