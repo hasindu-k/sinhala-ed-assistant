@@ -4,6 +4,7 @@ import '../../../presentation/controllers/exit_controller.dart';
 import '../controller/auth_controller.dart';
 import '../../../presentation/routes/app_routes.dart';
 import '../../../presentation/routes/navigation_service.dart';
+import '../../../core/widgets/app_widgets.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -16,8 +17,6 @@ class _LoginPageState extends State<LoginPage> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isLoading = false;
-  bool _obscurePassword = true;
-  // bool _rememberMe = false;
 
   @override
   void dispose() {
@@ -34,7 +33,6 @@ class _LoginPageState extends State<LoginPage> {
       await auth.signIn(
         _emailController.text.trim(),
         _passwordController.text,
-        // rememberMe: _rememberMe,
       );
       if (auth.currentUser != null) {
         NavigationService.navigateToReplacement(AppRoutes.home);
@@ -55,11 +53,10 @@ class _LoginPageState extends State<LoginPage> {
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
-        // Check if Navigator can pop
         if (NavigationService.navigatorKey.currentState!.canPop()) {
-          NavigationService.goBack(); // Go to previous route
+          NavigationService.goBack();
         } else {
-          _exit.handleSystemBack(context, didPop, result); // Exit
+          _exit.handleSystemBack(context, didPop, result);
         }
       },
       child: Scaffold(
@@ -68,78 +65,40 @@ class _LoginPageState extends State<LoginPage> {
           automaticallyImplyLeading: false,
         ),
         body: SingleChildScrollView(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              children: [
-                const SizedBox(height: 24),
-                Image.asset(
-                  'assets/images/logo.png',
-                  height: 100,
-                ),
-                const SizedBox(height: 64),
-                TextField(
-                  controller: _emailController,
-                  decoration: const InputDecoration(
-                    labelText: "Email",
-                    border: OutlineInputBorder(),
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            children: [
+              const VSpace(24),
+              const AppLogo(height: 100),
+              const VSpace(64),
+              AppTextField(
+                controller: _emailController,
+                label: "Email",
+                keyboardType: TextInputType.emailAddress,
+              ),
+              const VSpace(12),
+              PasswordField(controller: _passwordController),
+              const VSpace(24),
+              LoadingButton(
+                isLoading: _isLoading,
+                onPressed: _login,
+                label: 'Login',
+              ),
+              const VSpace(16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text("Don't have an account? "),
+                  LinkText(
+                    text: 'Register',
+                    onTap: () => NavigationService.navigateToReplacement(
+                        AppRoutes.register),
                   ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _passwordController,
-                  obscureText: _obscurePassword,
-                  decoration: InputDecoration(
-                    labelText: "Password",
-                    border: const OutlineInputBorder(),
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscurePassword
-                            ? Icons.visibility
-                            : Icons.visibility_off,
-                      ),
-                      onPressed: () {
-                        setState(() {
-                          _obscurePassword = !_obscurePassword;
-                        });
-                      },
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                _isLoading
-                    ? const CircularProgressIndicator()
-                    : SizedBox(
-                        width: double.infinity,
-                        height: 50,
-                        child: ElevatedButton(
-                          onPressed: _login,
-                          child: const Text(
-                            "Login",
-                            style: TextStyle(fontSize: 18),
-                          ),
-                        ),
-                      ),
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Text("Don't have an account? "),
-                    GestureDetector(
-                      onTap: () {
-                        NavigationService.navigateTo(AppRoutes.register);
-                      },
-                      child: const Text(
-                        "Register",
-                        style: TextStyle(
-                          color: Colors.blue,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            )),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
