@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:sinhala_ed_app/presentation/routes/app_routes.dart';
+import 'package:sinhala_ed_app/presentation/routes/navigation_service.dart';
 import '../../core/providers/theme_provider.dart';
 import '../../core/utils/dialogs.dart';
 import '../../core/theme/theme.dart';
 import '../../core/i18n/app_language.dart';
+import '../../features/auth/controller/auth_controller.dart';
 
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
@@ -32,6 +35,8 @@ class ProfilePage extends StatelessWidget {
   }
 
   Widget _buildProfileHeader(BuildContext context) {
+    final user = context.watch<AuthController>().currentUser;
+
     return Card(
       elevation: 0, // no shadow
       color: Colors.transparent, // no background
@@ -51,7 +56,7 @@ class ProfilePage extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'User Name',
+              user?.displayName ?? 'No Name',
               textAlign: TextAlign.center,
               style: AppTextStyles.headlineSmall.copyWith(
                 fontWeight: FontWeight.bold,
@@ -60,7 +65,7 @@ class ProfilePage extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             SelectableText(
-              'user@example.com',
+              user?.email ?? 'No Email',
               textAlign: TextAlign.center,
               style: AppTextStyles.bodyMedium.copyWith(
                 color: ThemeUtils.getSecondaryTextColor(context),
@@ -73,6 +78,7 @@ class ProfilePage extends StatelessWidget {
   }
 
   Widget _buildProfileInfo(BuildContext context) {
+    final user = context.watch<AuthController>().currentUser;
     return Card(
       shape: RoundedRectangleBorder(
           borderRadius: ThemeUtils.getCardBorderRadius()),
@@ -90,11 +96,9 @@ class ProfilePage extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-            _buildInfoRow(context, 'Full Name', 'John Doe'),
-            _buildInfoRow(context, 'Email', 'user@example.com'),
-            _buildInfoRow(context, 'Phone', '+94 12 345 6789'),
-            _buildInfoRow(context, 'Grade Level', 'Grade 10'),
-            _buildInfoRow(context, 'School', 'Example School'),
+            _buildInfoRow(context, 'Full Name', user?.displayName ?? 'N/A'),
+            _buildInfoRow(context, 'Email', user?.email ?? 'N/A'),
+            _buildInfoRow(context, 'Phone', user?.phoneNumber ?? 'N/A'),
           ],
         ),
       ),
@@ -237,10 +241,7 @@ class ProfilePage extends StatelessWidget {
                 okIsDestructive: true,
               );
               if (ok) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                      content: Text('Logout functionality coming soon!')),
-                );
+                _logout(context);
               }
             },
             icon: const Icon(Icons.logout),
@@ -318,4 +319,10 @@ Future<void> _showLanguageDialog(BuildContext context) async {
 
     // TODO: later -> context.read<LanguageProvider>().setLanguage(selected);
   }
+}
+
+void _logout(BuildContext context) {
+  final auth = context.read<AuthController>();
+  auth.signOut();
+  NavigationService.navigateToReplacement(AppRoutes.login);
 }

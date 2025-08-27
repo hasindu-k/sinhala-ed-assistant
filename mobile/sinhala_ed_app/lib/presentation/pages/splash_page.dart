@@ -1,23 +1,39 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../core/theme/theme.dart';
+import '../../features/auth/controller/auth_controller.dart';
 import '../routes/app_routes.dart';
 import '../routes/navigation_service.dart';
 
-class SplashPage extends StatelessWidget {
+class SplashPage extends StatefulWidget {
   const SplashPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    Future.delayed(const Duration(seconds: 2), () {
-      // bool isLoggedIn = false; // replace with your auth check
-      // if (isLoggedIn) {
-      //   Navigator.pushReplacementNamed(context, '/home');
-      // } else {
-      //   Navigator.pushReplacementNamed(context, '/login');
-      // }
-      NavigationService.navigateToReplacement(AppRoutes.home);
-    });
+  State<SplashPage> createState() => _SplashPageState();
+}
 
+class _SplashPageState extends State<SplashPage> {
+  @override
+  void initState() {
+    super.initState();
+    _navigateNext();
+  }
+
+  void _navigateNext() async {
+    await Future.delayed(const Duration(seconds: 2));
+
+    final authController = context.read<AuthController>();
+    final isLoggedIn = authController.currentUser != null;
+
+    if (isLoggedIn) {
+      NavigationService.navigateToReplacement(AppRoutes.home);
+    } else {
+      NavigationService.navigateToReplacement(AppRoutes.login);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: ThemeUtils.getSplashBackgroundColor(context),
       body: Center(

@@ -1,0 +1,4 @@
+#feature voice_qa
+
+must include view, controller, model
+refer feature auth
