@@ -48,3 +48,40 @@ test/                          # Unit and widget tests
 integration_test/              # Integration tests
 
 ```
+
+### New Structure
+```
+lib/
+├── main.dart
+├── sinhala_ed_app.dart              # Root widget
+│
+├── core/                            # App-wide utilities
+│   ├── constants/
+│   ├── i18n/
+│   ├── providers/
+│   ├── theme/
+│   ├── utils/
+│   └── widgets/                     # Reusable shared widgets
+│
+├── data/                            # Data layer
+│   ├── models/
+│   ├── repositories/
+│   └── services/
+│
+├── features/                        # Feature-based structure
+│   ├── auth/                        # Login, register, roles
+│   │   ├── view/ (login_page.dart, register_page.dart, etc.)
+│   │   ├── controller/ (auth_controller.dart)
+│   │   └── model/ (user.dart)
+│   │
+│   ├── documents/                   # Sinhala doc processing
+│   ├── answer_evaluation/           # Answer checking
+│   ├── voice_qa/                    # Voice Q&A
+│   ├── question_generator/          # Question gen
+│   └── settings/                    # Model mgmt, downloads
+│
+├── presentation/                    # Routing + global UI
+│   ├── routes/
+│   └── pages/ (only general ones: splash, home, profile)
+│
+```
