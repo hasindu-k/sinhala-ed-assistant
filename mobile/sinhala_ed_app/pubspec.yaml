@@ -17,6 +17,7 @@ dependencies:
   flutter_launcher_icons: ^0.14.4
   provider: ^6.1.2
   shared_preferences: ^2.3.3
+  flutter_markdown_latex: ^0.3.4
 
 dev_dependencies:
   flutter_test:
