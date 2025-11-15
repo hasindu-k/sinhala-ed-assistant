@@ -94,145 +94,163 @@ Each workflow focuses on the main steps the system follows when handling a user 
 
 ---
 
-## **1. Sinhala Document Processing Workflow (OCR + Cleaning)**
+# **1. Sinhala Document Processing Workflow (OCR + Embeddings)**
 
-This component prepares printed or handwritten Sinhala material so it can be used by other modules.
+This module prepares printed or handwritten Sinhala educational content so the rest of the system can use it.
 
-**Workflow Steps**
+### **Workflow Steps**
 
-1. **Image Input**
-   The user uploads a textbook page, note, or handwritten answer.
+1. **Document Input**
+   A student or teacher uploads a scanned page, image, or handwritten note.
 
 2. **Preprocessing**
-   The system improves the image for recognition using operations such as deskewing, noise filtering, and contrast adjustment.
+   The system applies noise removal, resizing, deskewing, and contrast correction to improve recognition quality.
 
 3. **Sinhala OCR Execution**
-   The cleaned image is read through a Sinhala-capable OCR model.
-   The output is raw Sinhala text containing irregular spacing and characters.
+   The processed image is passed through a Sinhala-trained OCR engine.
+   Output: raw Sinhala text.
 
-4. **Text Cleaning**
-   The OCR text is normalized to a readable and usable form.
-   This includes fixing spacing, handling compound characters, and removing noise.
+4. **Text Normalization**
+   Cleaning steps include Unicode fixes, spacing correction, and handling compound characters.
 
-5. **Output Delivery**
-   The final text is passed to the RAG pipeline or the answer evaluation module.
+5. **Embedding Generation**
+   The cleaned text is converted to semantic vectors using Sinhala-compatible embedding models.
+
+6. **Storage in Vector Database**
+   The embeddings and metadata are stored for later retrieval during Q&A, summarization, or answer evaluation.
 
 ---
 
-## **2. Resource-Based Q&A and Summary Workflow (RAG Pipeline)**
+# **2. Resource-Based Q&A and Summary Workflow (RAG Pipeline)**
 
-This module produces answers tied to teacher resources, preventing unsupported or hallucinated output.
+This module retrieves relevant passages from teacher materials and produces source-grounded answers or summaries.
 
-**Workflow Steps**
+### **Workflow Steps**
 
-1. **User Question Input**
-   A question typed by the student enters the backend.
+1. **User Input (Sinhala Text Query)**
+   The student types a question into the mobile app.
 
-2. **Text Normalization**
-   The question is standardized so Sinhala variations do not affect processing.
+2. **Query Normalization**
+   The text is standardized to reduce Sinhala spelling and morphology variations.
 
-3. **Embedding Generation**
-   The system converts the question and teaching materials into semantic vectors.
+3. **Query Embedding**
+   The normalized question is converted into a semantic vector.
 
-4. **Retrieval**
-   Relevant parts of the teacher resources are located using vector similarity and keyword matching.
+4. **Hybrid Retrieval**
+   The system performs:
 
-5. **Answer Construction**
-   The answer is generated using only the retrieved passages.
+   * **BM25 retrieval** for keyword-exact passages
+   * **Dense retrieval** for semantic matching
+   * **Re-ranking** using pseudo-questions (via QuIM-style method)
 
-6. **Summary Generation (when requested)**
-   The retrieved passages can also be condensed into a short summary.
+5. **Context Selection**
+   The top-ranked passages from teacher resources are selected.
+
+6. **Answer / Summary Generation**
+   The model generates:
+
+   * **Source-bound answer**, or
+   * **Condensed summary**, depending on user intent.
 
 7. **Output Delivery**
-   The answer or summary returns to the mobile app.
+   The mobile app receives the answer with optional reference indicators.
 
 ---
 
-## **3. Voice-Based Q&A Workflow (Speech Input + Speech Output)**
+# **3. Voice-Based Q&A Workflow (Speech Input → Text → Answer → Speech Output)**
 
-This module allows students to ask questions in Sinhala through speech.
+This module handles Sinhala voice questions with accent-aware processing.
 
-**Workflow Steps**
+### **Workflow Steps**
 
-1. **Voice Recording**
-   The student speaks through the mobile app.
+1. **Voice Capture**
+   The user speaks a Sinhala question using the app microphone.
 
-2. **Speech Recognition (Whisper)**
-   The audio is converted to text with accent-aware Sinhala speech recognition.
+2. **Speech Recognition (ASR)**
+   The audio is transcribed into Sinhala text using a fine-tuned Whisper model.
 
-3. **Query Identification**
-   The system determines whether the user wants an answer or a summary.
+3. **Intent Classification**
+   The system identifies whether the user requests:
+
+   * a direct answer
+   * or a summary.
 
 4. **RAG Processing**
-   The recognized text is processed through the resource-based Q&A pipeline.
+   The recognized text is forwarded to the RAG module for retrieval and answer generation.
 
 5. **Sinhala Text Response**
-   The answer is produced in Sinhala.
+   The system produces a source-grounded answer.
 
 6. **Text-to-Speech (TTS)**
-   If requested, the answer is read aloud to the student.
+   If selected, the system speaks the answer aloud in Sinhala.
 
 7. **Output Delivery**
-   The app displays the text and plays the audio.
+   The app displays the text and plays the audio response.
 
 ---
 
-## **4. Automatic Answer Evaluation Workflow (Developed by Miyuri – IT22003478)**
+# **4. Automatic Answer Evaluation Workflow**
 
-This component grades student answers using semantic comparison and optional rubric weights.
+This module grades student answers based on semantic similarity to teacher-provided material.
 
-**Workflow Steps**
+### **Workflow Steps**
 
-1. **Answer Input**
-   Students or teachers upload an answer as text or an image.
+1. **Answer Submission**
+   A student inputs an answer as typed text or uploads a photo.
 
-2. **OCR Handling (if an image)**
-   Text is extracted and cleaned through the OCR pipeline.
+2. **OCR (Only for Images)**
+   The image is processed and converted into text using the same OCR pipeline used for documents.
 
 3. **Text Preparation**
-   The answer is segmented into meaningful parts.
+   The extracted text is cleaned and split into segments.
 
 4. **Embedding Generation**
-   The student answer, teacher material, and key points are converted to vectors using Sinhala-compatible embedding models.
+   Embeddings are produced for:
 
-5. **Semantic Matching**
-   The system compares student text with expected content.
-   It identifies:
+   * the student answer
+   * the expected answer
+   * the key points from teacher notes
 
-   * correct ideas
-   * incorrect interpretations
-   * missing key points
+5. **Semantic Comparison**
+   The system checks:
 
-6. **Rubric-Based Scoring**
-   If a rubric is provided, weights for coverage, accuracy, and clarity are applied.
+   * matched concepts
+   * partially correct ideas
+   * missing points
+   * irrelevant or incorrect statements
+
+6. **Rubric-Based Evaluation**
+   Scores are calculated based on:
+
+   * coverage
+   * accuracy
+   * clarity
+     (or the rubric defined by the teacher)
 
 7. **Feedback Generation**
-   The module produces:
+   The system produces:
 
-   * question-level feedback
-   * missing points
-   * correctness description
-   * final score
-   * a brief overall feedback note
+   * question-level breakdown
+   * suggestions for improvement
+   * overall score
 
 8. **Output Delivery**
-   Results are sent to the mobile app for display.
+   Results are displayed in the mobile app.
 
 ---
 
-# **🧩 How These Components Work Together**
+# **🧩 How All Components Work Together**
 
-All modules share three core resources:
+This combined workflow shows the end-to-end flow of information through the system.
 
-* cleaned Sinhala text
-* semantic embeddings
-* teacher-provided learning materials
+1. **User uploads document → OCR → normalized Sinhala text → embeddings stored**
+2. **Student asks question (text or voice) → query processed → relevant passages retrieved**
+3. **RAG model generates answer or summary → displayed to user**
+4. **Student uploads answer → embeddings compared → grade + feedback sent back**
 
-This ensures that answers, summaries, voice responses, and grading all remain tied to the same information sources.
-The design also allows each module to operate independently while supporting the others.
+The modules remain independent but share embeddings and cleaned Sinhala text for consistency.
 
 ---
-
 
 # **🔄 High-Level System Workflow**
 
