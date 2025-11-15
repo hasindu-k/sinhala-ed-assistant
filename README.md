@@ -333,7 +333,7 @@ RAG Module
 Sinhala Answer
        |
        V
-Text-to-Speech Output
+Text Output
 ```
 
 Supports classroom background noise and regional accents.
