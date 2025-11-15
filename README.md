@@ -157,7 +157,7 @@ This module retrieves relevant passages from teacher materials and produces sour
 
 ---
 
-# **3. Voice-Based Q&A Workflow (Speech Input → Text → Answer → Speech Output)**
+# **3. Voice-Based Q&A Workflow (Speech Input → Text → Answer → Display Output)**
 
 This module handles Sinhala voice questions with accent-aware processing.
 
@@ -181,11 +181,8 @@ This module handles Sinhala voice questions with accent-aware processing.
 5. **Sinhala Text Response**
    The system produces a source-grounded answer.
 
-6. **Text-to-Speech (TTS)**
-   If selected, the system speaks the answer aloud in Sinhala.
-
-7. **Output Delivery**
-   The app displays the text and plays the audio response.
+6. **Output Delivery**
+   The app displays the text response.
 
 ---
 
