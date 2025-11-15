@@ -433,8 +433,12 @@ Features include:
 ---
 
 # **🌿 Branching Strategy**
-
-Each member maintains their own feature branch:
+* Main branch for stable releases
+* Dev branch for integration
+* Feature branches per component developer
+* Naming format: /<module-name>, fix/<issue>
+* PR required for merging into dev or main
+* Each member maintains their own feature branch:
 
 ```
 /ocr
@@ -444,6 +448,17 @@ Each member maintains their own feature branch:
 ```
 
 Changes are merged into `main` through reviewed Pull Requests.
+
+---
+# ** Commit & PR Workflow**
+* Commit format:
+      feat: added OCR preprocessing
+      fix: resolved API timeout
+      docs: updated setup instructions
+
+* All merges are done through PRs
+* PR includes description, reviewer, and merge date
+* No direct commits to main
 
 ---
 
