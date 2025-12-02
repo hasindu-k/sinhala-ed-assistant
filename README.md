@@ -13,6 +13,7 @@ This project combines **mobile learning apps**, **AI services (OCR, STT, RAG, gr
 ├─ infra/ # Infrastructure (docker-compose, env files, deployment scripts)
 └─ README.md # Project documentation
 ```
+
 Team Responsibilities
 
 The work is divided into four main functional areas. Each member is responsible for one part and supports the integration work.
@@ -48,42 +49,41 @@ Grades Sinhala student answers using uploaded resources.
 • Rubric-based scoring
 • Question-wise and paper-wise feedback
 
-
 # **👥 Team Responsibilities**
 
 ### **1. Sinhala Document Processing (OCR & Cleaning)**
 
 Handles printed and handwritten Sinhala content.
 
-* Image preprocessing
-* Sinhala OCR
-* Text normalization and cleanup
+- Image preprocessing
+- Sinhala OCR
+- Text normalization and cleanup
 
 ### **2. Resource-Based Q&A and Summaries (RAG Pipeline)**
 
 Produces accurate, source-bound Sinhala answers.
 
-* Embeddings for resources
-* Dense + sparse retrieval
-* Question answering
-* Summary generation
+- Embeddings for resources
+- Dense + sparse retrieval
+- Question answering
+- Summary generation
 
 ### **3. Voice-Based Q&A (Speech to Text + TTS)**
 
 Allows students to ask questions through Sinhala voice input.
 
-* Whisper-based Sinhala ASR
-* Intent handling
-* Sinhala text-to-speech output
+- Whisper-based Sinhala ASR
+- Intent handling
+- Sinhala text-to-speech output
 
 ### **4. Automatic Answer Evaluation (IT22003478 – Miyuri)**
 
 Grades student answers automatically using teacher-provided material.
 
-* OCR for answer images
-* Embedding & semantic comparison
-* Rubric-based scoring
-* Question-wise and paper-wise feedback
+- OCR for answer images
+- Embedding & semantic comparison
+- Rubric-based scoring
+- Question-wise and paper-wise feedback
 
 ---
 
@@ -139,9 +139,9 @@ This module retrieves relevant passages from teacher materials and produces sour
 4. **Hybrid Retrieval**
    The system performs:
 
-   * **BM25 retrieval** for keyword-exact passages
-   * **Dense retrieval** for semantic matching
-   * **Re-ranking** using pseudo-questions (via QuIM-style method)
+   - **BM25 retrieval** for keyword-exact passages
+   - **Dense retrieval** for semantic matching
+   - **Re-ranking** using pseudo-questions (via QuIM-style method)
 
 5. **Context Selection**
    The top-ranked passages from teacher resources are selected.
@@ -149,8 +149,8 @@ This module retrieves relevant passages from teacher materials and produces sour
 6. **Answer / Summary Generation**
    The model generates:
 
-   * **Source-bound answer**, or
-   * **Condensed summary**, depending on user intent.
+   - **Source-bound answer**, or
+   - **Condensed summary**, depending on user intent.
 
 7. **Output Delivery**
    The mobile app receives the answer with optional reference indicators.
@@ -172,8 +172,8 @@ This module handles Sinhala voice questions with accent-aware processing.
 3. **Intent Classification**
    The system identifies whether the user requests:
 
-   * a direct answer
-   * or a summary.
+   - a direct answer
+   - or a summary.
 
 4. **RAG Processing**
    The recognized text is forwarded to the RAG module for retrieval and answer generation.
@@ -204,32 +204,32 @@ This module grades student answers based on semantic similarity to teacher-provi
 4. **Embedding Generation**
    Embeddings are produced for:
 
-   * the student answer
-   * the expected answer
-   * the key points from teacher notes
+   - the student answer
+   - the expected answer
+   - the key points from teacher notes
 
 5. **Semantic Comparison**
    The system checks:
 
-   * matched concepts
-   * partially correct ideas
-   * missing points
-   * irrelevant or incorrect statements
+   - matched concepts
+   - partially correct ideas
+   - missing points
+   - irrelevant or incorrect statements
 
 6. **Rubric-Based Evaluation**
    Scores are calculated based on:
 
-   * coverage
-   * accuracy
-   * clarity
+   - coverage
+   - accuracy
+   - clarity
      (or the rubric defined by the teacher)
 
 7. **Feedback Generation**
    The system produces:
 
-   * question-level breakdown
-   * suggestions for improvement
-   * overall score
+   - question-level breakdown
+   - suggestions for improvement
+   - overall score
 
 8. **Output Delivery**
    Results are displayed in the mobile app.
@@ -376,18 +376,105 @@ Grading is performed strictly based on teacher resources.
 
 # **🖥️ Backend Structure (api/)**
 
+## 🖥️ Backend Structure (backend/)
+
 ```
-api/
- ├── app/
- │     ├── ocr/
- │     ├── embeddings/
- │     ├── rag/
- │     ├── voice/
- │     └── answer_evaluation/       # Implementation continues here
- │
- ├── main.py
- ├── SETUP.md
- └── pyproject.toml
+backend/
+│── app/
+│   ├── main.py
+│   ├── config/
+│   │   ├── settings.py
+│   │   └── logging.py
+│   │
+│   ├── api/
+│   │   ├── router.py
+│   │   │
+│   │   ├── document_processing/     # Sinhala Document Processing & Embedding
+│   │   │   ├── routes.py
+│   │   │   ├── service.py
+│   │   │   ├── ocr/
+│   │   │   │   ├── tesseract_engine.py     # printed Sinhala OCR
+│   │   │   │   ├── trocr_engine.py         # handwritten OCR
+│   │   │   │   └── image_cleaner.py
+│   │   │   ├── embedding/
+│   │   │       ├── gemini_embedder.py      # embedding-004 / gemini-embedding-001
+│   │   │       ├── chunker.py              # PDF->chunks
+│   │   │       ├── bm25_engine.py
+│   │   │       ├── faiss_store.py
+│   │   │       └── retriever.py            # Hybrid BM25 + FAISS retrieval
+│   │   │
+│   │   ├── text_qa/                        # RAG with Gemini Flash 2.0
+│   │   │   ├── routes.py
+│   │   │   ├── controller.py
+│   │   │   ├── service.py
+│   │   │   ├── rag/
+│   │   │   │   ├── retriever.py            # connects to document_processing embeddings
+│   │   │   │   └── context_builder.py
+│   │   │   ├── generation/
+│   │   │   │   ├── gemini_flash_client.py  # main Q&A generator (Flash 2.0)
+│   │   │   │   ├── safety_checker.py
+│   │   │   │   └── summarizer.py           # optional (Gemini grade-level summarization)
+│   │   │   └── schemas.py
+│   │   │
+│   │   ├── voice_qa/
+│   │   │   ├── routes.py
+│   │   │   ├── whisper_service.py          # converts speech -> Sinhala text
+│   │   │   └── qa_pipeline.py              # passes Whisper output to text_qa
+│   │   │
+│   │   ├── answer_evaluation/
+│   │   │   ├── routes.py
+│   │   │   ├── service.py
+│   │   │   ├── semantic/
+│   │   │   │   ├── xlmr_encoder.py         # semantic similarity
+│   │   │   │   ├── rubric_checker.py        # syllabus concept validation
+│   │   │   │   └── scorer.py               # adaptive scoring
+│   │   │   ├── generation/
+│   │   │   │   └── gemini_flash_client.py  # natural Sinhala feedback generator
+│   │   │   └── schemas.py
+│   │   │
+│   │   ├── healthcheck/
+│   │   │   └── routes.py
+│   │   │
+│   │   └── users/
+│   │       ├── routes.py
+│   │       └── auth_service.py
+│   │
+│   ├── core/
+│   │   ├── model_loader.py
+│   │   ├── gemini_client.py               # universal Google Generative AI client
+│   │   ├── whisper_loader.py
+│   │   ├── utils.py
+│   │   └── security.py
+│   │
+│   ├── db/
+│   │   ├── embeddings/                   # cached Gemini embeddings
+│   │   ├── faiss_indexes/
+│   │   ├── bm25/
+│   │   └── metadata/
+│   │
+│   ├── models/                           # Model files (Tesseract, TrOCR)
+│   │   ├── trocr/
+│   │   ├── tesseract/
+│   │   └── whisper/
+│   │
+│   └── tests/
+│       ├── unit/
+│       ├── integration/
+│       └── e2e/
+│
+├── scripts/
+│   ├── build_embeddings.py
+│   ├── build_faiss.py
+│   ├── build_bm25.py
+│   └── process_documents.py
+│
+├── docker/
+│   ├── Dockerfile
+│   └── docker-compose.yml
+│
+├── requirements.txt
+├── .env
+└── README.md
 ```
 
 ---
@@ -401,10 +488,10 @@ mobile/
 
 Features include:
 
-* Sinhala input
-* Image upload
-* Voice question feature
-* Displaying answers and feedback
+- Sinhala input
+- Image upload
+- Voice question feature
+- Displaying answers and feedback
 
 ---
 
@@ -412,33 +499,34 @@ Features include:
 
 ### **Mobile**
 
-* Flutter
-* Provider / Riverpod
-* Firebase (future enhancement)
+- Flutter
+- Provider / Riverpod
+- Firebase (future enhancement)
 
 ### **Backend**
 
-* FastAPI
-* Python
-* Tesseract OCR
-* Whisper ASR
-* SinBERT / XLM-R embeddings
-* Qdrant / FAISS (vector search)
+- FastAPI
+- Python
+- Tesseract OCR
+- Whisper ASR
+- SinBERT / XLM-R embeddings
+- Qdrant / FAISS (vector search)
 
 ### **Infrastructure**
 
-* Docker
-* Docker Compose
+- Docker
+- Docker Compose
 
 ---
 
 # **🌿 Branching Strategy**
-* Main branch for stable releases
-* Dev branch for integration
-* Feature branches per component developer
-* Naming format: /<module-name>, fix/<issue>
-* PR required for merging into dev or main
-* Each member maintains their own feature branch:
+
+- Main branch for stable releases
+- Dev branch for integration
+- Feature branches per component developer
+- Naming format: /<module-name>, fix/<issue>
+- PR required for merging into dev or main
+- Each member maintains their own feature branch:
 
 ```
 /ocr
@@ -450,15 +538,17 @@ Features include:
 Changes are merged into `main` through reviewed Pull Requests.
 
 ---
-# ** Commit & PR Workflow**
-* Commit format:
-      feat: added OCR preprocessing
-      fix: resolved API timeout
-      docs: updated setup instructions
 
-* All merges are done through PRs
-* PR includes description, reviewer, and merge date
-* No direct commits to main
+# ** Commit & PR Workflow**
+
+- Commit format:
+  feat: added OCR preprocessing
+  fix: resolved API timeout
+  docs: updated setup instructions
+
+- All merges are done through PRs
+- PR includes description, reviewer, and merge date
+- No direct commits to main
 
 ---
 
@@ -486,12 +576,12 @@ flutter run
 
 All PP1 materials including:
 
-* design report
-* mockups
-* low-fi and high-fi UI screens
-* diagrams
-* feedback
-* improvements
+- design report
+- mockups
+- low-fi and high-fi UI screens
+- diagrams
+- feedback
+- improvements
   are submitted separately following academic guidelines.
 
 They are **not** stored inside this repository to keep the codebase light and organized.
@@ -500,9 +590,9 @@ They are **not** stored inside this repository to keep the codebase light and or
 
 # **👤 Authors**
 
-* Sinhala Document Processing: **Ranaweera P.H.K (IT22233452)**
-* RAG Q&A Module: **Jayananda L.V.O.R (IT22161406)**
-* Voice Q&A Module: **Sathsara T.T.D (IT22362476)**
-* Automatic Answer Evaluation: **Lokuhewage M .M (IT22003478)**
+- Sinhala Document Processing: **Ranaweera P.H.K (IT22233452)**
+- RAG Q&A Module: **Jayananda L.V.O.R (IT22161406)**
+- Voice Q&A Module: **Sathsara T.T.D (IT22362476)**
+- Automatic Answer Evaluation: **Lokuhewage M .M (IT22003478)**
 
 ---
