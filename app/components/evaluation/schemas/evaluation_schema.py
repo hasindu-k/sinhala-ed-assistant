@@ -27,7 +27,12 @@ class RubricUpload(BaseModel):
 
 class MarksUpload(BaseModel):
     teacher_id: str
-    marks_distribution: List[int]   # Example: [3,3,6,8]
+    marks_distribution: List[int]
+
+
+    class Config:
+        arbitrary_types_allowed = True
+   # Example: [3,3,6,8]
 
 
 class PaperSettingsUpload(BaseModel):

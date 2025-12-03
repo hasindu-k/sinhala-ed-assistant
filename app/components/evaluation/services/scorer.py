@@ -55,16 +55,24 @@ def coverage_score(student: str, combined: str):
 # ------------------------------------------------------------
 # BM25 Score
 # ------------------------------------------------------------
-def bm25_score(question: str, bm25: BM25Okapi):
-    tokens = tokenize_sinhala(question)
-
-    if not tokens:
+def bm25_score(question_text, bm25):
+    tokenized = tokenize_sinhala(question_text)
+    if not tokenized:
         return 0.0
 
-    scores = bm25.get_scores(tokens)
-    max_score = float(max(scores)) if scores else 0.0
+    scores = bm25.get_scores(tokenized)
 
-    return min(max_score / 8.0, 1.0)
+    # Convert to list to safely check length
+    scores_list = scores.tolist()
+
+    if len(scores_list) == 0:
+        return 0.0
+
+    max_score = float(max(scores_list))
+
+    # Normalization
+    normalized = min(max_score / 8.0, 1.0)
+    return normalized
 
 
 # ------------------------------------------------------------
