@@ -1,7 +1,7 @@
 # app/shared/models/question.py
 
 from sqlalchemy import Column, Integer, String, JSON
-from core.database import Base
+from app.core.database import Base
 
 class Question(Base):
     __tablename__ = "teacher_questions"

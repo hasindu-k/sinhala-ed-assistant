@@ -1,6 +1,6 @@
 # app/components/evaluation/services/feedback.py
 
-from shared.ai.gemini_client import gemini_generate
+from app.shared.ai.gemini_client import gemini_generate
 
 
 # ------------------------------------------------------------

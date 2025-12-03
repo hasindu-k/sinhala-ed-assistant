@@ -3,8 +3,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.database import Base, engine
-from components.evaluation.routers.evaluation_router import router as EvaluationRouter
+from app.core.database import Base, engine
+from app.core.config import settings
+from app.components.evaluation.routers.evaluation_router import router as evaluation_router
 
 
 # ------------------------------------------------------------
@@ -38,7 +39,7 @@ app.add_middleware(
 # ------------------------------------------------------------
 # Include Routers
 # ------------------------------------------------------------
-app.include_router(EvaluationRouter)
+app.include_router(evaluation_router)
 
 
 # ------------------------------------------------------------

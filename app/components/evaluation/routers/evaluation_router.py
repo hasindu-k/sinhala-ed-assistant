@@ -3,9 +3,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from core.database import get_db
+from app.core.database import get_db
 
-from components.evaluation.schemas.evaluation_schema import (
+from app.components.evaluation.schemas.evaluation_schema import (
     SyllabusUpload,
     QuestionUpload,
     RubricUpload,
@@ -15,13 +15,15 @@ from components.evaluation.schemas.evaluation_schema import (
     FinalEvaluationResponse
 )
 
-from models.syllabus import Syllabus
-from models.question import Question
-from models.rubric import Rubric
-from models.marks import Marks
-from models.paper_settings import PaperSettings
+from app.core.database import get_db
 
-from components.evaluation.services.evaluator import run_evaluation
+from app.shared.models.syllabus import Syllabus
+from app.shared.models.question import Question
+from app.shared.models.rubric import Rubric
+from app.shared.models.marks import Marks
+from app.shared.models.paper_settings import PaperSettings
+
+from app.components.evaluation.services.evaluator import run_evaluation
 
 
 router = APIRouter(prefix="/evaluation", tags=["Evaluation"])

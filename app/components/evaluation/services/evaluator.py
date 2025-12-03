@@ -2,24 +2,26 @@
 
 from sqlalchemy.orm import Session
 
-from models.syllabus import Syllabus
-from models.question import Question
-from models.rubric import Rubric
-from models.marks import Marks
-from models.paper_settings import PaperSettings
+from app.core.database import get_db
 
-from components.evaluation.schemas.evaluation_schema import (
+from app.shared.models.syllabus import Syllabus
+from app.shared.models.question import Question
+from app.shared.models.rubric import Rubric
+from app.shared.models.marks import Marks
+from app.shared.models.paper_settings import PaperSettings
+
+from app.components.evaluation.schemas.evaluation_schema import (
     FinalEvaluationResponse,
     SubQuestionResult
 )
 
-from components.evaluation.services.scorer import compute_scores_for_answer
-from components.evaluation.services.feedback import (
+from app.components.evaluation.services.scorer import compute_scores_for_answer
+from app.components.evaluation.services.feedback import (
     generate_feedback_for_answer,
     generate_overall_feedback
 )
 
-from components.evaluation.utils.helpers import (
+from app.components.evaluation.utils.helpers import (
     extract_main_question_id,
     select_best_main_questions
 )

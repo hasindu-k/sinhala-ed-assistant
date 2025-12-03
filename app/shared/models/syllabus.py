@@ -1,7 +1,7 @@
 # app/shared/models/syllabus.py
 
 from sqlalchemy import Column, Integer, String, JSON
-from core.database import Base
+from app.core.database import Base
 
 class Syllabus(Base):
     __tablename__ = "teacher_syllabus"

@@ -3,8 +3,8 @@
 import numpy as np
 from rank_bm25 import BM25Okapi
 
-from shared.ai.embeddings import semantic_similarity
-from components.evaluation.utils.helpers import tokenize_sinhala
+from app.shared.ai.embeddings import semantic_similarity
+from app.components.evaluation.utils.helpers import tokenize_sinhala
 
 # BM25 model will be injected each evaluation
 # syllabus_chunks will be passed dynamically

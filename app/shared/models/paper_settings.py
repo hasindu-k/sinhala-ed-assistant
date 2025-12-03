@@ -1,7 +1,7 @@
 # app/shared/models/paper_settings.py
 
 from sqlalchemy import Column, Integer, String
-from core.database import Base
+from app.core.database import Base
 
 class PaperSettings(Base):
     __tablename__ = "teacher_paper_settings"
