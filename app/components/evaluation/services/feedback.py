@@ -1,6 +1,29 @@
-# app/components/evaluation/services/feedback.py
-
 from app.shared.ai.gemini_client import gemini_generate
+
+
+# ------------------------------------------------------------
+# helper: flatten dict feedback into clean readable text
+# ------------------------------------------------------------
+def _format_feedback_block(data: dict, language: str) -> str:
+    if not isinstance(data, dict):
+        return str(data)
+
+    # Sinhala version
+    if language == "sinhala":
+        return (
+            f"🔹 ශක්තිමත් කරුණු: {data.get('strengths', '')}\n"
+            f"🔹 දුර්වලතා: {data.get('weaknesses', '')}\n"
+            f"🔹 වැඩිදියුණු කළ යුතු කරුණු: {data.get('improvements', '')}\n"
+            f"🔹 ඉදිරියට ලකුණු වැඩි කරගැනීම: {data.get('next_steps', '')}"
+        )
+
+    # English version
+    return (
+        f"Strengths: {data.get('strengths', '')}\n"
+        f"Weaknesses: {data.get('weaknesses', '')}\n"
+        f"Improvements: {data.get('improvements', '')}\n"
+        f"Next Steps: {data.get('next_steps', '')}"
+    )
 
 
 # ------------------------------------------------------------
@@ -15,9 +38,10 @@ def generate_feedback_for_answer(qid: str, student_answer: str, score_details: d
     marks = score_details["final_score"]
     max_marks = score_details["max_score"]
 
+    # Sinhala prompt
     if language == "sinhala":
         prompt = f"""
-ඔබ ගුරුවරයෙකු ලෙස සිසුවාගේ පිළිතුර සඳහා කෙටි ප්‍රතිචාරයක් ලබා දෙන්න.
+ඔබ ගුරුවරයෙකු ලෙස සිසුවාගේ පිළිතුර සඳහා සරල සංවිධානය කළ ප්‍රතිචාරයක් ලබා දෙන්න.
 Markdown හෝ bullet points භාවිතා නොකරන්න.
 
 ප්‍රශ්න ID: {qid}
@@ -26,20 +50,23 @@ Markdown හෝ bullet points භාවිතා නොකරන්න.
 සිසුවාගේ පිළිතුර:
 {student_answer}
 
-පද්ධතිය හඳුන්වාගත් සම්බන්ධ කරුණු:
+අදාළ කරුණු:
 {chunks}
 
-Semantics = {sem}
-Coverage = {cov}
-BM25 = {bm}
+Sem={sem}, Coverage={cov}, BM25={bm}
 
-පිළිතුරේ හොඳ කරුණු, දුර්වලතා, වැඩිදියුණු කළ යුතු කරුණු,
-ඉදිරියට ලකුණු වැඩි කරගන්නේ කෙසේද යන්න පැහැදිලිව වාර්තා කරන්න.
+ඔබ ලබා දිය යුතු විග්‍රහය:
+strengths, weaknesses, improvements, next_steps
+
+JSON ආකාරයේ structured feedback දෙන්න:
+{{ "strengths":"", "weaknesses":"", "improvements":"", "next_steps":"" }}
 """
 
+    # English prompt
     else:
         prompt = f"""
-Give a short teacher-style feedback for the student's answer.
+Give structured teacher feedback as JSON only.
+
 Do not use markdown.
 
 Question ID: {qid}
@@ -51,17 +78,27 @@ Student Answer:
 Relevant Context:
 {chunks}
 
-Semantic={sem}, Coverage={cov}, BM25={bm}
+Sem={sem}, Coverage={cov}, BM25={bm}
 
-Explain briefly:
-- What is strong
-- What is missing
-- What needs improvement
-- How to score higher next time
+Provide JSON with:
+strengths, weaknesses, improvements, next_steps
+
+Format:
+{{ "strengths":"...", "weaknesses":"...", "improvements":"...", "next_steps":"..." }}
 """
 
-    return gemini_generate(prompt).strip()
+    raw = gemini_generate(prompt).strip()
 
+    # Try parsing JSON-like output into dict
+    try:
+        import json
+
+        data = json.loads(raw)
+        return _format_feedback_block(data, language)
+
+    except Exception:
+        # if not JSON, return original text as safe fallback
+        return raw
 
 
 # ------------------------------------------------------------
@@ -74,27 +111,30 @@ def generate_overall_feedback(results: dict, final_score: float, max_score: floa
         perf_lines.append(
             f"{qid}: {r.total_score}/{r.max_score} (sem={r.semantic_score}, cov={r.coverage_score}, bm25={r.bm25_score})"
         )
+
     perf_text = "\n".join(perf_lines)
 
     if language == "sinhala":
         prompt = f"""
-සිසුවාගේ ප්‍රශ්න පත්‍රය සඳහා සාරාංශ ප්‍රතිචාරයක් ලබා දෙන්න.
-Markdown භාවිතා නොකරන ලෙස යෝජනා කරයි.
+සිසුවාගේ මුළු ප්‍රශ්න පත්‍රය සඳහා structured සාරාංශ ප්‍රතිචාරයක් JSON ආකාරයෙන් ලබා දෙන්න.
+Markdown නොකරන්න.
 
 මුළු ලකුණු: {final_score} / {max_score}
 
-විග්‍රහ:
+විස්තර:
 {perf_text}
 
-සාරාංශයේ අන්තර්ගතය:
-- ශක්තිමත් කරුණු
-- වැඩිදියුණු කළ යුතු කරුණු
-- ඉදිරියට කියවීමේ උපදෙස්
+JSON format:
+{{
+ "strengths":"",
+ "weaknesses":"",
+ "improvements":"",
+ "advice":""
+}}
 """
-
     else:
         prompt = f"""
-Write an overall evaluation summary.
+Give an overall evaluation summary as structured JSON.
 No markdown.
 
 Final Score: {final_score} / {max_score}
@@ -102,8 +142,38 @@ Final Score: {final_score} / {max_score}
 Breakdown:
 {perf_text}
 
-Include:
-Strengths, weaknesses, improvements, general study advice.
+JSON format:
+{{
+ "strengths":"...",
+ "weaknesses":"...",
+ "improvements":"...",
+ "advice":"..."
+}}
 """
 
-    return gemini_generate(prompt).strip()
+    raw = gemini_generate(prompt).strip()
+
+    try:
+        import json
+
+        data = json.loads(raw)
+
+        # Sinhala or English formatted text output
+        if language == "sinhala":
+            return (
+                f"🔷 ශක්තිමත් කරුණු: {data.get('strengths', '')}\n"
+                f"🔷 දුර්වලතා: {data.get('weaknesses', '')}\n"
+                f"🔷 වැඩිදියුණු කිරීම්: {data.get('improvements', '')}\n"
+                f"🔷 ඉදිරියට උපදෙස්: {data.get('advice', '')}"
+            )
+
+        else:
+            return (
+                f"Strengths: {data.get('strengths', '')}\n"
+                f"Weaknesses: {data.get('weaknesses', '')}\n"
+                f"Improvements: {data.get('improvements', '')}\n"
+                f"Advice: {data.get('advice', '')}"
+            )
+
+    except Exception:
+        return raw

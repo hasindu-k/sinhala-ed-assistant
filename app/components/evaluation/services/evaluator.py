@@ -35,7 +35,7 @@ from app.components.evaluation.utils.helpers import (
 def run_evaluation(user_id: str, student_answers: dict, language: str, db: Session):
 
     print(f"\n\n================ EVALUATION STARTED =================")
-    print(f"Teacher ID: {user_id}")
+    print(f"User ID: {user_id}")
     print(f"Total student answers received: {len(student_answers)}")
     print("----------------------------------------------------")
 
