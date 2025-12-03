@@ -1,23 +1,5 @@
 # app/components/evaluation/utils/helpers.py
 
-import re
-
-
-# ------------------------------------------------------------
-# Sinhala Tokenizer
-# ------------------------------------------------------------
-def tokenize_sinhala(text: str):
-    """
-    Sinhala-friendly tokenizer using Unicode blocks.
-    Extracts Sinhala, English, and numeric terms.
-    """
-    if not text:
-        return []
-
-    words = re.findall(r"[අ-ෆa-zA-Z0-9]+", text)
-    return [w.lower() for w in words]
-
-
 # ------------------------------------------------------------
 # Extract Main Question ID
 # ------------------------------------------------------------
@@ -40,7 +22,7 @@ def get_sub_index(qid: str) -> int:
         sub = qid.split("_")[1].lower()
         return "abcd".index(sub)
     except:
-        return 0   # fallback for mislabelled qid
+        return 0
 
 
 # ------------------------------------------------------------
@@ -53,15 +35,12 @@ def select_best_main_questions(grouped: dict, required: int):
         "Q02": [...],
     }
     """
-
     totals = {}
 
     for main_id, subresults in grouped.items():
         score_sum = sum(r.total_score for r in subresults)
         totals[main_id] = score_sum
 
-    # Sort by descending total marks
     ordered = sorted(totals.keys(), key=lambda x: totals[x], reverse=True)
 
-    # Return top N
     return ordered[:required]

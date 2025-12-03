@@ -7,7 +7,8 @@ class Marks(Base):
     __tablename__ = "teacher_marks"
 
     id = Column(Integer, primary_key=True, index=True)
-    teacher_id = Column(String, index=True, unique=True)
+    teacher_id = Column(String, index=True)
 
-    # List of sub-question marks: e.g. [3,3,6,8]
+    # Dictionary:
+    # { "Q01": [3,3,6,8], "Q02": [3,3,6,8], ... }
     marks_distribution = Column(JSON)

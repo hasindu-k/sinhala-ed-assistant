@@ -106,14 +106,15 @@ def upload_rubric(payload: RubricUpload, db: Session = Depends(get_db)):
 @router.post("/upload/marks")
 def upload_marks(payload: MarksUpload, db: Session = Depends(get_db)):
 
-    # validate mark list length with paper settings
+# VALIDATE marks per main question
     paper = db.query(PaperSettings).filter_by(teacher_id=payload.teacher_id).first()
     if paper:
-        if len(payload.marks_distribution) != paper.subquestions_per_main:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Marks list must have {paper.subquestions_per_main} values."
-            )
+        for key, marks_list in payload.marks_distribution.items():
+            if len(marks_list) != paper.subquestions_per_main:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{key} must have {paper.subquestions_per_main} marks."
+                )
 
     existing = db.query(Marks).filter_by(teacher_id=payload.teacher_id).first()
 
