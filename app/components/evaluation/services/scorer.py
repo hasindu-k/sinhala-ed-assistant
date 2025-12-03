@@ -16,15 +16,20 @@ def semantic_score(student_answer: str, retrieved: str) -> float:
         return 0.0
 
     try:
-        a = xlmr.encode(normalize_sinhala(student_answer), convert_to_tensor=True)
-        b = xlmr.encode(normalize_sinhala(retrieved), convert_to_tensor=True)
+        clean_student = normalize_sinhala(student_answer)
+        clean_retrieved = normalize_sinhala(retrieved)
+
+        a = xlmr.encode(clean_student, convert_to_tensor=True)
+        b = xlmr.encode(clean_retrieved, convert_to_tensor=True)
 
         similarity = float((a @ b.T) / (a.norm() * b.norm()))
 
         return (similarity + 1) / 2
 
-    except Exception:
+    except Exception as e:
+        print(f"[XLM-R ERROR] {e}")
         return 0.0
+
 
 
 def coverage_score(student_answer: str, retrieved: str) -> float:
@@ -75,13 +80,17 @@ def compute_scores_for_answer(
     syllabus_chunks,
     rubric,
     marks_distribution,
-    qid
+    qid,
+    bm25
+
 ):
-    bm25 = build_bm25(syllabus_chunks)
 
     main_id = qid.split("_")[0]
-    sub_index = ord(qid.split("_")[1]) - 97
-    allocated_marks = marks_distribution[main_id][sub_index]
+    sub_id = qid.split("_")[1]          # a, b, c, d
+    sub_index = ord(sub_id) - 97        # 0, 1, 2, 3
+
+    # NEW FIX: use single universal marks list
+    allocated_marks = marks_distribution[sub_index]
 
     retrieved_list = retrieve_chunks(question_text, bm25, syllabus_chunks)
     combined_text = " ".join(retrieved_list)

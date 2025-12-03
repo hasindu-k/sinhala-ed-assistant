@@ -103,19 +103,23 @@ def upload_rubric(payload: RubricUpload, db: Session = Depends(get_db)):
 # ------------------------------------------------------------
 #  UPLOAD: MARKS DISTRIBUTION (GLOBAL)
 # ------------------------------------------------------------
+# ------------------------------------------------------------
+#  UPLOAD: MARKS DISTRIBUTION (GLOBAL – ONE ARRAY FOR ALL QUESTIONS)
+# ------------------------------------------------------------
 @router.post("/upload/marks")
 def upload_marks(payload: MarksUpload, db: Session = Depends(get_db)):
 
-# VALIDATE marks per main question
+    # Check paper settings to validate number of subquestions
     paper = db.query(PaperSettings).filter_by(teacher_id=payload.teacher_id).first()
-    if paper:
-        for key, marks_list in payload.marks_distribution.items():
-            if len(marks_list) != paper.subquestions_per_main:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{key} must have {paper.subquestions_per_main} marks."
-                )
 
+    if paper:
+        if len(payload.marks_distribution) != paper.subquestions_per_main:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Marks array must have {paper.subquestions_per_main} values."
+            )
+
+    # Store a single universal marks list (e.g., [3,3,6,8])
     existing = db.query(Marks).filter_by(teacher_id=payload.teacher_id).first()
 
     if existing:
@@ -129,6 +133,7 @@ def upload_marks(payload: MarksUpload, db: Session = Depends(get_db)):
     db.commit()
 
     return {"status": "success", "message": "Marks distribution uploaded successfully"}
+
 
 
 
