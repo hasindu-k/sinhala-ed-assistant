@@ -9,24 +9,24 @@ from typing import List, Dict, Optional
 # ------------------------------------------------------------
 
 class SyllabusUpload(BaseModel):
-    teacher_id: str
+    user_id: str
     syllabus_chunks: List[str]
 
 
 class QuestionUpload(BaseModel):
-    teacher_id: str
+    user_id: str
     questions: Dict[str, str]   # {"Q01_a": "...", "Q01_b": "..."}
 
 
 class RubricUpload(BaseModel):
-    teacher_id: str
+    user_id: str
     semantic_weight: float = Field(..., ge=0, le=1)
     coverage_weight: float = Field(..., ge=0, le=1)
     bm25_weight: float = Field(..., ge=0, le=1)
 
 
 class MarksUpload(BaseModel):
-    teacher_id: str
+    user_id: str
     marks_distribution: List[int]
 
 
@@ -36,7 +36,7 @@ class MarksUpload(BaseModel):
 
 
 class PaperSettingsUpload(BaseModel):
-    teacher_id: str
+    user_id: str
     total_marks: int                       # Full paper = e.g. 60
     total_main_questions: int             # e.g. 5
     required_main_questions: int          # e.g. 3
@@ -48,7 +48,7 @@ class PaperSettingsUpload(BaseModel):
 # ------------------------------------------------------------
 
 class EvaluationRequest(BaseModel):
-    teacher_id: str
+    user_id: str
     student_answers: Dict[str, str]       # {"Q01_a": "...", ...}
     language: Optional[str] = "sinhala"   # sinhala | english | both
 

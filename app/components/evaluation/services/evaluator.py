@@ -32,21 +32,21 @@ from app.components.evaluation.utils.helpers import (
 # ------------------------------------------------------------
 # MAIN PIPELINE
 # ------------------------------------------------------------
-def run_evaluation(teacher_id: str, student_answers: dict, language: str, db: Session):
+def run_evaluation(user_id: str, student_answers: dict, language: str, db: Session):
 
     print(f"\n\n================ EVALUATION STARTED =================")
-    print(f"Teacher ID: {teacher_id}")
+    print(f"Teacher ID: {user_id}")
     print(f"Total student answers received: {len(student_answers)}")
     print("----------------------------------------------------")
 
     # ------------------------------------------------------------
     # 1. Load saved teacher configuration
     # ------------------------------------------------------------
-    syllabus = db.query(Syllabus).filter_by(teacher_id=teacher_id).first()
-    questions = db.query(Question).filter_by(teacher_id=teacher_id).first()
-    rubric = db.query(Rubric).filter_by(teacher_id=teacher_id).first()
-    marks = db.query(Marks).filter_by(teacher_id=teacher_id).first()
-    paper = db.query(PaperSettings).filter_by(teacher_id=teacher_id).first()
+    syllabus = db.query(Syllabus).filter_by(user_id=user_id).first()
+    questions = db.query(Question).filter_by(user_id=user_id).first()
+    rubric = db.query(Rubric).filter_by(user_id=user_id).first()
+    marks = db.query(Marks).filter_by(user_id=user_id).first()
+    paper = db.query(PaperSettings).filter_by(user_id=user_id).first()
 
     if not syllabus or not questions or not rubric or not marks or not paper:
         print("ERROR: Missing teacher configuration")

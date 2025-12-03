@@ -4,10 +4,10 @@ from sqlalchemy import Column, Integer, String
 from app.core.database import Base
 
 class PaperSettings(Base):
-    __tablename__ = "teacher_paper_settings"
+    __tablename__ = "user_paper_settings"
 
     id = Column(Integer, primary_key=True, index=True)
-    teacher_id = Column(String, index=True, unique=True)
+    user_id = Column(String, index=True, unique=True)
 
     total_marks = Column(Integer)                     # Entire paper marks
     total_main_questions = Column(Integer)           # e.g. 5

@@ -36,13 +36,13 @@ router = APIRouter(prefix="/evaluation", tags=["Evaluation"])
 @router.post("/upload/syllabus")
 def upload_syllabus(payload: SyllabusUpload, db: Session = Depends(get_db)):
 
-    existing = db.query(Syllabus).filter_by(teacher_id=payload.teacher_id).first()
+    existing = db.query(Syllabus).filter_by(user_id=payload.user_id).first()
 
     if existing:
         existing.syllabus_chunks = payload.syllabus_chunks
     else:
         db.add(Syllabus(
-            teacher_id=payload.teacher_id,
+            user_id=payload.user_id,
             syllabus_chunks=payload.syllabus_chunks
         ))
 
@@ -58,13 +58,13 @@ def upload_syllabus(payload: SyllabusUpload, db: Session = Depends(get_db)):
 @router.post("/upload/questions")
 def upload_questions(payload: QuestionUpload, db: Session = Depends(get_db)):
 
-    existing = db.query(Question).filter_by(teacher_id=payload.teacher_id).first()
+    existing = db.query(Question).filter_by(user_id=payload.user_id).first()
 
     if existing:
         existing.questions = payload.questions
     else:
         db.add(Question(
-            teacher_id=payload.teacher_id,
+            user_id=payload.user_id,
             questions=payload.questions
         ))
 
@@ -80,7 +80,7 @@ def upload_questions(payload: QuestionUpload, db: Session = Depends(get_db)):
 @router.post("/upload/rubric")
 def upload_rubric(payload: RubricUpload, db: Session = Depends(get_db)):
 
-    existing = db.query(Rubric).filter_by(teacher_id=payload.teacher_id).first()
+    existing = db.query(Rubric).filter_by(user_id=payload.user_id).first()
 
     if existing:
         existing.semantic_weight = payload.semantic_weight
@@ -88,7 +88,7 @@ def upload_rubric(payload: RubricUpload, db: Session = Depends(get_db)):
         existing.bm25_weight = payload.bm25_weight
     else:
         db.add(Rubric(
-            teacher_id=payload.teacher_id,
+            user_id=payload.user_id,
             semantic_weight=payload.semantic_weight,
             coverage_weight=payload.coverage_weight,
             bm25_weight=payload.bm25_weight
@@ -110,7 +110,7 @@ def upload_rubric(payload: RubricUpload, db: Session = Depends(get_db)):
 def upload_marks(payload: MarksUpload, db: Session = Depends(get_db)):
 
     # Check paper settings to validate number of subquestions
-    paper = db.query(PaperSettings).filter_by(teacher_id=payload.teacher_id).first()
+    paper = db.query(PaperSettings).filter_by(user_id=payload.user_id).first()
 
     if paper:
         if len(payload.marks_distribution) != paper.subquestions_per_main:
@@ -120,13 +120,13 @@ def upload_marks(payload: MarksUpload, db: Session = Depends(get_db)):
             )
 
     # Store a single universal marks list (e.g., [3,3,6,8])
-    existing = db.query(Marks).filter_by(teacher_id=payload.teacher_id).first()
+    existing = db.query(Marks).filter_by(user_id=payload.user_id).first()
 
     if existing:
         existing.marks_distribution = payload.marks_distribution
     else:
         db.add(Marks(
-            teacher_id=payload.teacher_id,
+            user_id=payload.user_id,
             marks_distribution=payload.marks_distribution
         ))
 
@@ -149,7 +149,7 @@ def upload_paper_settings(payload: PaperSettingsUpload, db: Session = Depends(ge
             detail="required_main_questions cannot exceed total_main_questions."
         )
 
-    existing = db.query(PaperSettings).filter_by(teacher_id=payload.teacher_id).first()
+    existing = db.query(PaperSettings).filter_by(user_id=payload.user_id).first()
 
     if existing:
         existing.total_marks = payload.total_marks
@@ -159,7 +159,7 @@ def upload_paper_settings(payload: PaperSettingsUpload, db: Session = Depends(ge
 
     else:
         db.add(PaperSettings(
-            teacher_id=payload.teacher_id,
+            user_id=payload.user_id,
             total_marks=payload.total_marks,
             total_main_questions=payload.total_main_questions,
             required_main_questions=payload.required_main_questions,
@@ -179,7 +179,7 @@ def upload_paper_settings(payload: PaperSettingsUpload, db: Session = Depends(ge
 def evaluate(payload: EvaluationRequest, db: Session = Depends(get_db)):
 
     result = run_evaluation(
-        teacher_id=payload.teacher_id,
+        user_id=payload.user_id,
         student_answers=payload.student_answers,
         language=payload.language,
         db=db
