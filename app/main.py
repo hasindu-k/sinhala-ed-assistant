@@ -1,28 +1,27 @@
 from fastapi import FastAPI
-from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
+
 from app.api.v1.router import api_router
-from typing import Optional
 
-load_dotenv()  # Load environment variables
-
-# Create FastAPI application
 app = FastAPI(
-    title="Sinhala Educational Assistant Backend",
+    title="Sinhala Educational Assistant API",
     version="1.0.0",
-    description="ASR + RAG + OCR + Evaluation System"
+    description="Backend for Sinhala Document Processing, Q&A, Evaluation, and Voice features.",
 )
 
-# Include API routes
-app.include_router(api_router)
+# CORS (adjust origins for your frontend later)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # TODO: restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount versioned API
+app.include_router(api_router, prefix="/api/v1")
 
 
-# Health check endpoint
-@app.get("/")
-def read_root():
-    return {"status": "running"}
-
-
-# Example route (fixed for Python 3.9)
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: Optional[str] = None):
-    return {"item_id": item_id, "query": q}
+@app.get("/health", tags=["Health"])
+def health_check():
+    return {"status": "ok", "message": "Sinhala-Ed-Assistant API is running 🚀"}
