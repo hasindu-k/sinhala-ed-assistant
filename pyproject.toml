@@ -1,0 +1,42 @@
+[project]
+name = "sinhala-ed-assistant"
+version = "0.1.0"
+description = "Sinhala Essay Evaluation System with AI Feedback"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "sentence-transformers>=2.2.0",
+    "rank-bm25>=0.2.0",
+    "google-generativeai>=0.3.0",
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+    "pydantic>=2.0.0",
+    "python-multipart>=0.0.6",
+    "python-dotenv>=1.0.0",
+    "firebase-admin>=6.2.0",
+    "pillow>=10.0.0",
+    "aiofiles>=23.0.0",
+    "python-jose[cryptography]>=3.3.0",  # Optional for JWT
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 88
+target-version = ['py39']
+
+[tool.isort]
+profile = "black"
