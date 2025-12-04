@@ -42,6 +42,18 @@ class PaperSettingsUpload(BaseModel):
     required_main_questions: int          # e.g. 3
     subquestions_per_main: int            # e.g. 4
 
+class OCRProcessedUpload(BaseModel):
+    user_id: str
+    raw_text: str
+    total_main_questions: int
+    sub_questions_per_main: int
+
+class PaperUpload(BaseModel):
+    user_id: str
+    raw_text: str
+    total_main_questions: int
+    sub_questions_per_main: int
+
 
 # ------------------------------------------------------------
 # 2. MAIN EVALUATION INPUT (student only)
