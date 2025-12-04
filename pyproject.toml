@@ -4,21 +4,31 @@ version = "0.1.0"
 description = "Sinhala Essay Evaluation System with AI Feedback"
 readme = "README.md"
 requires-python = ">=3.9"
+
 dependencies = [
-    "fastapi>=0.104.0",
-    "uvicorn[standard]>=0.24.0",
+    "fastapi>=0.123.0",
+    "uvicorn[standard]>=0.38.0",
     "sentence-transformers>=2.2.0",
     "rank-bm25>=0.2.0",
-    "google-generativeai>=0.3.0",
-    "torch>=2.0.0",
-    "numpy>=1.24.0",
-    "pydantic>=2.0.0",
+    "google-generativeai>=0.8.5",
+    "google-api-python-client>=2.187.0",
+    "torch>=2.9.0",
+    "numpy>=2.2.0",
+    "pydantic>=2.12.0",
     "python-multipart>=0.0.6",
     "python-dotenv>=1.0.0",
-    "firebase-admin>=6.2.0",
-    "pillow>=10.0.0",
+    "pillow>=12.0.0",
     "aiofiles>=23.0.0",
-    "python-jose[cryptography]>=3.3.0",  # Optional for JWT
+    "python-jose[cryptography]>=3.3.0",
+    "opencv-python>=4.12.0",
+    "scikit-learn>=1.7.0",
+    "scipy>=1.16.0",
+    "transformers>=4.57.0",
+    "tqdm>=4.67.0",
+    "librosa>=0.11.0",
+    "soundfile>=0.13.0",
+    "pdf2image>=1.17.0",
+    "pytesseract>=0.3.13",
 ]
 
 [project.optional-dependencies]
