@@ -16,14 +16,22 @@ from app.components.evaluation.schemas.evaluation_schema import (
     FinalEvaluationResponse
 )
 
-from app.shared.models.syllabus import Syllabus,builder,user
+from app.shared.models.syllabus import Syllabus
 from app.shared.models.question import Question
 from app.shared.models.rubric import Rubric
 from app.shared.models.marks import Marks
 from app.shared.models.paper_settings import PaperSettings
 
 from app.components.evaluation.services.evaluator import run_evaluation
-from app.components.evaluation.utils.question_numbering import build_numbered_questions
+
+from app.shared.models.paper_data import PaperData
+from app.components.evaluation.utils.question_numbering import (
+    normalize_ocr_text,
+    build_numbered_questions
+)
+from app.components.evaluation.schemas.evaluation_schema import OCRProcessedUpload
+from app.shared.models.question_paper import UserQuestionPaper
+from app.components.evaluation.schemas.evaluation_schema import PaperUpload
 
 
 router = APIRouter(prefix="/evaluation", tags=["Evaluation"])
@@ -225,8 +233,86 @@ def preview_questions(payload: PreviewRequest):
         "status": "success",
         "structured_questions": structured
     }
+# -----------------------------------------------------------------------------------
+# ocr-processed structured questions upload
+# -----------------------------------------------------------------------------------
+@router.post("/upload/ocr-processed")
+def upload_ocr_processed(payload: OCRProcessedUpload, db: Session = Depends(get_db)):
 
+    # 1. Normalize OCR text
+    cleaned = normalize_ocr_text(payload.raw_text)
 
+    # 2. Auto-generate structured questions
+    structured = build_numbered_questions(
+        raw_text=cleaned,
+        total_main=payload.total_main_questions,
+        sub_count=payload.sub_questions_per_main
+    )
+
+    # 3. Save to DB
+    existing = db.query(PaperData).filter_by(user_id=payload.user_id).first()
+
+    if existing:
+        existing.cleaned_text = cleaned
+        existing.structured_questions = structured
+    else:
+        db.add(PaperData(
+            user_id=payload.user_id,
+            cleaned_text=cleaned,
+            structured_questions=structured
+        ))
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "OCR processed paper saved",
+        "cleaned_text": cleaned[:300],
+        "structured_questions_preview": structured
+    }
+
+# -----------------------------------------------------------------------------------
+# OCR-paper storage + automatic structured question loading for evaluation.
+# -----------------------------------------------------------------------------------
+
+@router.post("/upload-paper")
+def upload_question_paper(payload: PaperUpload, db: Session = Depends(get_db)):
+
+    # 1. Normalize OCR text
+    cleaned = normalize_ocr_text(payload.raw_text)
+
+    # 2. Build structured numbered questions
+    structured = build_numbered_questions(
+        raw_text=cleaned,
+        total_main=payload.total_main_questions,
+        sub_count=payload.sub_questions_per_main
+    )
+
+    # 3. Save to DB (overwrite previous)
+    existing = db.query(UserQuestionPaper).filter_by(user_id=payload.user_id).first()
+
+    if existing:
+        existing.raw_text = payload.raw_text
+        existing.cleaned_text = cleaned
+        existing.structured_questions = structured
+        existing.total_main_questions = payload.total_main_questions
+        existing.sub_questions_per_main = payload.sub_questions_per_main
+    else:
+        db.add(UserQuestionPaper(
+            user_id=payload.user_id,
+            raw_text=payload.raw_text,
+            cleaned_text=cleaned,
+            structured_questions=structured,
+            total_main_questions=payload.total_main_questions,
+            sub_questions_per_main=payload.sub_questions_per_main
+        ))
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "structured_questions": structured
+    }
 
 # -----------------------------------------------------------------------------------
 # EVALUATE

@@ -7,6 +7,8 @@ from app.shared.models.question import Question
 from app.shared.models.rubric import Rubric
 from app.shared.models.marks import Marks
 from app.shared.models.paper_settings import PaperSettings
+from app.shared.models.question_paper import UserQuestionPaper
+
 
 from app.components.evaluation.schemas.evaluation_schema import (
     FinalEvaluationResponse,
@@ -43,17 +45,20 @@ def run_evaluation(user_id: str, student_answers: dict, language: str, db: Sessi
     # 1. Load saved teacher configuration
     # ------------------------------------------------------------
     syllabus = db.query(Syllabus).filter_by(user_id=user_id).first()
-    questions = db.query(Question).filter_by(user_id=user_id).first()
+    qp = db.query(UserQuestionPaper).filter_by(user_id=user_id).first()
+    if not qp:
+        raise Exception("No question paper uploaded. Use /evaluation/upload-paper.")
+
     rubric = db.query(Rubric).filter_by(user_id=user_id).first()
     marks = db.query(Marks).filter_by(user_id=user_id).first()
     paper = db.query(PaperSettings).filter_by(user_id=user_id).first()
 
-    if not syllabus or not questions or not rubric or not marks or not paper:
+    if not syllabus or not qp or not rubric or not marks or not paper:
         print("ERROR: Missing teacher configuration")
         raise Exception("Teacher configuration incomplete. All uploads required.")
 
     syllabus_chunks = syllabus.syllabus_chunks
-    question_dict = questions.questions
+    question_dict = qp.structured_questions
     marks_distribution = marks.marks_distribution
 
     rubric_weights = {
