@@ -14,6 +14,8 @@ async def generate_text_embedding(text: str) -> list[float]:
     """
 
     cleaned = basic_clean(text)
+    # # Optional: chunking can be added here if needed
+    # chunks = chunk_text(cleaned)
     vector = generate_embedding(cleaned)
 
     return vector
