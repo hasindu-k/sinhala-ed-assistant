@@ -1,15 +1,19 @@
 # app/components/document_processing/services/embedding_service.py
 
-import random
+from app.shared.ai.embeddings import generate_embedding
+from app.components.document_processing.utils.text_cleaner import basic_clean
+# from app.components.document_processing.utils.chunker import chunk_text
 
-# Later: integrate real Gemini or Gecko embedding here
 
 async def generate_text_embedding(text: str) -> list[float]:
     """
-    Stub: returns a random 10-dim embedding.
-    TODO:
-    - Use Gemini / text-embedding-004
-    - Call Google API
+    Component-specific text embedding logic:
+    - Clean text
+    - (Optional) Chunk text
+    - Call the shared embedding generator
     """
-    random.seed(42)  # deterministic for now
-    return [random.random() for _ in range(10)]
+
+    cleaned = basic_clean(text)
+    vector = generate_embedding(cleaned)
+
+    return vector

@@ -1,12 +1,46 @@
 # app/components/document_processing/utils/text_cleaner.py
 
 import re
+import unicodedata
+
+def normalize_sinhala(text: str) -> str:
+    """
+    Normalize Sinhala Unicode to avoid duplicated diacritics,
+    OCR glitches, or mixed normalization forms.
+    """
+    return unicodedata.normalize("NFC", text)
+
+
+def remove_weird_chars(text: str) -> str:
+    """
+    Remove OCR garbage characters but keep Sinhala + English + numbers.
+    """
+    text = re.sub(r"[^\u0D80-\u0DFFa-zA-Z0-9\s.,;:?!()\"'\-]", " ", text)
+    return text
+
 
 def basic_clean(text: str) -> str:
     """
-    Very simple text cleaner.
-    TODO: Improve for Sinhala script normalization.
+    Basic cleaning pipeline for Sinhala OCR text.
+    Removes noise but keeps meaning safe.
     """
-    text = text.strip()
+
+    if not text:
+        return ""
+
+    # Step 1: Unicode normalization (critical for Sinhala)
+    text = normalize_sinhala(text)
+
+    # Step 2: Remove strange OCR characters
+    text = remove_weird_chars(text)
+
+    # Step 3: Replace multiple spaces with single space
     text = re.sub(r"\s+", " ", text)
+
+    # Step 4: Trim
+    text = text.strip()
+    
+    # log cleaned text
+    print(f"Cleaned text: {text}")
+
     return text
