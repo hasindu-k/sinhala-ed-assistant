@@ -14,24 +14,10 @@ from app.components.evaluation.routers.evaluation_router import router as evalua
 Base.metadata.create_all(bind=engine)
 
 
-# ------------------------------------------------------------
-# FastAPI App
-# ------------------------------------------------------------
-app = FastAPI(
-    title="SinhalaLearn Backend",
-    description="AI-Powered Sinhala Education Assistant API",
-    version="1.0.0"
-)
-
 
 # ------------------------------------------------------------
 # CORS (Allow web + mobile frontend)
 # ------------------------------------------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],      # change later to your domains
-from app.api.v1.router import api_router
-
 app = FastAPI(
     title="Sinhala Educational Assistant API",
     version="1.0.0",
