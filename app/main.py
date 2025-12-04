@@ -30,6 +30,18 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],      # change later to your domains
+from app.api.v1.router import api_router
+
+app = FastAPI(
+    title="Sinhala Educational Assistant API",
+    version="1.0.0",
+    description="Backend for Sinhala Document Processing, Q&A, Evaluation, and Voice features.",
+)
+
+# CORS (adjust origins for your frontend later)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # TODO: restrict in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
