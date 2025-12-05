@@ -15,6 +15,7 @@ from app.components.document_processing.services.embedding_service import (
     embed_chunks,
     embed_document_text,
 )
+from app.components.document_processing.services.classifier_service import classify_document
 
 async def process_ocr_file(file: UploadFile) -> dict:
     """
@@ -59,6 +60,7 @@ async def process_ocr_file(file: UploadFile) -> dict:
 
         extracted_text += f"\n\n--- PAGE {page_count} ---\n{text}"
     
+    doc_type = classify_document(extracted_text)
     # 3. Generate chunk-level embeddings (clean + chunk inside)
     embedded_chunks = await embed_chunks(extracted_text)
     
@@ -70,6 +72,7 @@ async def process_ocr_file(file: UploadFile) -> dict:
     filename=file.filename,
     full_text=extracted_text,
     pages=page_count,
+    doc_type=doc_type,
     chunks=embedded_chunks  # list of {chunk_id,text,embedding}
     )
 
