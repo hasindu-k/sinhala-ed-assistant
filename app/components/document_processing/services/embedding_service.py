@@ -8,27 +8,19 @@ from app.components.document_processing.utils.chunker import chunk_text
 
 def generate_text_embedding(text: str) -> List[float]:
     """
-    Component-specific text embedding logic:
-    - Clean text
-    - Call the shared embedding generator
+    Clean and embed text using Gemini.
     """
-
     cleaned = basic_clean(text)
     if not cleaned:
         return []
 
-    vector = generate_embedding(cleaned)
-    return vector
+    return generate_embedding(cleaned)
 
 
 def embed_document_text(text: str) -> List[float]:
     """
-    Generate embedding for the full extracted text.
-    This is useful for:
-    - global similarity
-    - quick "overall document" search
+    Generate full-document embedding.
     """
-
     if not text or not text.strip():
         return []
 
@@ -36,48 +28,53 @@ def embed_document_text(text: str) -> List[float]:
     if not cleaned:
         return []
 
-    vector = generate_embedding(cleaned)
-    return vector
+    return generate_embedding(cleaned)
 
 
 def embed_chunks(
     text: str,
+    doc_id: str,
     max_tokens: int = 300,
-    overlap_tokens: int = 30,
+    overlap_tokens: int = 30
 ) -> List[Dict]:
     """
-    Generate embeddings for text chunks.
+    Chunk text → embed each chunk → add metadata.
 
-    Steps:
-    - Clean the full text
-    - Chunk it into ~max_tokens segments
-    - Generate embedding per chunk
-    - Return list of {chunk_id, text, embedding}
+    Returns:
+    [
+      {
+        "chunk_id": 0,
+        "global_id": "<doc_id>_0",
+        "text": "...",
+        "numbering": "1.1",
+        "embedding": [...]
+      }
+    ]
     """
 
     if not text or not text.strip():
         return []
 
     cleaned = basic_clean(text)
-    if not cleaned:
-        return []
 
-    chunks = chunk_text(cleaned, max_tokens=max_tokens, overlap_tokens=overlap_tokens)
+    # chunk_text returns: [{chunk_id, text, numbering}]
+    chunk_list = chunk_text(cleaned, max_tokens=max_tokens, overlap_tokens=overlap_tokens)
 
-    results: List[Dict] = []
-    for idx, ch in enumerate(chunks):
-        if not ch.strip():
-            continue
+    results = []
 
-        # We can call generate_embedding directly because `chunks` are already cleaned.
-        vec = generate_embedding(ch)
+    for ch in chunk_list:
+        c_text = ch["text"]
+        c_id = ch["chunk_id"]
+        c_numbering = ch.get("numbering")
 
-        results.append(
-            {
-                "chunk_id": idx,
-                "text": ch,
-                "embedding": vec,
-            }
-        )
+        vec = generate_embedding(c_text)
+
+        results.append({
+            "chunk_id": c_id,
+            "global_id": f"{doc_id}_{c_id}",
+            "text": c_text,
+            "numbering": c_numbering,
+            "embedding": vec
+        })
 
     return results

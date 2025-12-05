@@ -7,88 +7,118 @@ import numpy as np
 from pdf2image import convert_from_path
 import pytesseract
 from PIL import Image
-from app.models.document import OCRDocument
+from bson import ObjectId
 
 from app.models.document import OCRDocument
 from app.components.document_processing.utils.file_loader import save_upload_to_temp
+from app.components.document_processing.utils.text_cleaner import basic_clean
 from app.components.document_processing.services.embedding_service import (
     embed_chunks,
     embed_document_text,
 )
 from app.components.document_processing.services.classifier_service import classify_document
 
+
 async def process_ocr_file(file: UploadFile) -> dict:
     """
     Full OCR pipeline:
-    1. Save uploaded file to temporary location
-    2. Detect PDF or image
-    3. Convert PDF pages -> images (if PDF)
-    4. Run Tesseract OCR on each page
-    5. Clean + chunk + embed text with Gemini
-    6. Insert OCRDocument into DB
-    7. Return structured response
+    1. Save file
+    2. Convert PDF → Images
+    3. Run OCR (Sinhala + English)
+    4. Clean text
+    5. Classify document type
+    6. Chunk + embed with numbering
+    7. Insert into DB
+    8. Return structured result
     """
 
-    # 1. Save file to temp
+    # -----------------------------
+    # 1. Save uploaded file temporarily
+    # -----------------------------
     temp_path = await save_upload_to_temp(file)
     ext = file.filename.split(".")[-1].lower()
 
-    # 2. Detect PDF or image
-    is_pdf = ext == "pdf"
-
-    if is_pdf:
-        images = convert_from_path(temp_path)  # List of PIL images
+    # -----------------------------
+    # 2. Detect PDF or Image
+    # -----------------------------
+    if ext == "pdf":
+        images = convert_from_path(temp_path)
     else:
-        images = [Image.open(temp_path)]       # Single PIL image
+        images = [Image.open(temp_path)]
 
     extracted_text = ""
     page_count = 0
 
+    # -----------------------------
+    # 3. OCR every page
+    # -----------------------------
     for pil_img in images:
         page_count += 1
 
-        # -----------------------------
-        # Convert PIL → OpenCV (BGR)
-        # -----------------------------
         img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-
-        # Convert to grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # Run OCR
+        # Sinhala + English OCR
         text = pytesseract.image_to_string(gray, lang="sin+eng")
 
         extracted_text += f"\n\n--- PAGE {page_count} ---\n{text}"
-    
-    doc_type = classify_document(extracted_text)
-    # 3. Generate chunk-level embeddings (clean + chunk inside)
-    embedded_chunks = await embed_chunks(extracted_text)
-    
-    # 4. Generate a single full-document embedding (for global search)
-    full_embedding = embed_document_text(extracted_text)
 
-    # 5. Build OCRDocument model and insert into DB
+    # -----------------------------
+    # 4. Clean OCR text before classification + chunking + embedding
+    # -----------------------------
+    cleaned_text = basic_clean(extracted_text)
+
+    # -----------------------------
+    # 5. Automatic Document Classifier
+    # -----------------------------
+    doc_type = classify_document(cleaned_text)
+
+    # -----------------------------
+    # 6. Generate doc_id BEFORE embeddings
+    # -----------------------------
+    doc_id = str(ObjectId())
+
+    # -----------------------------
+    # 7. Chunk-level embeddings (includes numbering + global_id)
+    # -----------------------------
+    embedded_chunks = embed_chunks(cleaned_text, doc_id=doc_id)
+
+    # -----------------------------
+    # 8. Full document embedding
+    # -----------------------------
+    full_embedding = embed_document_text(cleaned_text)
+
+    # -----------------------------
+    # 9. Save to Database
+    # -----------------------------
     doc = OCRDocument(
-    filename=file.filename,
-    full_text=extracted_text,
-    pages=page_count,
-    doc_type=doc_type,
-    chunks=embedded_chunks  # list of {chunk_id,text,embedding}
+        _id=doc_id,
+        filename=file.filename,
+        full_text=cleaned_text,
+        pages=page_count,
+        doc_type=doc_type,
+        chunks=embedded_chunks
     )
 
     await doc.insert()
 
-    # 6. Try to remove temp file
+    # -----------------------------
+    # 10. Remove temp file
+    # -----------------------------
     try:
         os.remove(temp_path)
     except Exception as e:
         print(f"[WARN] Failed to remove temp file {temp_path}: {e}")
 
-    # 7. Return results
+    # -----------------------------
+    # 11. Return result to API
+    # -----------------------------
     return {
+        "doc_id": doc_id,
         "filename": file.filename,
         "pages": page_count,
-        "text": extracted_text.strip(),
+        "doc_type": doc_type,
+        "text": cleaned_text.strip(),
         # full-document embedding info
         "embedding_dim": len(full_embedding) if full_embedding else 0,
         "embedding": full_embedding,

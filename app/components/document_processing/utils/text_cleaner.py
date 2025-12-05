@@ -13,9 +13,10 @@ def normalize_sinhala(text: str) -> str:
 
 def remove_weird_chars(text: str) -> str:
     """
-    Remove OCR garbage characters but keep Sinhala + English + numbers.
+    Remove garbage but keep Sinhala + English + numbers + numbering symbols.
     """
-    text = re.sub(r"[^\u0D80-\u0DFFa-zA-Z0-9\s.,;:?!()\"'\-]", " ", text)
+    allowed = r"[^\u0D80-\u0DFFa-zA-Z0-9\s\.\-\(\)\[\]\/:;]"
+    text = re.sub(allowed, " ", text)
     return text
 
 

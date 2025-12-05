@@ -1,7 +1,8 @@
 # app/components/document_processing/utils/chunker.py
 
 import re
-from typing import List
+from typing import List, Dict
+from app.components.document_processing.utils.numbering import extract_numbering
 
 
 def split_into_sentences(text: str) -> List[str]:
@@ -18,52 +19,77 @@ def split_into_sentences(text: str) -> List[str]:
 
 
 def approximate_token_count(text: str) -> int:
-    """
-    Approximate tokens. Gemini uses ~1 token ≈ 3-4 characters avg.
-    We use 4 chars per token as a rough estimate.
-    """
+    """Approximate tokens using ~4 characters per token."""
     return max(1, len(text) // 4)
 
 
-def chunk_text(text: str, max_tokens: int = 300, overlap_tokens: int = 30) -> List[str]:
+def chunk_text(
+    text: str,
+    max_tokens: int = 300,
+    overlap_tokens: int = 30
+) -> List[Dict]:
     """
-    Smart chunking for Sinhala/English documents.
-    Splits text into ~max_tokens chunks with slight overlaps (character-based).
-
-    NOTE:
-    - overlap_tokens is approximate tokens, converted to characters (tokens * 4)
-    - Overlap is taken from the end of the previous chunk
+    Chunk text into metadata chunks:
+    Each chunk contains:
+    - chunk_id
+    - text
+    - numbering (first detected numbering in chunk)
     """
 
     sentences = split_into_sentences(text)
-    chunks: List[str] = []
 
-    current_chunk = ""
-    current_tokens = 0
+    chunks: List[Dict] = []
+
+    current_chunk_text = ""
+    current_chunk_tokens = 0
+    current_chunk_numberings = []
+
+    chunk_id = 0
 
     for sentence in sentences:
+        numbering = extract_numbering(sentence)
         sentence_tokens = approximate_token_count(sentence)
 
-        # If adding this sentence exceeds max_tokens, finalize chunk
-        if current_tokens + sentence_tokens > max_tokens and current_chunk:
-            chunks.append(current_chunk.strip())
+        # Will this exceed max size?
+        if current_chunk_tokens + sentence_tokens > max_tokens and current_chunk_text:
+            # ---- finalize current chunk ----
+            chunks.append({
+                "chunk_id": chunk_id,
+                "text": current_chunk_text.strip(),
+                "numbering": current_chunk_numberings[0] if current_chunk_numberings else None
+            })
+            chunk_id += 1
 
-            # Start new chunk with overlap from previous end
+            # ---- overlap logic ----
             if overlap_tokens > 0:
                 overlap_chars = overlap_tokens * 4
-                tail = current_chunk[-overlap_chars:]
-                current_chunk = tail + " "
+                tail = current_chunk_text[-overlap_chars:]
+                current_chunk_text = tail + " "
+                current_chunk_tokens = approximate_token_count(current_chunk_text)
+
+                # extract numbering from overlapped tail
+                first_line = current_chunk_text.strip().split("\n")[0]
+                overlap_num = extract_numbering(first_line)
+                current_chunk_numberings = [overlap_num] if overlap_num else []
+
             else:
-                current_chunk = ""
+                current_chunk_text = ""
+                current_chunk_tokens = 0
+                current_chunk_numberings = []
 
-            current_tokens = approximate_token_count(current_chunk)
+        # ---- append sentence to chunk ----
+        current_chunk_text += sentence + " "
+        current_chunk_tokens += sentence_tokens
 
-        # Add sentence
-        current_chunk += sentence + " "
-        current_tokens += sentence_tokens
+        if numbering:
+            current_chunk_numberings.append(numbering)
 
-    # Add final chunk
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
+    # ---- final chunk ----
+    if current_chunk_text.strip():
+        chunks.append({
+            "chunk_id": chunk_id,
+            "text": current_chunk_text.strip(),
+            "numbering": current_chunk_numberings[0] if current_chunk_numberings else None
+        })
 
     return chunks
