@@ -7,9 +7,10 @@ import numpy as np
 from pdf2image import convert_from_path
 import pytesseract
 from PIL import Image
+from app.models.document import OCRDocument
 
 from app.components.document_processing.utils.file_loader import save_upload_to_temp
-
+from app.components.document_processing.services.embedding_service import embed_chunks
 
 async def process_ocr_file(file: UploadFile) -> dict:
     """
@@ -51,6 +52,17 @@ async def process_ocr_file(file: UploadFile) -> dict:
         text = pytesseract.image_to_string(gray, lang="sin+eng")
 
         extracted_text += f"\n\n--- PAGE {page_count} ---\n{text}"
+    
+    embedded_chunks = await embed_chunks(extracted_text)
+
+    doc = OCRDocument(
+    filename=file.filename,
+    full_text=extracted_text,
+    pages=page_count,
+    chunks=embedded_chunks  # list of {chunk_id,text,embedding}
+    )
+
+    await doc.insert()
 
     # 4. Try to remove temp file
     try:
@@ -63,4 +75,6 @@ async def process_ocr_file(file: UploadFile) -> dict:
         "filename": file.filename,
         "pages": page_count,
         "text": extracted_text.strip(),
+        "embedding_dim": len(embedding) if embedding else 0,
+        "embedding": embedding,
     }

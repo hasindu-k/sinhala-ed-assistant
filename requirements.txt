@@ -2,6 +2,7 @@ annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.12.0
 audioread==3.1.0
+beanie==2.0.1
 build==1.3.0
 cachetools==6.2.2
 certifi==2025.11.12
@@ -9,6 +10,7 @@ cffi==2.0.0
 charset-normalizer==3.4.4
 click==8.3.1
 decorator==5.2.1
+dnspython==2.8.0
 fastapi==0.123.4
 filelock==3.20.0
 fsspec==2025.12.0
@@ -28,10 +30,12 @@ huggingface-hub==0.36.0
 idna==3.11
 Jinja2==3.1.6
 joblib==1.5.2
+lazy-model==0.4.0
 lazy_loader==0.4
 librosa==0.11.0
 llvmlite==0.45.1
 MarkupSafe==3.0.3
+motor==3.7.1
 mpmath==1.3.0
 msgpack==1.1.2
 networkx==3.6
@@ -56,7 +60,6 @@ opencv-python==4.12.0.88
 packaging==25.0
 pdf2image==1.17.0
 pillow==12.0.0
-pip-tools==7.5.2
 platformdirs==4.5.0
 pooch==1.8.2
 proto-plus==1.26.1
@@ -66,6 +69,7 @@ pyasn1_modules==0.4.2
 pycparser==2.23
 pydantic==2.12.5
 pydantic_core==2.41.5
+pymongo==4.15.5
 pyparsing==3.2.5
 pyproject_hooks==1.2.0
 pytesseract==0.3.13
