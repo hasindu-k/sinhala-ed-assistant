@@ -5,77 +5,154 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ------------------------------------------------------------
+# MAIN QUESTION PATTERN (supports: 1. , 2. , 10. )
+# ------------------------------------------------------------
+MAIN_PATTERN = re.compile(r'^(\d{1,2})\.\s*$')
 
-def normalize_ocr_text(raw: str) -> str:
-    logger.info("Raw OCR text received: %s", raw[:300])
 
-    text = raw.replace("\n", " ").replace("\t", " ").strip()
-    text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"(\d+)\s*[\.\)]", r"\1.", text)
+# ------------------------------------------------------------
+# SUB QUESTION PATTERN
+# Supports:
+#   i)   ii)   iii)   iv)
+#   a)   b)    c)
+#   A)   B)
+# ------------------------------------------------------------
+SUB_PATTERN = re.compile(
+    r'^('
+    r'[a-zA-Z]'             # A, B, C, a, b, c
+    r'|'
+    r'i{1,3}|iv|v'          # i, ii, iii, iv, v
+    r')\)\s*(.*)$'
+)
 
-    logger.info("Normalized text: %s", text[:300])
+
+# ------------------------------------------------------------
+# CLEAN TEXT: remove extra spaces, OCR junk
+# ------------------------------------------------------------
+def clean_text(text: str) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    text = re.sub(r'\s+', ' ', text)
     return text
 
 
-def split_into_main_blocks(text: str, total_main: int) -> list:
-    logger.info("Splitting into main question blocks...")
-
-    pattern = r"(\d\.)"
-    parts = re.split(pattern, text)
-
-    blocks = []
-    for i in range(1, len(parts), 2):
-        number = parts[i]
-        content = parts[i+1]
-        block = f"{number} {content}".strip()
-        blocks.append(block)
-        logger.info("Detected block: %s", block[:200])
-
-    logger.info("Total main blocks detected: %s", len(blocks))
-    return blocks[:total_main]
-
-
-def extract_subquestions(block: str, expected_sub_count: int) -> list:
-    logger.info("Extracting sub-questions from block: %s", block[:200])
-
-    block = block.replace("\u201c", '"').replace("\u201d", '"')
-
-    # 1. Quoted questions
-    quoted = re.findall(r'"([^"]+)"', block)
-    if quoted:
-        logger.info("Found quoted subquestions: %s", quoted)
-        return quoted[:expected_sub_count]
-
-    # 2. Comma separated
-    parts = [p.strip() for p in block.split(",") if len(p.strip()) > 5]
-    if len(parts) >= expected_sub_count:
-        logger.info("Found comma-separated subquestions: %s", parts)
-        return parts[:expected_sub_count]
-
-    # 3. Split by question marks
-    q_parts = re.split(r"\?\s*", block)
-    cleaned = [q.strip() + "?" for q in q_parts if len(q.strip()) > 5]
-
-    logger.info("Found question-mark separated subquestions: %s", cleaned)
-    return cleaned[:expected_sub_count]
-
-
+# ------------------------------------------------------------
+# MAIN FUNCTION: BUILD STRUCTURED QUESTION OUTPUT
+# ------------------------------------------------------------
 def build_numbered_questions(raw_text: str, total_main: int, sub_count: int) -> dict:
-    logger.info("=== Building structured question numbering ===")
-    cleaned = normalize_ocr_text(raw_text)
+    """
+    Universal question numbering module.
+    Works with Hasindu's cleaned OCR output:
 
-    main_blocks = split_into_main_blocks(cleaned, total_main)
-    result = {}
+        1.
+        i) ...
+        ii) ...
+        iii) ...
+        iv) ...
 
-    for i, block in enumerate(main_blocks):
-        main_number = i + 1
-        subs = extract_subquestions(block, sub_count)
+        2.
+        i) ...
+        ii) ...
+        ...
 
-        for j, sq in enumerate(subs):
-            letter = chr(ord("a") + j)
-            qid = f"Q{main_number:02}_{letter}"
-            result[qid] = sq
-            logger.info("Created question ID %s: %s", qid, sq)
+    Produces:
+        Q01_a, Q01_b, Q01_c, Q01_d
+        Q02_a, Q02_b, ...
+    """
 
-    logger.info("Final structured questions: %s", result)
-    return result
+    if not raw_text:
+        return {}
+
+    lines = raw_text.splitlines()
+    questions = {}
+
+    current_main = None
+    current_sub_index = None
+    buffer = []
+
+    # --------------------------------------------------------
+    # Helper function: store subquestion
+    # --------------------------------------------------------
+    def store_subquestion(main_no, idx, text):
+        if main_no is None or idx is None:
+            return
+        if idx >= sub_count:
+            return
+
+        cleaned = clean_text(text)
+        letter = chr(ord("a") + idx)
+        qid = f"Q{int(main_no):02d}_{letter}"
+
+        questions[qid] = cleaned
+        logger.info(f"[STORE] {qid}: {cleaned}")
+
+    # --------------------------------------------------------
+    # Process line-by-line
+    # --------------------------------------------------------
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # ---------------------------
+        # Detect MAIN question
+        # ---------------------------
+        m_main = MAIN_PATTERN.match(stripped)
+        if m_main:
+            # Save previous subquestion before switching
+            if current_main and current_sub_index is not None and buffer:
+                store_subquestion(current_main, current_sub_index, " ".join(buffer))
+
+            current_main = int(m_main.group(1))
+            current_sub_index = None
+            buffer = []
+            continue
+
+        # ---------------------------
+        # Detect SUB question
+        # ---------------------------
+        m_sub = SUB_PATTERN.match(stripped)
+        if m_sub:
+            text_after_marker = m_sub.group(2).strip()
+
+            # Save previous subquestion
+            if current_main and current_sub_index is not None and buffer:
+                store_subquestion(current_main, current_sub_index, " ".join(buffer))
+
+            # Assign next sub index
+            current_sub_index = 0 if current_sub_index is None else current_sub_index + 1
+
+            if current_sub_index < sub_count:
+                buffer = []
+                if text_after_marker:
+                    buffer.append(text_after_marker)
+            else:
+                # More subquestions than expected → treat as continuation text
+                current_sub_index -= 1
+                buffer.append(stripped)
+
+            continue
+
+        # ---------------------------
+        # Normal text → part of subquestion
+        # ---------------------------
+        buffer.append(stripped)
+
+    # --------------------------------------------------------
+    # Save last subquestion if exists
+    # --------------------------------------------------------
+    if current_main and current_sub_index is not None and buffer:
+        store_subquestion(current_main, current_sub_index, " ".join(buffer))
+
+    # --------------------------------------------------------
+    # Only return up to requested main questions
+    # --------------------------------------------------------
+    final = {}
+    for qid in sorted(questions.keys()):
+        main_num = int(qid[1:3])
+        if main_num <= total_main:
+            final[qid] = questions[qid]
+
+    return final

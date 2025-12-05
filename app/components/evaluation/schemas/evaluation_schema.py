@@ -54,6 +54,12 @@ class PaperUpload(BaseModel):
     total_main_questions: int
     sub_questions_per_main: int
 
+class AnswerUpload(BaseModel):
+    user_id: str
+    raw_text: str
+    total_main_questions: int
+    subquestions_per_main: int
+
 
 # ------------------------------------------------------------
 # 2. MAIN EVALUATION INPUT (student only)
