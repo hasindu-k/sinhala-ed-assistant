@@ -16,5 +16,5 @@ async def run_ocr(file: UploadFile = File(...)):
     if not file.content_type.startswith("image/") and "pdf" not in file.content_type:
         raise HTTPException(status_code=400, detail="Only image/PDF files are supported")
 
-    text = await process_ocr_file(file)
-    return {"text": text}
+    result = await process_ocr_file(file)
+    return result
