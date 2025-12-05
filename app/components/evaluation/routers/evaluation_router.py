@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 
+# Schemas
 from app.components.evaluation.schemas.evaluation_schema import (
     SyllabusUpload,
     QuestionUpload,
@@ -13,37 +14,35 @@ from app.components.evaluation.schemas.evaluation_schema import (
     MarksUpload,
     PaperSettingsUpload,
     EvaluationRequest,
-    FinalEvaluationResponse
+    FinalEvaluationResponse,
+    OCRProcessedUpload,
+    PaperUpload,
+    AnswerUpload
 )
 
+# DB Models
 from app.shared.models.syllabus import Syllabus
 from app.shared.models.question import Question
 from app.shared.models.rubric import Rubric
 from app.shared.models.marks import Marks
 from app.shared.models.paper_settings import PaperSettings
-
-from app.components.evaluation.services.evaluator import run_evaluation
-
 from app.shared.models.paper_data import PaperData
-from app.components.evaluation.utils.question_numbering import (
-    normalize_ocr_text,
-    build_numbered_questions
-)
-from app.components.evaluation.schemas.evaluation_schema import OCRProcessedUpload
 from app.shared.models.question_paper import UserQuestionPaper
-from app.components.evaluation.schemas.evaluation_schema import PaperUpload
-
 from app.shared.models.user_answers import UserAnswers
+
+# Parsing utils
+from app.components.evaluation.utils.question_numbering import build_numbered_questions
 from app.components.evaluation.utils.answer_numbering import build_numbered_answers
-from app.components.evaluation.schemas.evaluation_schema import AnswerUpload
+
+# Evaluator
+from app.components.evaluation.services.evaluator import run_evaluation
 
 router = APIRouter(prefix="/evaluation", tags=["Evaluation"])
 
 
-
-# -----------------------------------------------------------------------------------
-# UPLOAD SYLLABUS
-# -----------------------------------------------------------------------------------
+# =====================================================================
+# 1. Upload syllabus
+# =====================================================================
 @router.post("/upload/syllabus")
 def upload_syllabus(payload: SyllabusUpload, db: Session = Depends(get_db)):
 
@@ -62,9 +61,9 @@ def upload_syllabus(payload: SyllabusUpload, db: Session = Depends(get_db)):
 
 
 
-# -----------------------------------------------------------------------------------
-# UPLOAD QUESTIONS DIRECTLY (manual upload)
-# -----------------------------------------------------------------------------------
+# =====================================================================
+# 2. Manual question upload (developer use)
+# =====================================================================
 @router.post("/upload/questions")
 def upload_questions(payload: QuestionUpload, db: Session = Depends(get_db)):
 
@@ -83,10 +82,9 @@ def upload_questions(payload: QuestionUpload, db: Session = Depends(get_db)):
 
 
 
-# -----------------------------------------------------------------------------------
-# NEW: UPLOAD QUESTIONS FROM OCR-PREVIEW OUTPUT
-# -----------------------------------------------------------------------------------
-
+# =====================================================================
+# 3. Upload questions (from OCR Preview)
+# =====================================================================
 class UploadFromPreviewRequest(BaseModel):
     user_id: str
     raw_text: str
@@ -98,14 +96,12 @@ class UploadFromPreviewRequest(BaseModel):
 def upload_questions_from_preview(payload: UploadFromPreviewRequest,
                                   db: Session = Depends(get_db)):
 
-    # 1. Build structured dict like {"Q01_a": "...", ...}
     structured = build_numbered_questions(
         raw_text=payload.raw_text,
         total_main=payload.total_main_questions,
         sub_count=payload.sub_questions_per_main
     )
 
-    # 2. Store in DB
     existing = db.query(Question).filter_by(user_id=payload.user_id).first()
 
     if existing:
@@ -126,9 +122,9 @@ def upload_questions_from_preview(payload: UploadFromPreviewRequest,
 
 
 
-# -----------------------------------------------------------------------------------
-# UPLOAD RUBRIC
-# -----------------------------------------------------------------------------------
+# =====================================================================
+# 4. Upload rubric
+# =====================================================================
 @router.post("/upload/rubric")
 def upload_rubric(payload: RubricUpload, db: Session = Depends(get_db)):
 
@@ -151,18 +147,17 @@ def upload_rubric(payload: RubricUpload, db: Session = Depends(get_db)):
 
 
 
-# -----------------------------------------------------------------------------------
-# UPLOAD MARKS
-# -----------------------------------------------------------------------------------
+# =====================================================================
+# 5. Upload marks distribution
+# =====================================================================
 @router.post("/upload/marks")
 def upload_marks(payload: MarksUpload, db: Session = Depends(get_db)):
 
-    paper = db.query(PaperSettings).filter_by(user_id=payload.user_id).first()
-
-    if paper and len(payload.marks_distribution) != paper.subquestions_per_main:
+    settings = db.query(PaperSettings).filter_by(user_id=payload.user_id).first()
+    if settings and len(payload.marks_distribution) != settings.subquestions_per_main:
         raise HTTPException(
             status_code=400,
-            detail=f"Marks array must have {paper.subquestions_per_main} values."
+            detail=f"Marks array must have {settings.subquestions_per_main} values"
         )
 
     existing = db.query(Marks).filter_by(user_id=payload.user_id).first()
@@ -176,20 +171,20 @@ def upload_marks(payload: MarksUpload, db: Session = Depends(get_db)):
         ))
 
     db.commit()
-    return {"status": "success", "message": "Marks distribution uploaded successfully"}
+    return {"status": "success", "message": "Marks uploaded successfully"}
 
 
 
-# -----------------------------------------------------------------------------------
-# UPLOAD PAPER SETTINGS
-# -----------------------------------------------------------------------------------
+# =====================================================================
+# 6. Upload paper settings
+# =====================================================================
 @router.post("/upload/paper-settings")
 def upload_paper_settings(payload: PaperSettingsUpload, db: Session = Depends(get_db)):
 
     if payload.required_main_questions > payload.total_main_questions:
         raise HTTPException(
             status_code=400,
-            detail="required_main_questions cannot exceed total_main_questions."
+            detail="required_main_questions cannot exceed total_main_questions"
         )
 
     existing = db.query(PaperSettings).filter_by(user_id=payload.user_id).first()
@@ -214,9 +209,9 @@ def upload_paper_settings(payload: PaperSettingsUpload, db: Session = Depends(ge
 
 
 
-# -----------------------------------------------------------------------------------
-# PREVIEW (unchanged)
-# -----------------------------------------------------------------------------------
+# =====================================================================
+# 7. Preview structured questions (before saving)
+# =====================================================================
 class PreviewRequest(BaseModel):
     raw_text: str
     total_main_questions: int
@@ -232,27 +227,25 @@ def preview_questions(payload: PreviewRequest):
         sub_count=payload.sub_questions_per_main
     )
 
-    return {
-        "status": "success",
-        "structured_questions": structured
-    }
-# -----------------------------------------------------------------------------------
-# ocr-processed structured questions upload
-# -----------------------------------------------------------------------------------
+    return {"status": "success", "structured_questions": structured}
+
+
+
+# =====================================================================
+# 8. Upload OCR-processed question paper
+# =====================================================================
 @router.post("/upload/ocr-processed")
 def upload_ocr_processed(payload: OCRProcessedUpload, db: Session = Depends(get_db)):
 
-    # 1. Normalize OCR text
-    cleaned = normalize_ocr_text(payload.raw_text)
+    # NO normalize_ocr_text any more — cleaned OCR is already provided
+    cleaned = payload.raw_text.strip()
 
-    # 2. Auto-generate structured questions
     structured = build_numbered_questions(
         raw_text=cleaned,
         total_main=payload.total_main_questions,
         sub_count=payload.sub_questions_per_main
     )
 
-    # 3. Save to DB
     existing = db.query(PaperData).filter_by(user_id=payload.user_id).first()
 
     if existing:
@@ -269,29 +262,27 @@ def upload_ocr_processed(payload: OCRProcessedUpload, db: Session = Depends(get_
 
     return {
         "status": "success",
-        "message": "OCR processed paper saved",
+        "message": "OCR processed questions saved",
         "cleaned_text": cleaned[:300],
         "structured_questions_preview": structured
     }
 
-# -----------------------------------------------------------------------------------
-# OCR-paper storage + automatic structured question loading for evaluation.
-# -----------------------------------------------------------------------------------
 
+
+# =====================================================================
+# 9. Upload question paper for evaluation use
+# =====================================================================
 @router.post("/upload-paper")
 def upload_question_paper(payload: PaperUpload, db: Session = Depends(get_db)):
 
-    # 1. Normalize OCR text
-    cleaned = normalize_ocr_text(payload.raw_text)
+    cleaned = payload.raw_text.strip()
 
-    # 2. Build structured numbered questions
     structured = build_numbered_questions(
         raw_text=cleaned,
         total_main=payload.total_main_questions,
         sub_count=payload.sub_questions_per_main
     )
 
-    # 3. Save to DB (overwrite previous)
     existing = db.query(UserQuestionPaper).filter_by(user_id=payload.user_id).first()
 
     if existing:
@@ -312,36 +303,29 @@ def upload_question_paper(payload: PaperUpload, db: Session = Depends(get_db)):
 
     db.commit()
 
-    return {
-        "status": "success",
-        "structured_questions": structured
-    }
+    return {"status": "success", "structured_questions": structured}
 
-# -----------------------------------------------------------------------------------
-# Upload Answers Endpoint + Save to DB
-# -----------------------------------------------------------------------------------
+
+
+# =====================================================================
+# 10. Upload student answers
+# =====================================================================
 @router.post("/upload/answers")
 def upload_answers(payload: AnswerUpload, db: Session = Depends(get_db)):
 
-    # 1. Load paper settings for this user
     settings = db.query(PaperSettings).filter_by(user_id=payload.user_id).first()
     if not settings:
         raise HTTPException(
             status_code=400,
-            detail="Paper settings not found. Upload paper settings first."
+            detail="Paper settings not found. Upload settings first."
         )
 
-    total_main = settings.total_main_questions
-    sub_count = settings.subquestions_per_main
-
-    # 2. Extract answers using the teacher-configured universal module
     numbered = build_numbered_answers(
         raw_text=payload.raw_text,
-        total_main_questions=total_main,
-        subquestions_per_main=sub_count
+        total_main_questions=settings.total_main_questions,
+        subquestions_per_main=settings.subquestions_per_main
     )
 
-    # 3. Save into DB (overwrite old answers)
     existing = db.query(UserAnswers).filter_by(user_id=payload.user_id).first()
 
     if existing:
@@ -354,7 +338,6 @@ def upload_answers(payload: AnswerUpload, db: Session = Depends(get_db)):
 
     db.commit()
 
-    # 4. Respond back to frontend
     return {
         "status": "success",
         "message": "Student answers stored successfully",
@@ -362,9 +345,10 @@ def upload_answers(payload: AnswerUpload, db: Session = Depends(get_db)):
     }
 
 
-# -----------------------------------------------------------------------------------
-# EVALUATE
-# -----------------------------------------------------------------------------------
+
+# =====================================================================
+# 11. Final evaluation
+# =====================================================================
 @router.post("/evaluate", response_model=FinalEvaluationResponse)
 def evaluate(payload: EvaluationRequest, db: Session = Depends(get_db)):
 
