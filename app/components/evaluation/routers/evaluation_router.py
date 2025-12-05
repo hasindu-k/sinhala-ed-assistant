@@ -33,6 +33,9 @@ from app.components.evaluation.schemas.evaluation_schema import OCRProcessedUplo
 from app.shared.models.question_paper import UserQuestionPaper
 from app.components.evaluation.schemas.evaluation_schema import PaperUpload
 
+from app.shared.models.user_answers import UserAnswers
+from app.components.evaluation.utils.answer_numbering import build_numbered_answers
+from app.components.evaluation.schemas.evaluation_schema import AnswerUpload
 
 router = APIRouter(prefix="/evaluation", tags=["Evaluation"])
 
@@ -313,6 +316,51 @@ def upload_question_paper(payload: PaperUpload, db: Session = Depends(get_db)):
         "status": "success",
         "structured_questions": structured
     }
+
+# -----------------------------------------------------------------------------------
+# Upload Answers Endpoint + Save to DB
+# -----------------------------------------------------------------------------------
+@router.post("/upload/answers")
+def upload_answers(payload: AnswerUpload, db: Session = Depends(get_db)):
+
+    # 1. Load paper settings for this user
+    settings = db.query(PaperSettings).filter_by(user_id=payload.user_id).first()
+    if not settings:
+        raise HTTPException(
+            status_code=400,
+            detail="Paper settings not found. Upload paper settings first."
+        )
+
+    total_main = settings.total_main_questions
+    sub_count = settings.subquestions_per_main
+
+    # 2. Extract answers using the teacher-configured universal module
+    numbered = build_numbered_answers(
+        raw_text=payload.raw_text,
+        total_main_questions=total_main,
+        subquestions_per_main=sub_count
+    )
+
+    # 3. Save into DB (overwrite old answers)
+    existing = db.query(UserAnswers).filter_by(user_id=payload.user_id).first()
+
+    if existing:
+        existing.answers = numbered
+    else:
+        db.add(UserAnswers(
+            user_id=payload.user_id,
+            answers=numbered
+        ))
+
+    db.commit()
+
+    # 4. Respond back to frontend
+    return {
+        "status": "success",
+        "message": "Student answers stored successfully",
+        "extracted_answers": numbered
+    }
+
 
 # -----------------------------------------------------------------------------------
 # EVALUATE
