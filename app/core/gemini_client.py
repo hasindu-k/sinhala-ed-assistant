@@ -1,5 +1,5 @@
 import google.generativeai as genai
-from config.settings import settings
+from app.core.config import settings
 
 class GeminiClient:
     _model = None
