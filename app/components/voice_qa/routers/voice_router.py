@@ -5,12 +5,12 @@ from app.components.voice_qa.whisper_service import VoiceService
 
 router = APIRouter()
 
-@router.get("/health")
-async def health_check():
-    """
-    Health check endpoint for Voice component.
-    """
-    return {"status": "Voice component is healthy."}
+# @router.get("/health")
+# async def health_check():
+#     """
+#     Health check endpoint for Voice component.
+#     """
+#     return {"status": "Voice component is healthy."}
 
 
 @router.post("/transcribe")
