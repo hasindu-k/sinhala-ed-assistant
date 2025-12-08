@@ -57,9 +57,19 @@ async def process_ocr_file(file: UploadFile, db: Session = Depends(get_db)) -> d
         page_count += 1
 
         img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        text = pytesseract.image_to_string(gray, lang="sin+eng")
+        processed = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        tess_config = (
+            "--oem 1 "
+            "--psm 6 "
+            "-c preserve_interword_spaces=1 "
+        )
+
+        text = pytesseract.image_to_string(
+            processed, lang="sin+eng", config=tess_config
+        )
+
         extracted_text += f"\n\n--- PAGE {page_count} ---\n{text}"
 
     # -----------------------------
@@ -70,7 +80,8 @@ async def process_ocr_file(file: UploadFile, db: Session = Depends(get_db)) -> d
     # -----------------------------
     # 5. Automatic Document Classifier
     # -----------------------------
-    doc_type = classify_document(cleaned_text)
+    # doc_type = classify_document(cleaned_text)
+    doc_type = "past_paper"
 
     # -----------------------------
     # 7. Create DB document row first so we have a document id for chunk global_ids
