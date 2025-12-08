@@ -20,12 +20,11 @@ def classify_document(text: str) -> str:
     if not text or not text.strip():
         return "unknown"
     
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.5-flash")
     
     try:
         response = model.generate_content(
             CLASSIFY_PROMPT.format(content=text[:8000]),
-            # Standard way to disable safety blocks
             safety_settings={
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
