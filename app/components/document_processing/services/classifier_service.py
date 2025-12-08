@@ -1,41 +1,48 @@
-import google.generativeai as genai
+from google import generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
+# Define prompts and constants
 CLASSIFY_PROMPT = """
-You are a document classification assistant for Sinhala educational materials.
-
-Classify the following text into exactly ONE of the following categories:
+You are a Sinhala educational document classifier.
+Classify the following text into ONE category:
 - term_test
 - teacher_guide
 - student_notes
 - past_paper
 - answer_scheme
 - textbook
-
-Only respond with the category name. No explanation.
-
+Respond with ONLY the category name.
 TEXT:
 {content}
 """
 
 def classify_document(text: str) -> str:
-    prompt = CLASSIFY_PROMPT.format(content=text[:5000])  # avoid giant prompt
+    if not text or not text.strip():
+        return "unknown"
     
-    response = genai.generate_text(
-        model="models/gemini-1.5-flash",
-        prompt=prompt,
-        max_output_tokens=10,
-    )
+    model = genai.GenerativeModel("gemini-1.5-flash")
     
-    label = response.text.strip().lower()
+    try:
+        response = model.generate_content(
+            CLASSIFY_PROMPT.format(content=text[:8000]),
+            # Standard way to disable safety blocks
+            safety_settings={
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+        )
+        
+        output = response.text.strip().lower()
+        allowed = {
+            "term_test", "teacher_guide", "student_notes",
+            "past_paper", "answer_scheme", "textbook"
+        }
+        # Print for debugging
+        print(f"Document classified as: {output}")
+        return output if output in allowed else "unknown"
 
-    # fallback safety
-    allowed = {
-        "term_test",
-        "teacher_guide",
-        "student_notes",
-        "past_paper",
-        "answer_scheme",
-        "textbook"
-    }
-
-    return label if label in allowed else "unknown"
+    except Exception as e:
+        print(f"Error classifying document: {e}")
+        return "unknown"

@@ -6,16 +6,16 @@ from app.components.document_processing.utils.numbering import extract_numbering
 
 
 def split_into_sentences(text: str) -> List[str]:
-    """
-    Split Sinhala + English text into sentences.
-    Handles:
-    - English: '.', '!', '?'
-    - Sinhala: '।' (danda)
-    """
-    # Add Sinhala danda to the sentence boundary rules
-    pattern = r"(?<=[\.!\?]|[\.!\?][\"']|।)\s+"
-    sentences = re.split(pattern, text)
-    return [s.strip() for s in sentences if s.strip()]
+    # Normalize Sinhala danda
+    x = text.replace("।", ".")
+
+    # insert a delimiter after punctuation
+    x = re.sub(r"([.!?]+)", r"\1<SPLIT>", x)
+
+    # split on the delimiter
+    parts = x.split("<SPLIT>")
+
+    return [p.strip() for p in parts if p.strip()]
 
 
 def approximate_token_count(text: str) -> int:
