@@ -7,5 +7,6 @@ from sentence_transformers import SentenceTransformer
 # ------------------------------------------------------------
 
 xlmr = SentenceTransformer(
-    "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
+    "sentence-transformers/paraphrase-xlm-r-multilingual-v1",
+    device="cpu"
 )
