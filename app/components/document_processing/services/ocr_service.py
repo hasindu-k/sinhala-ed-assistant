@@ -11,13 +11,22 @@ from PIL import Image
 from sqlalchemy.orm import Session
 from app.database.models import OCRDocument, ChunkModel
 from app.core.database import get_db
-from app.components.document_processing.utils.file_loader import save_upload_to_temp
+from app.components.document_processing.utils.file_operations import save_upload_to_temp
 from app.components.document_processing.utils.text_cleaner import basic_clean
 from app.components.document_processing.services.embedding_service import (
     embed_chunks,
     embed_document_text,
 )
 from app.components.document_processing.services.classifier_service import classify_document
+from app.components.document_processing.services.text_extraction import (
+    extract_text_from_pdf,
+    process_ocr_for_images,
+)
+from app.components.document_processing.utils.pdf_analysis import (
+    check_for_images_in_pdf,
+    check_for_tables_in_pdf,
+    is_text_based,
+)
 
 
 async def process_ocr_file(file: UploadFile, db: Session = Depends(get_db)) -> dict:
@@ -175,3 +184,47 @@ async def remove_temp_file(temp_path: str):
         os.remove(temp_path)
     except Exception as e:
         print(f"[WARN] Failed to remove temp file {temp_path}: {e}")
+
+async def process_question_papers(file: UploadFile, db: Session = Depends(get_db)) -> dict:
+    """
+    Specialized OCR processing for exam question papers.
+    Steps:
+    1. Save file
+    2. Convert PDF → Images if needed
+    3. Check whether the document is text-based or scanned
+    4. Check if the document contains images/diagrams
+    5. Check if the document contains tables
+    6. Extract text using OCR (if scanned)
+    7. Classify the document (e.g., exam type, section headers, etc.)
+    8. Insert processed data into the database
+    """
+
+    # Step 1: Save file
+    saved_file_path = await save_upload_to_temp(file)
+    
+    # Step 3: Check if the document is text-based or scanned
+    is_text_based_file = is_text_based(saved_file_path)
+    if is_text_based_file:
+        # Process as text-based (e.g., extract text directly)
+        extracted_text = extract_text_from_pdf(saved_file_path)
+    else:
+        ext = file.filename.split(".")[-1].lower()
+        images = await convert_file_to_images(saved_file_path, ext)
+        extracted_text = process_ocr_for_images(images)
+
+    # Step 4: Check if the document contains images/diagrams
+    contains_images = check_for_images_in_pdf(saved_file_path, is_scanned=not is_text_based_file)
+    
+    # Step 5: Check if the document contains tables
+    contains_tables = check_for_tables_in_pdf(saved_file_path, is_scanned=not is_text_based_file)
+
+    # Step 6: Perform additional processing or classification if necessary (optional)
+
+    # Step 7: Insert the processed data into the database
+    print("Inserting processed data into the database...")
+    print(f"Extracted Text: {extracted_text[:100]}...")  # Print first 100 chars
+    print(f"Contains Images: {contains_images}")
+    print(f"Contains Tables: {contains_tables}")
+    # save_processed_data_to_db(db, extracted_text, contains_images, contains_tables)
+    
+    return {"status": "success", "extracted_text": extracted_text, "contains_images": contains_images, "contains_tables": contains_tables}
