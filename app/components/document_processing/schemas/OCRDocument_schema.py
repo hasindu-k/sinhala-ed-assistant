@@ -1,4 +1,4 @@
-# app/models/document.py
+# app/components/document_processing/schemas/OCRDocument_schema.py
 
 from typing import List, Optional
 from pydantic import BaseModel
@@ -34,6 +34,9 @@ class OCRDocument(BaseModel):
     subject: Optional[str] = None       # auto-extraction coming later
     grade: Optional[str] = None
     year: Optional[str] = None
+
+    contains_images: bool = False
+    contains_tables: bool = False
 
 
 class OCRDocumentResponse(BaseModel):

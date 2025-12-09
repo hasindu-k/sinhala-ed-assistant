@@ -1,7 +1,7 @@
 # app/database/models.py
 
 import uuid
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -23,6 +23,10 @@ class OCRDocument(Base):
     grade = Column(String, nullable=True)
     year = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    contains_images = Column(Boolean, default=False)
+    contains_tables = Column(Boolean, default=False)
+
 
     # relationship to chunks
     chunks = relationship("ChunkModel", back_populates="document", cascade="all, delete")
