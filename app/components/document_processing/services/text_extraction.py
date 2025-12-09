@@ -3,12 +3,13 @@ import pytesseract
 import cv2
 import numpy as np
 
-def extract_text_from_pdf(file_path: str) -> str:
+def extract_text_from_pdf(file_path: str) -> tuple:
     with pdfplumber.open(file_path) as pdf:
         text = ""
-        for page in pdf.pages:
-            text += page.extract_text() or ""
-    return text
+        for page_num, page in enumerate(pdf.pages, 1):
+            page_text = page.extract_text() or ""
+            text += f"\n\n--- PAGE {page_num} ---\n{page_text}"
+    return text, len(pdf.pages)
 
 def process_ocr_for_images(images) -> tuple:
     extracted_text = ""

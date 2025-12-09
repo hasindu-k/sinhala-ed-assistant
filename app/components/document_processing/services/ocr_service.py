@@ -62,12 +62,14 @@ async def save_chunks_to_db(embedded_chunks: list, doc_id: str, db: Session):
 
     db.commit()
 
-async def save_processed_data_to_db(db: Session, doc_type: str, extracted_text: str, contains_images: bool, contains_tables: bool):
+async def save_processed_data_to_db(file: UploadFile, db: Session, doc_type: str, page_count: int, extracted_text: str, contains_images: bool, contains_tables: bool):
     """
     Save the processed data (text, images, tables metadata) into the database.
     """
     processed_doc = OCRDocument(
+        filename=file.filename,
         doc_type=doc_type,
+        pages=page_count,
         full_text=extracted_text,
         contains_images=contains_images,
         contains_tables=contains_tables,
@@ -103,11 +105,11 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
     is_text_based_file = is_text_based(saved_file_path)
     if is_text_based_file:
         # Process as text-based (e.g., extract text directly)
-        extracted_text = extract_text_from_pdf(saved_file_path)
+        extracted_text, page_count = extract_text_from_pdf(saved_file_path)
     else:
         ext = file.filename.split(".")[-1].lower()
         images = convert_file_to_images(saved_file_path, ext)
-        extracted_text = process_ocr_for_images(images)
+        extracted_text, page_count = process_ocr_for_images(images)
 
     # Step 4: Check if the document contains images/diagrams
     contains_images = check_for_images_in_pdf(saved_file_path, is_scanned=not is_text_based_file)
@@ -116,20 +118,21 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
     contains_tables = check_for_tables_in_pdf(saved_file_path, is_scanned=not is_text_based_file)
 
     # Step 6: Perform additional processing or classification if necessary (optional)
+    cleaned_text = basic_clean(extracted_text)
 
     # Step 7: Insert the processed data into the database
     print("Inserting processed data into the database...")
-    print(f"Extracted Text: {extracted_text}")
+    print(f"Extracted Text: {cleaned_text}")
     print(f"Contains Images: {contains_images}")
     print(f"Contains Tables: {contains_tables}")
 
     # Call save_processed_data_to_db to insert data into the database
-    await save_processed_data_to_db(db, doc_type, extracted_text, contains_images, contains_tables)
+    await save_processed_data_to_db(file, db, doc_type, page_count, cleaned_text, contains_images, contains_tables)
 
     return {
         "status": "success",
         "doc_type": doc_type,
-        "extracted_text": extracted_text,
+        "extracted_text": cleaned_text,
         "contains_images": contains_images,
         "contains_tables": contains_tables,
     }
