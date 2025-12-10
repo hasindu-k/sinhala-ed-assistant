@@ -15,7 +15,7 @@ from app.components.document_processing.services.embedding_service import (
     embed_chunks,
     embed_document_text,
 )
-from app.components.document_processing.services.classifier_service import classify_document
+from app.components.document_processing.services.classifier_service import separate_paper_content
 from app.components.document_processing.services.text_extraction import (
     extract_text_from_pdf,
     process_ocr_for_images,
@@ -119,6 +119,12 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
 
     # Step 6: Perform additional processing or classification if necessary (optional)
     cleaned_text = basic_clean(extracted_text)
+    # separate  paper metadata, instructions, and question sections using generative AI if needed
+    # paper_metadata, instructions, paper_structure = separate_paper_content(cleaned_text)
+
+    # print(f"Paper Metadata: {paper_metadata}")
+    # print(f"Instructions: {instructions}")
+    # print(f"Paper Structure: {paper_structure}")
 
     # Step 7: Insert the processed data into the database
     print("Inserting processed data into the database...")
