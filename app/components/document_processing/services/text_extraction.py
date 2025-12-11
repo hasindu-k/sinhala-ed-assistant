@@ -6,6 +6,7 @@ import numpy as np
 def extract_text_from_pdf(file_path: str) -> tuple:
     with pdfplumber.open(file_path) as pdf:
         text = ""
+        print(f"Extracting text from {len(pdf.pages)} pages...")
         for page_num, page in enumerate(pdf.pages, 1):
             page_text = page.extract_text() or ""
             text += f"\n\n--- PAGE {page_num} ---\n{page_text}"

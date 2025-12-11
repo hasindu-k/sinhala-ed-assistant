@@ -15,8 +15,11 @@ def remove_weird_chars(text: str) -> str:
     """
     Remove garbage but keep Sinhala + English + numbers + numbering symbols.
     """
-    allowed = r"[^\u0D80-\u0DFFa-zA-Z0-9\s\.\-\(\)\[\]\/:;]"
+    print(f"Original text before removing weird chars: {text}")
+    # allowed = r"[^\u0D80-\u0DFFa-zA-Z0-9\s\.\-\(\)\[\]\/:;]"
+    allowed = r"[^\u0D80-\u0DFF\u200D\u200Ca-zA-Z0-9\s\.\-\(\)\[\]\/:;]"
     text = re.sub(allowed, " ", text)
+    print(f"Text after removing weird chars: {text}")
     return text
 
 

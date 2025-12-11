@@ -26,9 +26,12 @@ def check_for_images_in_pdf(file_path: str, is_scanned: bool) -> bool:
             return True
     return False
 
-def is_text_based(file):
+def is_text_based(file_path: str, content_type: str):
     import pdfplumber
-    with pdfplumber.open(file) as pdf:
+    if content_type != "application/pdf":
+        return False
+
+    with pdfplumber.open(file_path) as pdf:
         if any(page.extract_text() for page in pdf.pages):
             return True
     return False

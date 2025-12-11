@@ -102,7 +102,7 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
     saved_file_path = await save_upload_to_temp(file)
     
     # Step 3: Check if the document is text-based or scanned
-    is_text_based_file = is_text_based(saved_file_path)
+    is_text_based_file = is_text_based(saved_file_path, file.content_type)
     if is_text_based_file:
         # Process as text-based (e.g., extract text directly)
         extracted_text, page_count = extract_text_from_pdf(saved_file_path)
@@ -179,6 +179,71 @@ async def process_ocr_file(file: UploadFile, db: Session = Depends(get_db)) -> d
     # -----------------------------
     # doc_type = classify_document(cleaned_text)
     doc_type = "past_paper"
+
+    # -----------------------------
+    # 7. Create DB document row first so we have a document id for chunk global_ids
+    # -----------------------------
+    doc = await save_ocr_document_to_db(file, cleaned_text, page_count, doc_type, db)
+
+    # -----------------------------
+    # 8. Chunk-level embeddings (now pass the doc id so global_id can include it)
+    # -----------------------------
+    embedded_chunks = embed_chunks(cleaned_text, doc_id=str(doc.id))
+
+    # -----------------------------
+    # 9. Full document embedding
+    # -----------------------------
+    full_embedding = embed_document_text(cleaned_text)
+
+    # create chunks and link to doc (use correct column names)
+    await save_chunks_to_db(embedded_chunks, doc.id, db)
+
+    # -----------------------------
+    # 10. Remove temp file
+    # -----------------------------
+    await remove_temp_file(temp_path)
+
+    # -----------------------------
+    # 11. Return result
+    # -----------------------------
+    return {
+        "doc_id": str(doc.id),
+        "filename": file.filename,
+        "pages": page_count,
+        "doc_type": doc_type,
+        "text": cleaned_text.strip(),
+        "embedding_dim": len(full_embedding) if full_embedding else 0,
+        "embedding": full_embedding,
+        "chunks": embedded_chunks,
+    }
+
+async def process_syllabus_files(file: UploadFile, db: Session = Depends(get_db)) -> dict:
+    """
+    OCR processing for syllabus documents.
+    Similar to process_ocr_file but tailored for syllabus documents.
+    """
+    # -----------------------------
+    # 1. Save uploaded file temporarily
+    # -----------------------------
+    temp_path = await save_upload_to_temp(file)
+    ext = file.filename.split(".")[-1].lower()
+
+    # -----------------------------
+    # 2. Detect PDF or Image
+    # -----------------------------
+    images = convert_file_to_images(temp_path, ext)
+
+    extracted_text, page_count = await process_ocr_for_images(images)
+
+    # -----------------------------
+    # 4. Clean OCR text
+    # -----------------------------
+    cleaned_text = basic_clean(extracted_text)
+
+    # -----------------------------
+    # 5. Document type is syllabus
+    # -----------------------------
+    doc_type = "syllabus"
 
     # -----------------------------
     # 7. Create DB document row first so we have a document id for chunk global_ids

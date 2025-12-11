@@ -147,3 +147,35 @@ def separate_paper_content(text: str):
         print(f"Error in Sinhala structure extraction: {e}")
         return {}, [], []
     
+def fix_sinhala_ocr(text: str) -> str:
+    """
+    Fix OCR errors in Sinhala text such as broken ligatures, misplaced diacritics,
+    or split grapheme clusters.
+    """
+    if not text or not text.strip():
+        return text
+
+    model = genai.GenerativeModel("gemini-2.5-flash")
+
+    prompt = f"""
+    You are a Sinhala OCR text corrector.
+    Fix OCR errors such as:
+    - broken conjunct letters (ex: ක් ෂ → ක්‍ෂ),
+    - misplaced diacritics,
+    - missing vowels,
+    - unnecessary spaces inside words.
+    
+    Output ONLY the corrected Sinhala text. Do NOT add explanations.
+
+    Text:
+    {text}
+    """
+
+    try:
+        response = model.generate_content(prompt)
+        corrected = response.text.strip()
+
+        return corrected
+    except Exception as e:
+        print("Error in Sinhala OCR correction:", e)
+        return text
