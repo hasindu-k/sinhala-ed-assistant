@@ -1,11 +1,15 @@
 # app/main.py
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router  
-
 from app.core.database import Base, engine
 
+# # Import models to register them with Base
+# from app.shared.models.user_chat import UserChat
+# from app.shared.models.resource_data import ResourceData
+# from app.shared.models.chat_messages import ChatMessage
+
+# Create tables (only needed once, will skip if already exist)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
