@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, UploadFile, File, Form
 
-from app.components.voice_qa.whisper_service import VoiceService, VoiceQAService
+from app.components.voice_qa.services.whisper_service import VoiceService, VoiceQAService
 from app.services.audio_storage import upload_audio_to_firebase
 from app.services.chat_service import save_chat_message
 from uuid import UUID

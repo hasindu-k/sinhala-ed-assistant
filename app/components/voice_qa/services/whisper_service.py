@@ -14,6 +14,12 @@ from app.shared.ai.gemini_client import gemini_generate
 from app.core.database import engine
 from sqlalchemy import text
 
+# Hybrid retrieval helpers (lexical + dense + cross-encoder rerank)
+from app.components.voice_qa.services.hybrid_retrieval import (
+    retrieve_top_k,
+    dense_retrieval,
+)
+
 
 class VoiceService:
 
@@ -65,32 +71,18 @@ class VoiceQAService:
 
     @staticmethod
     def find_similar_chunks(question_embedding: List[float], top_k: int = 5) -> List[Dict]:
-        results: List[Dict] = []
-        if not question_embedding:
-            return results
+        """Dense-only retrieval wrapper.
 
-        vec_literal = ",".join([str(float(x)) for x in question_embedding])
-        sql = f"""
-        SELECT chunk_id, chunk_text, metadata, embedding <-> ARRAY[{vec_literal}] AS distance
-        FROM document_chunks
-        ORDER BY distance ASC
-        LIMIT :k
+        This method preserves the original signature (takes an embedding) but
+        delegates to the safe, parameterized `dense_retrieval` implemented in
+        `hybrid_retrieval.py`.
         """
 
-        try:
-            with engine.connect() as conn:
-                rows = conn.execute(text(sql), {"k": top_k}).fetchall()
-                for r in rows:
-                    results.append({
-                        "chunk_id": r[0],
-                        "text": r[1],
-                        "metadata": r[2],
-                        "score": float(r[3]) if r[3] is not None else None,
-                    })
-        except Exception as e:
-            print(f"[VoiceQAService] DB query failed: {e}")
+        if not question_embedding:
+            return []
 
-        return results
+        # delegate to hybrid.dense_retrieval which uses parameterized queries
+        return dense_retrieval(question_embedding, top_k=top_k)
 
     @staticmethod
     def build_prompt(question: str, chunks: List[Dict]) -> str:
@@ -124,9 +116,10 @@ class VoiceQAService:
         normalized, standard = VoiceService.standardize_southern_sinhala(raw_text)
         question_text = standard or normalized or raw_text
 
-        question_embedding = VoiceQAService.generate_text_embedding(question_text)
-        top_chunks = VoiceQAService.find_similar_chunks(question_embedding, top_k=top_k)
-        prompt = VoiceQAService.build_prompt(question_text, top_chunks)
+    # Use the hybrid retrieval pipeline which performs lexical + dense retrieval
+    # and cross-encoder re-ranking to return the final top-K contexts.
+    top_chunks = retrieve_top_k(question_text, top_k=top_k)
+    prompt = VoiceQAService.build_prompt(question_text, top_chunks)
         answer = VoiceQAService.llm_generate(prompt)
 
         return {
