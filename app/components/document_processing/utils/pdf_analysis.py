@@ -35,3 +35,29 @@ def is_text_based(file_path: str, content_type: str):
         if any(page.extract_text() for page in pdf.pages):
             return True
     return False
+
+def is_reliably_text_based(file_path: str) -> bool:
+    import pdfplumber
+
+    with pdfplumber.open(file_path) as pdf:
+        pages_with_real_text = 0
+
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text and len(text.strip()) > 200:
+                pages_with_real_text += 1
+
+        return pages_with_real_text >= len(pdf.pages) * 0.8
+
+def should_use_direct_text_extraction(file_path: str) -> bool:
+    import os
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext in {".png", ".jpg", ".jpeg", ".tiff"}:
+        # Images are never text-based
+        return False
+
+    if ext == ".pdf":
+        return is_reliably_text_based(file_path)
+
+    raise ValueError(f"Unsupported file type: {ext}")
