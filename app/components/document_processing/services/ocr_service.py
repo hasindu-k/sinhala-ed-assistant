@@ -106,8 +106,9 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
     saved_file_path = await save_upload_to_temp(file)
     
     # Step 3: Check if the document is text-based or scanned
-    
-    if should_use_direct_text_extraction(saved_file_path):
+    is_text_based_file = should_use_direct_text_extraction(saved_file_path)
+
+    if is_text_based_file:
         extracted_text, page_count = extract_text_from_pdf(saved_file_path)
     else:
         images = convert_file_to_images(saved_file_path, ext)
@@ -293,41 +294,91 @@ async def process_textbooks(file: UploadFile, db: Session = Depends(get_db)) -> 
     OCR processing for textbooks.
     Steps:
     1. Save file
-    2. Convert PDF → Images if needed
-    3. Check whether the document is text-based or scanned
-    4. Extract text using OCR (if scanned)
-    5. Insert processed data into the database
+    2. Detect PDF / Image
+    3. Detect text-based vs scanned
+    4. Extract text (direct or OCR)
+    5. Clean text
+    6. Create DB document
+    7. Chunk + embed
+    8. Save chunks
+    9. Full document embedding
     """
- 
-    ext = file.filename.split(".")[-1].lower()
-    if ext not in ["pdf", "png", "jpg", "jpeg", "tiff", "webp"]:
-        raise ValueError("Unsupported file type. Please upload a PDF or image file.")
 
-    # only textbooks
+    # -----------------------------
+    # 1. Validate file
+    # -----------------------------
+    ext = file.filename.split(".")[-1].lower()
+    if ext not in {"pdf", "png", "jpg", "jpeg", "tiff", "webp"}:
+        raise ValueError("Unsupported file type")
+
     doc_type = "textbook"
 
-    # Step 1: Save file
-    saved_file_path = await save_upload_to_temp(file)
-    
-    # Step 3: Check if the document is text-based or scanned
-    
-    if should_use_direct_text_extraction(saved_file_path):
-        extracted_text, page_count = extract_text_from_pdf(saved_file_path)
-    else:
-        images = convert_file_to_images(saved_file_path, ext)
-        extracted_text, page_count = process_ocr_for_images(images)
+    # -----------------------------
+    # 2. Save uploaded file
+    # -----------------------------
+    temp_path = await save_upload_to_temp(file)
 
+    # -----------------------------
+    # 3. Extract text (hybrid logic)
+    # -----------------------------
+    if ext == "pdf" and should_use_direct_text_extraction(temp_path):
+        extracted_text, page_count = extract_text_from_pdf(temp_path)
+    else:
+        images = convert_file_to_images(temp_path, ext)
+        extracted_text, page_count = await process_ocr_for_images(images)
+
+    # -----------------------------
+    # 4. Clean text
+    # -----------------------------
     cleaned_text = basic_clean(extracted_text)
 
-    # Step 5: Insert the processed data into the database
-    print("Inserting processed data into the database...")
-    print(f"Extracted Text: {cleaned_text}")
+    if not cleaned_text.strip():
+        raise ValueError("No readable text found in document")
 
-    # Call save_processed_data_to_db to insert data into the database
-    await save_processed_data_to_db(file, db, doc_type, page_count, cleaned_text, contains_images=False, contains_tables=False)
+    # -----------------------------
+    # 5. Create document DB row first
+    # -----------------------------
+    doc = await save_ocr_document_to_db(
+        file=file,
+        text=cleaned_text,
+        page_count=page_count,
+        doc_type=doc_type,
+        db=db
+    )
 
+    # -----------------------------
+    # 6. Chunk + embed (chunk-level)
+    # -----------------------------
+    embedded_chunks = embed_chunks(
+        cleaned_text,
+        doc_id=str(doc.id)
+    )
+
+    await save_chunks_to_db(
+        embedded_chunks=embedded_chunks,
+        doc_id=doc.id,
+        db=db
+    )
+
+    # -----------------------------
+    # 7. Full-document embedding
+    # -----------------------------
+    full_embedding = embed_document_text(cleaned_text)
+
+    # -----------------------------
+    # 8. Cleanup
+    # -----------------------------
+    await remove_temp_file(temp_path)
+
+    # -----------------------------
+    # 9. Return response
+    # -----------------------------
     return {
         "status": "success",
+        "doc_id": str(doc.id),
+        "filename": file.filename,
         "doc_type": doc_type,
-        "extracted_text": cleaned_text,
+        "pages": page_count,
+        "embedding_dim": len(full_embedding) if full_embedding else 0,
+        "chunks": embedded_chunks,
     }
