@@ -33,7 +33,7 @@ def convert_file_to_images(file_path: str, ext: str):
     images = []
     if ext == "pdf":
         images = convert_from_path(file_path)
-    else:
+    elif ext in {"png", "jpg", "jpeg", "tiff", "webp"}:
         img = Image.open(file_path)
         images.append(img)
     return images

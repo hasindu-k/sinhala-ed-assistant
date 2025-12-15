@@ -23,7 +23,7 @@ from app.components.document_processing.services.text_extraction import (
 from app.components.document_processing.utils.pdf_analysis import (
     check_for_images_in_pdf,
     check_for_tables_in_pdf,
-    is_text_based,
+    should_use_direct_text_extraction,
 )
 
 # helper functions
@@ -95,6 +95,10 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
     8. Insert processed data into the database
     """
 
+    ext = file.filename.split(".")[-1].lower()
+    if ext not in ["pdf", "png", "jpg", "jpeg", "tiff", "webp"]:
+        raise ValueError("Unsupported file type. Please upload a PDF or image file.")
+
     # only papers
     doc_type = "exam_paper"
 
@@ -102,12 +106,10 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
     saved_file_path = await save_upload_to_temp(file)
     
     # Step 3: Check if the document is text-based or scanned
-    is_text_based_file = is_text_based(saved_file_path, file.content_type)
-    if is_text_based_file:
-        # Process as text-based (e.g., extract text directly)
+    
+    if should_use_direct_text_extraction(saved_file_path):
         extracted_text, page_count = extract_text_from_pdf(saved_file_path)
     else:
-        ext = file.filename.split(".")[-1].lower()
         images = convert_file_to_images(saved_file_path, ext)
         extracted_text, page_count = process_ocr_for_images(images)
 
