@@ -287,3 +287,47 @@ async def process_syllabus_files(file: UploadFile, db: Session = Depends(get_db)
         "chunks": embedded_chunks,
     }
 
+
+async def process_textbooks(file: UploadFile, db: Session = Depends(get_db)) -> dict:
+    """
+    OCR processing for textbooks.
+    Steps:
+    1. Save file
+    2. Convert PDF → Images if needed
+    3. Check whether the document is text-based or scanned
+    4. Extract text using OCR (if scanned)
+    5. Insert processed data into the database
+    """
+ 
+    ext = file.filename.split(".")[-1].lower()
+    if ext not in ["pdf", "png", "jpg", "jpeg", "tiff", "webp"]:
+        raise ValueError("Unsupported file type. Please upload a PDF or image file.")
+
+    # only textbooks
+    doc_type = "textbook"
+
+    # Step 1: Save file
+    saved_file_path = await save_upload_to_temp(file)
+    
+    # Step 3: Check if the document is text-based or scanned
+    
+    if should_use_direct_text_extraction(saved_file_path):
+        extracted_text, page_count = extract_text_from_pdf(saved_file_path)
+    else:
+        images = convert_file_to_images(saved_file_path, ext)
+        extracted_text, page_count = process_ocr_for_images(images)
+
+    cleaned_text = basic_clean(extracted_text)
+
+    # Step 5: Insert the processed data into the database
+    print("Inserting processed data into the database...")
+    print(f"Extracted Text: {cleaned_text}")
+
+    # Call save_processed_data_to_db to insert data into the database
+    await save_processed_data_to_db(file, db, doc_type, page_count, cleaned_text, contains_images=False, contains_tables=False)
+
+    return {
+        "status": "success",
+        "doc_type": doc_type,
+        "extracted_text": cleaned_text,
+    }

@@ -3,7 +3,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from sqlalchemy.orm import Session
 
-from app.components.document_processing.services.ocr_service import process_ocr_file, process_question_papers
+from app.components.document_processing.services.ocr_service import process_ocr_file, process_question_papers, process_textbooks
 from app.core.database import get_db
 from app.shared.ai.embeddings import model_list
 
@@ -37,4 +37,15 @@ async def scan_papers(file: UploadFile = File(...), db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail="Only image/PDF files are supported")
 
     result = await process_question_papers(file, db=db)
+    return result
+
+@router.get("/scan-textbooks")
+async def scan_text_books(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Endpoint to scan and process textbooks.
+    """
+    if not file.content_type.startswith("image/") and "pdf" not in file.content_type:
+        raise HTTPException(status_code=400, detail="Only image/PDF files are supported")
+    
+    result = await process_textbooks(file, db=db)
     return result
