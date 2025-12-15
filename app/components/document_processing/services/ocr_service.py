@@ -120,11 +120,11 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
     # Step 6: Perform additional processing or classification if necessary (optional)
     cleaned_text = basic_clean(extracted_text)
     # separate  paper metadata, instructions, and question sections using generative AI if needed
-    # paper_metadata, instructions, paper_structure = separate_paper_content(cleaned_text)
+    paper_metadata, instructions, paper_structure = separate_paper_content(cleaned_text)
 
-    # print(f"Paper Metadata: {paper_metadata}")
-    # print(f"Instructions: {instructions}")
-    # print(f"Paper Structure: {paper_structure}")
+    print(f"Paper Metadata: {paper_metadata}")
+    print(f"Instructions: {instructions}")
+    print(f"Paper Structure: {paper_structure}")
 
     # Step 7: Insert the processed data into the database
     print("Inserting processed data into the database...")
@@ -141,6 +141,9 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
         "extracted_text": cleaned_text,
         "contains_images": contains_images,
         "contains_tables": contains_tables,
+        "paper_metadata": paper_metadata,
+        "instructions": instructions,
+        "paper_structure": paper_structure,
     }
 
 

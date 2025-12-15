@@ -67,12 +67,13 @@ Your task is to structure the provided text into a strict JSON format.
 2.  **Instructions (උපදෙස්)**: Extract the list of rules given to students at the start.
 
 3.  **Structure (Questions & Marks)**:
-    - Identify questions starting with numbers (1, 2, 3...) or Sinhala text indicating a new question.
+    - Identify **main questions** starting with numbers (1, 2, 3...) or Sinhala indicators.
     - **Crucial**: Identify mark allocations.
       - Look for patterns like: "(XX marks)", "(ලකුණු XX)", "[XX]", "(XX)".
-      - **Context**: In Sinhala papers, marks are often at the end of the line inside brackets.
-    - Identify sub-parts:
+      - In Sinhala papers, marks are often at the end of the line inside brackets.
+    - Identify **subquestions**:
       - Common formats: "(i)", "(ii)", "(a)", "(b)", "(අ)", "(ආ)".
+      - Assign marks to each subquestion if specified.
 
 **Output Format (Strict JSON):**
 {{
@@ -85,17 +86,24 @@ Your task is to structure the provided text into a strict JSON format.
     "medium": "Sinhala/English"
   }},
   "instructions": ["instruction 1", "instruction 2"],
-  "structure": [
-    {{
-      "question_number": "1",
-      "total_marks": 10,
-      "parts": [
-        {{ "part_id": "i", "text_snippet": "start of question...", "marks": 2 }},
-        {{ "part_id": "ii", "text_snippet": "start of question...", "marks": 4 }},
-        {{ "part_id": "iii", "text_snippet": "start of question...", "marks": null }}
-      ]
+  "PaperStructure": {{
+    "main_questions": {{
+      "1": {{
+        "total_marks": 12,
+        "subquestions": {{
+          "a": {{ "text": "<text>", "marks": 3 }},
+          "b": {{ "text": "<text>", "marks": 3 }}
+        }}
+      }},
+      "2": {{
+        "total_marks": 8,
+        "subquestions": {{
+          "a": {{ "text": "<text>", "marks": 4 }},
+          "b": {{ "text": "<text>", "marks": 4 }}
+        }}
+      }}
     }}
-  ]
+  }}
 }}
 
 **TEXT TO PROCESS:**
@@ -131,7 +139,7 @@ def separate_paper_content(text: str):
         
         paper_metadata = result.get("metadata", {})
         instructions = result.get("instructions", [])
-        paper_structure = result.get("structure", [])
+        paper_structure = result.get("PaperStructure", {}).get("main_questions", {})
 
         # Post-processing: If the model returns null for marks but the user needs 0, handle it here.
         # But usually keeping it None/null is safer until manual verification.
