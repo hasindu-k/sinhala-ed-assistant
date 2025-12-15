@@ -25,6 +25,7 @@ Base = declarative_base()
 from app.shared.models.user_chat import UserChat
 from app.shared.models.resource_data import ResourceData
 from app.shared.models.chat_messages import ChatMessage
+from app.shared.models.text_chunk import TextChunk
 
 # Dependency
 def get_db():

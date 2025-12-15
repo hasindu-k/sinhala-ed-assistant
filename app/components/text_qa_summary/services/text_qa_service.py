@@ -3,11 +3,12 @@ import uuid
 from typing import Tuple
 from sqlalchemy.orm import Session
 from app.shared.models.chat_messages import ChatMessage
-from app.shared.ai.gemini_client import gemini_generate
+from app.core.gemini_client import GeminiClient
 from app.components.text_qa_summary.utils.prompts import build_qa_prompt, build_summary_prompt
 from app.components.text_qa_summary.utils.safety import (
     concept_map_check, detect_misconceptions, hybrid_clean
 )
+from app.components.text_qa_summary.services.retrieval_service import RetrievalService
 
 
 class TextQAService:
@@ -48,30 +49,52 @@ class TextQAService:
         db: Session,
         chat_id: uuid.UUID,
         user_id: str,
-        combined_text: str,
+        query: str,  # New parameter: user's query
         count: int
     ) -> Tuple[ChatMessage, dict]:
-        # Build prompt
-        prompt = build_qa_prompt(combined_text, count)
+        print(f"[RAG] Generating Q&A for chat {chat_id}")
+        print(f"[RAG] User query: {query}")
         
-        # Generate from Gemini
-        raw_output = gemini_generate(prompt)
+        # Step 1: Retrieve relevant chunks
+        scored_chunks = RetrievalService.retrieve_relevant_chunks(
+            db=db,
+            chat_id=chat_id,
+            query=query,
+            top_k=15  # Retrieve more chunks for Q&A generation
+        )
         
-        # Safety checks
-        is_valid, missing, extra = concept_map_check(raw_output, combined_text)
-        flagged = detect_misconceptions(raw_output, combined_text)
+        if not scored_chunks:
+            raise ValueError(f"No relevant content found for query: {query}")
         
-        # Clean output
+        # Step 2: Generate context from retrieved chunks
+        context, retrieval_metadata = RetrievalService.generate_context_from_chunks(
+            scored_chunks
+        )
+        
+        print(f"[RAG] Retrieved {retrieval_metadata['used_chunks']} chunks")
+        print(f"[RAG] Average retrieval score: {retrieval_metadata['avg_score']:.3f}")
+        
+        # Step 3: Build prompt with retrieved context
+        prompt = build_qa_prompt(context, count, query)
+        
+        # Step 4: Generate from Gemini
+        raw_output = GeminiClient.generate_content(prompt)
+        
+        # Step 5: Safety checks
+        is_valid, missing, extra = concept_map_check(raw_output, context)
+        flagged = detect_misconceptions(raw_output, context)
+        
+        # Step 6: Clean output
         final_output = hybrid_clean(raw_output, flagged)
         
-        # Save to database
+        # Step 7: Save to database with retrieval metadata
         message = TextQAService._save_message(
             db=db,
             chat_id=chat_id,
             user_id=user_id,
             role="teacher",
             prompt_original=prompt,
-            prompt_cleaned=prompt,  # No cleaning applied to prompt in this version
+            prompt_cleaned=prompt,
             model_raw_output=raw_output,
             final_output=final_output,
             safety_missing_concepts=missing,
@@ -79,6 +102,7 @@ class TextQAService:
             safety_flagged_sentences=flagged
         )
         
+        # Enhanced safety checks with retrieval info
         safety_checks = {
             "is_valid": is_valid,
             "missing_concepts": missing,
@@ -86,7 +110,8 @@ class TextQAService:
             "flagged_sentences": flagged,
             "total_missing": len(missing),
             "total_extra": len(extra),
-            "total_flagged": len(flagged)
+            "total_flagged": len(flagged),
+            "retrieval_metadata": retrieval_metadata
         }
         
         return message, safety_checks
@@ -96,30 +121,53 @@ class TextQAService:
         db: Session,
         chat_id: uuid.UUID,
         user_id: str,
-        combined_text: str,
+        query: str,  # New parameter: user's query
         grade: str
     ) -> Tuple[ChatMessage, dict]:
-        # Build prompt
-        prompt = build_summary_prompt(combined_text, grade)
+        print(f"[RAG] Generating summary for chat {chat_id}")
+        print(f"[RAG] User query: {query}")
+        print(f"[RAG] Grade level: {grade}")
         
-        # Generate from Gemini
-        raw_output = gemini_generate(prompt)
+        # Step 1: Retrieve relevant chunks
+        scored_chunks = RetrievalService.retrieve_relevant_chunks(
+            db=db,
+            chat_id=chat_id,
+            query=query,
+            top_k=10  # Fewer chunks for summary
+        )
         
-        # Safety checks
-        is_valid, missing, extra = concept_map_check(raw_output, combined_text)
-        flagged = detect_misconceptions(raw_output, combined_text)
+        if not scored_chunks:
+            raise ValueError(f"No relevant content found for query: {query}")
         
-        # Clean output
+        # Step 2: Generate context from retrieved chunks
+        context, retrieval_metadata = RetrievalService.generate_context_from_chunks(
+            scored_chunks
+        )
+        
+        print(f"[RAG] Retrieved {retrieval_metadata['used_chunks']} chunks")
+        print(f"[RAG] Average retrieval score: {retrieval_metadata['avg_score']:.3f}")
+        
+        # Step 3: Build prompt with retrieved context
+        prompt = build_summary_prompt(context, grade, query)
+        
+        # Step 4: Generate from Gemini
+        raw_output = GeminiClient.generate_content(prompt)
+        
+        # Step 5: Safety checks
+        is_valid, missing, extra = concept_map_check(raw_output, context)
+        flagged = detect_misconceptions(raw_output, context)
+        
+        # Step 6: Clean output
         final_output = hybrid_clean(raw_output, flagged)
         
-        # Save to database
+        # Step 7: Save to database
         message = TextQAService._save_message(
             db=db,
             chat_id=chat_id,
             user_id=user_id,
             role="teacher",
             prompt_original=prompt,
-            prompt_cleaned=prompt,  # No cleaning applied to prompt in this version
+            prompt_cleaned=prompt,
             model_raw_output=raw_output,
             final_output=final_output,
             safety_missing_concepts=missing,
@@ -134,7 +182,8 @@ class TextQAService:
             "flagged_sentences": flagged,
             "total_missing": len(missing),
             "total_extra": len(extra),
-            "total_flagged": len(flagged)
+            "total_flagged": len(flagged),
+            "retrieval_metadata": retrieval_metadata
         }
         
         return message, safety_checks

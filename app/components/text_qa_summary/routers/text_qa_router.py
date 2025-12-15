@@ -15,11 +15,13 @@ router = APIRouter()
 class TextQAGenerateRequest(BaseModel):
     chat_id: str
     user_id: str
+    query: str = "Generate Q&A from all content"  # New field
     count: int = 10
 
 class SummaryGenerateRequest(BaseModel):
     chat_id: str
     user_id: str
+    query: str = "Generate summary"  # New field
     grade: str = "9-11"
 
 # Response models
@@ -38,7 +40,7 @@ class SummaryResponse(BaseModel):
 @router.post("/generate-qa", response_model=TextQAResponse)
 def generate_qa(request: TextQAGenerateRequest, db: Session = Depends(get_db)):
     """
-    Generate Q&A pairs from chat resources
+    Generate Q&A pairs from RETRIEVED chat resources
     """
     try:
         # Convert string to UUID
@@ -47,15 +49,14 @@ def generate_qa(request: TextQAGenerateRequest, db: Session = Depends(get_db)):
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid chat_id format")
         
-        # Get combined resources text
-        combined_text = ResourceService.get_combined_text(db, chat_uuid)
+        print(f"[API] Q&A generation request: {request.query}")
         
-        # Generate Q&A
+        # Generate Q&A with retrieval
         message, safety_checks = TextQAService.generate_qa(
             db=db,
             chat_id=chat_uuid,
             user_id=request.user_id,
-            combined_text=combined_text,
+            query=request.query,  # Pass the query
             count=request.count
         )
         
@@ -73,7 +74,7 @@ def generate_qa(request: TextQAGenerateRequest, db: Session = Depends(get_db)):
 @router.post("/generate-summary", response_model=SummaryResponse)
 def generate_summary(request: SummaryGenerateRequest, db: Session = Depends(get_db)):
     """
-    Generate adaptive summary from chat resources
+    Generate adaptive summary from RETRIEVED chat resources
     """
     try:
         # Convert string to UUID
@@ -82,27 +83,15 @@ def generate_summary(request: SummaryGenerateRequest, db: Session = Depends(get_
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid chat_id format")
         
-        print(f"[DEBUG] Generating summary for chat: {chat_uuid}")
+        print(f"[API] Summary generation request: {request.query}")
+        print(f"[API] Grade level: {request.grade}")
         
-        # Get combined resources text
-        try:
-            combined_text = ResourceService.get_combined_text(db, chat_uuid)
-            print(f"[DEBUG] Got combined text, length: {len(combined_text)}")
-        except ValueError as e:
-            print(f"[DEBUG] ResourceService error: {e}")
-            # List all resources for debugging
-            resources = ResourceService.get_chat_resources(db, chat_uuid)
-            print(f"[DEBUG] Resources found: {len(resources)}")
-            for r in resources:
-                print(f"[DEBUG] Resource ID: {r.id}, Chat ID: {r.chat_id}")
-            raise HTTPException(status_code=404, detail=str(e))
-        
-        # Generate summary
+        # Generate summary with retrieval
         message, safety_checks = TextQAService.generate_summary(
             db=db,
             chat_id=chat_uuid,
             user_id=request.user_id,
-            combined_text=combined_text,
+            query=request.query,  # Pass the query
             grade=request.grade
         )
         
@@ -116,7 +105,7 @@ def generate_summary(request: SummaryGenerateRequest, db: Session = Depends(get_
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Summary generation failed: {str(e)}")
-
+        
 @router.get("/{chat_id}/messages")
 def get_chat_messages(chat_id: str, db: Session = Depends(get_db)):
     """

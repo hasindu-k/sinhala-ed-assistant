@@ -89,3 +89,6 @@ uritemplate==4.2.0
 urllib3==2.5.0
 uvicorn==0.38.0
 wheel==0.45.1
+sentence-transformers>=2.2.0
+numpy>=1.21.0
+rank-bm25>=0.2.1  # For BM25 implementation

@@ -1,6 +1,7 @@
-#app/core/gemini_client.py
+# app/core/gemini_client.py
 import google.generativeai as genai
 from app.core.config import settings
+
 
 class GeminiClient:
     _model = None
@@ -15,3 +16,12 @@ class GeminiClient:
             cls._model = genai.GenerativeModel("gemini-2.5-flash")
 
         return cls._model
+    
+    @classmethod
+    def generate_content(cls, prompt: str) -> str:
+        """
+        Generate content from Gemini
+        """
+        model = cls.load()
+        response = model.generate_content(prompt)
+        return response.text
