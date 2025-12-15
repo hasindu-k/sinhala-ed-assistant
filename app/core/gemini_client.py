@@ -1,3 +1,4 @@
+#app/core/gemini_client.py
 import google.generativeai as genai
 from app.core.config import settings
 
