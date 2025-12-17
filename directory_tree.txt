@@ -1,0 +1,108 @@
+📁 sinhala-ed-assistant/
+├── 📄 .env
+├── 📄 .env.example
+├── 📄 .gitignore
+├── 📄 README.md
+├── 📄 SETUP.md
+├── 📄 SETUP_DATABASE.md
+├── 📁 app/
+│   ├── 📄 __init__.py
+│   ├── 📁 api/
+│   │   ├── 📄 __init__.py
+│   │   └── 📁 v1/
+│   │       ├── 📄 __init__.py
+│   │       └── 📄 router.py
+│   ├── 📁 components/
+│   │   ├── 📄 __init__.py
+│   │   ├── 📁 document_processing/
+│   │   │   ├── 📄 __init__.py
+│   │   │   ├── 📁 routers/
+│   │   │   │   ├── 📄 embedding_router.py
+│   │   │   │   └── 📄 ocr_router.py
+│   │   │   ├── 📁 schemas/
+│   │   │   │   └── 📄 embedding_schema.py
+│   │   │   ├── 📁 services/
+│   │   │   │   ├── 📄 classifier_service.py
+│   │   │   │   ├── 📄 embedding_service.py
+│   │   │   │   ├── 📄 ocr_service.py
+│   │   │   │   ├── 📄 text_extraction.py
+│   │   │   │   └── 📄 vector_store.py
+│   │   │   └── 📁 utils/
+│   │   │       ├── 📄 chunker.py
+│   │   │       ├── 📄 file_operations.py
+│   │   │       ├── 📄 numbering.py
+│   │   │       ├── 📄 pdf_analysis.py
+│   │   │       └── 📄 text_cleaner.py
+│   │   ├── 📁 evaluation/
+│   │   │   ├── 📄 __init__.py
+│   │   │   ├── 📁 routers/
+│   │   │   │   ├── 📄 __init__.py
+│   │   │   │   └── 📄 evaluation_router.py
+│   │   │   ├── 📁 schemas/
+│   │   │   │   ├── 📄 __init__.py
+│   │   │   │   └── 📄 evaluation_schema.py
+│   │   │   ├── 📁 services/
+│   │   │   │   ├── 📄 __init__.py
+│   │   │   │   ├── 📄 evaluator.py
+│   │   │   │   ├── 📄 feedback.py
+│   │   │   │   ├── 📄 scorer.py
+│   │   │   │   ├── 📄 semantic_model.py
+│   │   │   │   └── 📄 test_xlmr.py
+│   │   │   └── 📁 utils/
+│   │   │       ├── 📄 __init__.py
+│   │   │       ├── 📄 answer_numbering.py
+│   │   │       ├── 📄 helpers.py
+│   │   │       ├── 📄 question_numbering.py
+│   │   │       ├── 📄 text_utils.py
+│   │   │       └── 📄 validators.py
+│   │   ├── 📁 text_qa_summary/
+│   │   │   ├── 📄 __init__.py
+│   │   │   └── 📁 routers/
+│   │   │       └── 📄 qa_router.py
+│   │   └── 📁 voice_qa/
+│   │       ├── 📄 __init__.py
+│   │       ├── 📁 routers/
+│   │       │   └── 📄 voice_router.py
+│   │       └── 📄 whisper_service.py
+│   ├── 📁 core/
+│   │   ├── 📄 __init__.py
+│   │   ├── 📄 config.py
+│   │   ├── 📄 database.py
+│   │   ├── 📄 gemini_client.py
+│   │   ├── 📄 utils.py
+│   │   └── 📄 whisper_loader.py
+│   ├── 📁 database/
+│   │   └── 📄 models.py
+│   ├── 📄 main.py
+│   ├── 📁 models/
+│   │   └── 📄 document.py
+│   └── 📁 shared/
+│       ├── 📁 ai/
+│       │   ├── 📄 __init__.py
+│       │   ├── 📄 embeddings.py
+│       │   ├── 📄 gemini_client.py
+│       │   └── 📄 test_gemini.py
+│       ├── 📁 models/
+│       │   ├── 📄 __init__.py
+│       │   ├── 📄 marks.py
+│       │   ├── 📄 paper_data.py
+│       │   ├── 📄 paper_settings.py
+│       │   ├── 📄 question.py
+│       │   ├── 📄 question_paper.py
+│       │   ├── 📄 rubric.py
+│       │   ├── 📄 syllabus.py
+│       │   └── 📄 user_answers.py
+│       └── 📁 storage/
+│           └── 📄 __init__.py
+├── 📁 config/
+│   └── 📄 settings.py
+├── 📄 directory_tree.txt
+├── 📁 docker/
+│   ├── 📄 .env
+│   ├── 📄 .gitignore
+│   └── 📄 docker-compose.yml
+├── 📄 folder_structure.py
+├── 📄 generate_tree.py
+├── 📄 pyproject.toml
+├── 📄 requirements.txt
+└── 📄 temp.wav

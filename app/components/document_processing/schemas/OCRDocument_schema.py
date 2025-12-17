@@ -1,8 +1,7 @@
-# app/models/document.py
+# app/components/document_processing/schemas/OCRDocument_schema.py
 
 from typing import List, Optional
-from beanie import Document
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from datetime import datetime
 
 
@@ -20,7 +19,7 @@ class Chunk(BaseModel):
 # -------------------------------
 # Main OCR Document Schema
 # -------------------------------
-class OCRDocument(Document):
+class OCRDocument(BaseModel):
     filename: str
     full_text: str
     pages: int
@@ -36,7 +35,13 @@ class OCRDocument(Document):
     grade: Optional[str] = None
     year: Optional[str] = None
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    contains_images: bool = False
+    contains_tables: bool = False
 
-    class Settings:
-        name = "ocr_documents"   # MongoDB collection name
+
+class OCRDocumentResponse(BaseModel):
+    id: int
+    created_at: datetime
+
+    class Config:
+        orm_mode = True

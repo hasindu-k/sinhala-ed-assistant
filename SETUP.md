@@ -58,7 +58,51 @@ python -m pip install \
   "scikit-learn" "pandas" "indic-nlp-library" "python-dotenv" "psycopg[binary]"
 ```
 
-## 5. Run the API
+## 5. Set Up PostgreSQL Database with pgvector
+
+### Start Docker Container
+
+```bash
+# Default port (5432)
+docker run -d \
+  --name pgvector-db \
+  -e POSTGRES_PASSWORD=your-password \
+  -p 5432:5432 \
+  ankane/pgvector
+
+# Or custom port (5433) - Windows Command Prompt
+docker run -d --name pgvector-db -e POSTGRES_PASSWORD=your-password -p 5433:5432 ankane/pgvector
+```
+
+### Configure Database
+
+Connect to the container and run:
+
+```bash
+docker exec -it pgvector-db psql -U postgres
+```
+
+Then execute:
+
+```sql
+CREATE USER test_user WITH PASSWORD 'your-password';
+CREATE DATABASE "SinhalaDB" OWNER test_user;
+GRANT ALL PRIVILEGES ON DATABASE "SinhalaDB" TO test_user;
+\c "SinhalaDB"
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+### Environment Variable
+
+Add to `.env`:
+
+```
+DATABASE_URL=postgresql://test_user:your-password@localhost:5432/SinhalaDB
+```
+
+**Note:** Update port to 5433 if using custom port option.
+
+## 6. Run the API
 
 ```bash
 uvicorn app.main:app --reload --port 8000
