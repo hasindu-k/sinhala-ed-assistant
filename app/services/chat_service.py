@@ -2,7 +2,7 @@ from typing import Optional, Dict, Any
 from uuid import UUID
 
 from app.core.database import SessionLocal
-from app.models.chat_message import ChatMessage
+from app.shared.models.chat_message import ChatMessage
 
 
 def save_chat_message(

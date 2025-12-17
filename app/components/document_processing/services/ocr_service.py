@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 from fastapi import UploadFile, Depends
 
 from sqlalchemy.orm import Session
-from app.database.models import OCRDocument, ChunkModel
+from app.shared.models.ocr_models import OCRDocument, ChunkModel
 from app.core.database import get_db
 from app.components.document_processing.utils.file_operations import (
     save_upload_to_temp, 
