@@ -4,7 +4,7 @@
 This guide explains how to install PostgreSQL 16, create a user and database, install **pgvector**, and enable it for your project.
 ---
 
-## ## **📌 1. Install PostgreSQL 16**
+## **📌 1. Install PostgreSQL 16**
 
 Run the following commands in your terminal:
 
@@ -15,7 +15,7 @@ sudo apt install postgresql postgresql-contrib
 
 ---
 
-## ## **📌 2. Create PostgreSQL User**
+## **📌 2. Create PostgreSQL User**
 
 Switch to PostgreSQL superuser:
 
@@ -45,7 +45,7 @@ exit
 
 ---
 
-## ## **📌 3. Create a New Database**
+## **📌 3. Create a New Database**
 
 Log in as your new user:
 
@@ -61,7 +61,7 @@ CREATE DATABASE "SinhalaLearn";
 
 ---
 
-## ## **📌 4. Install pgvector Extension (Required for Embeddings)**
+## **📌 4. Install pgvector Extension (Required for Embeddings)**
 
 Run these commands **on your Ubuntu system**, NOT inside PostgreSQL:
 
@@ -78,7 +78,7 @@ sudo service postgresql restart
 
 ---
 
-## ## **📌 5. Enable pgvector in Your Database**
+## **📌 5. Enable pgvector in Your Database**
 
 Open PostgreSQL again:
 
@@ -107,7 +107,7 @@ CREATE EXTENSION
 
 ---
 
-## ## **📌 6. Your DATABASE_URL for FastAPI**
+## **📌 6. Your DATABASE_URL for FastAPI**
 
 In your `.env` file:
 
@@ -117,7 +117,7 @@ DATABASE_URL=postgresql+psycopg2://saman:replace-your-password@localhost:5432/Si
 
 ---
 
-## ## ✔️ Done!
+## ✔️ Done!
 
 You now have:
 

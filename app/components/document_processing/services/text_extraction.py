@@ -3,10 +3,13 @@ import pytesseract
 import cv2
 import numpy as np
 
+import logging
+logger = logging.getLogger(__name__)
+
 def extract_text_from_pdf(file_path: str) -> tuple:
     with pdfplumber.open(file_path) as pdf:
         text = ""
-        print(f"Extracting text from {len(pdf.pages)} pages...")
+        logger.info("Extracting text from %d pages...", len(pdf.pages))
         for page_num, page in enumerate(pdf.pages, 1):
             page_text = page.extract_text() or ""
             text += f"\n\n--- PAGE {page_num} ---\n{page_text}"

@@ -1,5 +1,8 @@
 # app/components/document_processing/services/ocr_service.py
 
+import logging
+logger = logging.getLogger(__name__)
+
 from fastapi import UploadFile, Depends
 
 from sqlalchemy.orm import Session
@@ -10,7 +13,7 @@ from app.components.document_processing.utils.file_operations import (
     remove_temp_file, 
     convert_file_to_images
 )
-from app.components.document_processing.utils.text_cleaner import basic_clean, looks_like_legacy_sinhala
+from app.components.document_processing.utils.text_cleaner import basic_clean
 from app.components.document_processing.services.embedding_service import (
     embed_chunks,
     embed_document_text,
@@ -78,7 +81,7 @@ async def save_processed_data_to_db(file: UploadFile, db: Session, doc_type: str
     db.commit()
     db.refresh(processed_doc)
 
-    print(f"Document {processed_doc.id} saved successfully.")
+    logger.info("Document %s saved successfully.", processed_doc.id)
 
 # Main processing function
 async def process_question_papers(file: UploadFile, db: Session = Depends(get_db)) -> dict:
@@ -97,6 +100,7 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
 
     ext = file.filename.split(".")[-1].lower()
     if ext not in ["pdf", "png", "jpg", "jpeg", "tiff", "webp"]:
+        logger.error("Unsupported file type received: %s", ext)
         raise ValueError("Unsupported file type. Please upload a PDF or image file.")
 
     # only papers
@@ -104,6 +108,8 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
 
     # Step 1: Save file
     saved_file_path = await save_upload_to_temp(file)
+
+    logger.info("Started processing question paper: %s", file.filename)
     
     # Step 3: Check if the document is text-based or scanned
     is_text_based_file = should_use_direct_text_extraction(saved_file_path)
@@ -125,15 +131,15 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
     # separate  paper metadata, instructions, and question sections using generative AI if needed
     paper_metadata, instructions, paper_structure = separate_paper_content(cleaned_text)
 
-    print(f"Paper Metadata: {paper_metadata}")
-    print(f"Instructions: {instructions}")
-    print(f"Paper Structure: {paper_structure}")
+    logger.debug("Paper metadata: %s", paper_metadata)
+    logger.debug("Instructions: %s", instructions)
+    logger.debug("Paper structure: %s", paper_structure)
 
     # Step 7: Insert the processed data into the database
-    print("Inserting processed data into the database...")
-    print(f"Extracted Text: {cleaned_text}")
-    print(f"Contains Images: {contains_images}")
-    print(f"Contains Tables: {contains_tables}")
+    logger.info("Inserting processed data into the database...")
+    logger.debug("Extracted Text: %s", cleaned_text)
+    logger.debug("Contains Images: %s", contains_images)
+    logger.debug("Contains Tables: %s", contains_tables)
 
     # Call save_processed_data_to_db to insert data into the database
     await save_processed_data_to_db(file, db, doc_type, page_count, cleaned_text, contains_images, contains_tables)
