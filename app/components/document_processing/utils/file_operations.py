@@ -4,6 +4,9 @@ import os
 import tempfile
 from fastapi import UploadFile
 
+import logging
+logger = logging.getLogger(__name__)
+
 async def save_upload_to_temp(file: UploadFile) -> str:
     """
     Save uploaded file to a temp location and return the path.
@@ -21,7 +24,7 @@ def remove_temp_file(temp_path: str):
     try:
         os.remove(temp_path)
     except Exception as e:
-        print(f"[WARN] Failed to remove temp file {temp_path}: {e}")
+        logger.warning("Failed to remove temp file %s: %s", temp_path, e)
 
 def convert_file_to_images(file_path: str, ext: str):
     """
