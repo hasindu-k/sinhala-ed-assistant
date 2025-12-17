@@ -10,7 +10,7 @@ from app.components.document_processing.utils.file_operations import (
     remove_temp_file, 
     convert_file_to_images
 )
-from app.components.document_processing.utils.text_cleaner import basic_clean
+from app.components.document_processing.utils.text_cleaner import basic_clean, looks_like_legacy_sinhala
 from app.components.document_processing.services.embedding_service import (
     embed_chunks,
     embed_document_text,
@@ -173,7 +173,7 @@ async def process_ocr_file(file: UploadFile, db: Session = Depends(get_db)) -> d
     # -----------------------------
     images = convert_file_to_images(temp_path, ext)
 
-    extracted_text, page_count = await process_ocr_for_images(images)
+    extracted_text, page_count = process_ocr_for_images(images)
 
     # -----------------------------
     # 4. Clean OCR text
@@ -239,7 +239,7 @@ async def process_syllabus_files(file: UploadFile, db: Session = Depends(get_db)
     # -----------------------------
     images = convert_file_to_images(temp_path, ext)
 
-    extracted_text, page_count = await process_ocr_for_images(images)
+    extracted_text, page_count = process_ocr_for_images(images)
 
     # -----------------------------
     # 4. Clean OCR text
@@ -321,11 +321,16 @@ async def process_textbooks(file: UploadFile, db: Session = Depends(get_db)) -> 
     # -----------------------------
     # 3. Extract text (hybrid logic)
     # -----------------------------
-    if ext == "pdf" and should_use_direct_text_extraction(temp_path):
-        extracted_text, page_count = extract_text_from_pdf(temp_path)
-    else:
-        images = convert_file_to_images(temp_path, ext)
-        extracted_text, page_count = await process_ocr_for_images(images)
+    # if ext == "pdf" and should_use_direct_text_extraction(temp_path):
+    #     extracted_text, page_count = extract_text_from_pdf(temp_path)
+
+    #     if looks_like_legacy_sinhala(extracted_text):
+    #         print("⚠ Legacy Sinhala detected → switching to OCR")
+    #         images = convert_file_to_images(temp_path, ext)
+    #         extracted_text, page_count = await process_ocr_for_images(images)
+    # else:
+    images = convert_file_to_images(temp_path, ext)
+    extracted_text, page_count = process_ocr_for_images(images)
 
     # -----------------------------
     # 4. Clean text
@@ -340,7 +345,7 @@ async def process_textbooks(file: UploadFile, db: Session = Depends(get_db)) -> 
     # -----------------------------
     doc = await save_ocr_document_to_db(
         file=file,
-        text=cleaned_text,
+        cleaned_text=cleaned_text,
         page_count=page_count,
         doc_type=doc_type,
         db=db
@@ -368,7 +373,7 @@ async def process_textbooks(file: UploadFile, db: Session = Depends(get_db)) -> 
     # -----------------------------
     # 8. Cleanup
     # -----------------------------
-    await remove_temp_file(temp_path)
+    remove_temp_file(temp_path)
 
     # -----------------------------
     # 9. Return response

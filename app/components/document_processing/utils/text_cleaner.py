@@ -43,8 +43,32 @@ def basic_clean(text: str) -> str:
 
     # Step 4: Trim
     text = text.strip()
+
+    text = rule_based_correction(text)
     
     # log cleaned text
     print(f"Cleaned text: {text}")
 
     return text
+
+def rule_based_correction(text: str) -> str:
+    rules = {
+        r"\bwa\b": "සහ",
+        r"\bA\s*wa\b": "A සහ",
+        # r"\b0\b": "D",
+        # r"\b13\b": "E",
+        # r"\b10\b": "E",
+        # r"\bl\b": "C",
+    }
+
+    for pattern, replacement in rules.items():
+        text = re.sub(pattern, replacement, text)
+
+    return text
+
+def looks_like_legacy_sinhala(text: str) -> bool:
+    # Sinhala Unicode range: \u0D80 – \u0DFF
+    sinhala_unicode = re.search(r'[\u0D80-\u0DFF]', text)
+    ascii_heavy = re.search(r'[a-zA-Z;=<>]', text)
+
+    return (not sinhala_unicode) and ascii_heavy

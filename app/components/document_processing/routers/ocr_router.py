@@ -39,7 +39,7 @@ async def scan_papers(file: UploadFile = File(...), db: Session = Depends(get_db
     result = await process_question_papers(file, db=db)
     return result
 
-@router.get("/scan-textbooks")
+@router.post("/scan-textbooks")
 async def scan_text_books(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
     Endpoint to scan and process textbooks.
