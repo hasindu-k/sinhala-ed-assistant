@@ -1,4 +1,5 @@
-# app/database/models.py
+"""OCR-related database models moved from app/database/models.py
+"""
 
 import uuid
 from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, ForeignKey
