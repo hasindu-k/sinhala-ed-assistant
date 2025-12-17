@@ -56,76 +56,125 @@ SINHALA_STRUCTURE_PROMPT = """
 You are an expert AI for analyzing Sri Lankan exam papers (Sinhala and English medium).
 Your task is to structure the provided text into a strict JSON format.
 
-**Target Analysis:**
-1.  **Metadata**: Look for Sinhala/English terms:
-    - Subject (විෂය)
-    - Grade (ශ්‍රේණිය)
-    - Term (වාරය) - e.g., "First Term", "පළමු වාර"
-    - Duration (කාලය) - e.g., "පැය 2", "2 hours"
-    - Year (වර්ෂය)
+========================
+IMPORTANT MARKING RULES
+========================
+- In Sri Lankan exam papers, NO question or subquestion has 0 marks.
+- If marks are NOT clearly specified, use null.
+- NEVER assign marks = 0.
 
-2.  **Instructions (උපදෙස්)**: Extract the list of rules given to students at the start.
+========================
+PAPER & NUMBERING RULES
+========================
+- Sri Lankan exam papers are divided into sections such as:
+  - Paper I (usually MCQs)
+  - Paper II (Structured / Essay questions)
 
-3.  **Structure (Questions & Marks)**:
-    - Identify **main questions** starting with numbers (1, 2, 3...) or Sinhala indicators.
-    - **Crucial**: Identify mark allocations.
-      - Look for patterns like: "(XX marks)", "(ලකුණු XX)", "[XX]", "(XX)".
-      - In Sinhala papers, marks are often at the end of the line inside brackets.
-    - Identify **subquestions**:
-      - Common formats: "(i)", "(ii)", "(a)", "(b)", "(අ)", "(ආ)".
-      - Assign marks to each subquestion if specified.
+- EACH paper has its OWN numbering system.
+  - Paper I numbering starts from 1.
+  - Paper II numbering starts again from 1.
+  - DO NOT continue numbering across papers (e.g., avoid 41, 42 for Paper II).
 
-**Output Format (Strict JSON):**
+- Questions MUST be grouped under their correct paper.
+- NEVER mix Paper I and Paper II questions in the same numbering scope.
+
+========================
+MCQ STRUCTURE RULES
+========================
+- MCQs usually belong to Paper I unless explicitly stated otherwise.
+- Do NOT create artificial group keys (e.g., mcq_group_1).
+- If multiple MCQs share common instructions or data:
+  - Attach the shared information ONLY to the FIRST question number using "shared_stem".
+  - Subsequent questions must reference it using "inherits_shared_stem_from".
+
+========================
+TARGET ANALYSIS
+========================
+
+1. **Metadata Extraction**
+   Identify Sinhala or English indicators for:
+   - Subject (විෂය)
+   - Grade (ශ්‍රේණිය)
+   - Term (වාරය)
+   - Duration (කාලය)
+   - Year (වර්ෂය)
+   - Medium (Sinhala / English)
+
+2. **Instructions (උපදෙස්)**
+   - Extract general instructions at the beginning of EACH paper.
+   - Store Paper I and Paper II instructions separately if applicable.
+
+3. **Question Identification**
+   - Detect which paper a question belongs to using headings such as:
+     - "Paper I", "I කොටස", "බහුවරණ ප්‍රශ්න"
+     - "Paper II", "II කොටස", "ව්‍යුහගත ප්‍රශ්න"
+   - Group questions under the correct paper.
+
+4. **Multiple Choice Questions (Paper I)**
+   - Detect MCQs by options like:
+     - (1)(2)(3)(4), (A)(B)(C)(D), (අ)(ආ)(ඉ)(ඊ)
+   - Each MCQ MUST include:
+     - "type": "mcq"
+     - "text"
+     - "options"
+     - "marks": null
+
+5. **Structured / Essay Questions (Paper II)**
+   - Identify main questions and subquestions.
+   - Assign marks ONLY if explicitly stated.
+
+========================
+OUTPUT FORMAT (STRICT JSON)
+========================
+
 {{
   "metadata": {{
-    "subject": "string (e.g. Science / විද්‍යාව)",
-    "grade": "string (e.g. 10)",
+    "subject": "string",
+    "grade": "string",
     "year": "string",
     "term": "string",
     "duration": "string",
     "medium": "Sinhala/English"
   }},
-  "instructions": ["instruction 1", "instruction 2"],
+  "instructions": {{
+    "Paper_I": [],
+    "Paper_II": []
+  }},
   "PaperStructure": {{
-    "main_questions": {{
-      "1": {{
-        "total_marks": 12,
-        "subquestions": {{
-          "a": {{ "text": "<text>", "marks": 3 }},
-          "b": {{ "text": "<text>", "marks": 3 }}
-        }}
-      }},
-      "2": {{
-        "total_marks": 8,
-        "subquestions": {{
-          "a": {{ "text": "<text>", "marks": 4 }},
-          "b": {{ "text": "<text>", "marks": 4 }}
-        }}
-      }}
+    "Paper_I": {{
+      "type": "MCQ",
+      "questions": {{}}
+    }},
+    "Paper_II": {{
+      "type": "Structured",
+      "questions": {{}}
     }}
   }}
 }}
 
-**TEXT TO PROCESS:**
+========================
+TEXT TO PROCESS
+========================
 {content}
 """
 
 def separate_paper_content(text: str):
     """
-    Separates paper content into Metadata, Instructions, and Structure 
-    with specific support for Sinhala terms and formatting.
+    Separates paper content into:
+    - Metadata
+    - Instructions (Paper I / Paper II)
+    - PaperStructure (Paper I / Paper II with independent numbering)
+
+    Fully aligned with Sri Lankan exam paper formats.
     """
     if not text or not text.strip():
-        return {}, [], []
+        return {}, {}, {}
 
     model = genai.GenerativeModel("gemini-2.5-flash")
 
     try:
-        # We assume the text might be long, so we take a safe chunk. 
-        # For structure extraction, usually the first 15k-20k characters capture the bulk 
-        # of the hierarchy if it's not a massive document.
         response = model.generate_content(
-            SINHALA_STRUCTURE_PROMPT.format(content=text[:20000]), 
+            SINHALA_STRUCTURE_PROMPT.format(content=text[:20000]),
             generation_config={"response_mime_type": "application/json"},
             safety_settings={
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -136,24 +185,34 @@ def separate_paper_content(text: str):
         )
 
         result = json.loads(response.text)
-        
-        paper_metadata = result.get("metadata", {})
-        instructions = result.get("instructions", [])
-        paper_structure = result.get("PaperStructure", {}).get("main_questions", {})
 
-        # Post-processing: If the model returns null for marks but the user needs 0, handle it here.
-        # But usually keeping it None/null is safer until manual verification.
+        paper_metadata = result.get("metadata", {})
+
+        instructions = result.get("instructions", {
+            "Paper_I": [],
+            "Paper_II": []
+        })
+
+        paper_structure = result.get("PaperStructure", {
+            "Paper_I": {},
+            "Paper_II": {}
+        })
+
+        # 🔒 Defensive normalization (optional but recommended)
+        for paper_key in ["Paper_I", "Paper_II"]:
+            paper = paper_structure.get(paper_key)
+            if paper and "questions" not in paper:
+                paper["questions"] = {}
 
         return paper_metadata, instructions, paper_structure
 
     except json.JSONDecodeError:
-        print("Error: Model output was not valid JSON.")
-        # Fallback: Return raw text segments if JSON fails (optional backup logic)
-        return {}, [], []
-        
+        print("❌ Error: Model output was not valid JSON.")
+        return {}, {}, {}
+
     except Exception as e:
-        print(f"Error in Sinhala structure extraction: {e}")
-        return {}, [], []
+        print(f"❌ Error in Sinhala structure extraction: {e}")
+        return {}, {}, {}
     
 def fix_sinhala_ocr(text: str) -> str:
     """
