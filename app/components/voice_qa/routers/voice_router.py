@@ -3,6 +3,7 @@
 from fastapi import APIRouter, UploadFile, File, Form
 from uuid import UUID
 
+from app.components.voice_qa.services.hybrid_retrieval import retrieve_top_k
 from app.components.voice_qa.services.whisper_service import (
     VoiceService,
     VoiceQAService,
@@ -63,11 +64,12 @@ async def qa_from_voice(
 
     # Save USER message (get message_id)
     user_message_id = save_chat_message(
-        session_id=UUID(session_id),
-        sender="user",
-        message=question_text,
-        tokens_used=0,
-        audio_url=audio_url,
+    session_id=UUID(session_id),
+    role="user",
+    modality="voice",
+    content=question_text,      # standardized text
+    transcript=raw_text,        # raw whisper output
+    audio_url=audio_url,
     )
 
     # Resolve allowed resources
@@ -79,11 +81,10 @@ async def qa_from_voice(
     )
 
     # RAG
-    question_embedding = VoiceQAService.generate_text_embedding(question_text)
-    top_chunks = VoiceQAService.find_similar_chunks(
-        question_embedding=question_embedding,
-        resource_ids=allowed_resource_ids,
-        top_k=top_k,
+    top_chunks = retrieve_top_k(
+    query=question_text,
+    resource_ids=allowed_resource_ids,
+    top_k=top_k,
     )
 
     prompt = VoiceQAService.build_prompt(question_text, top_chunks)
@@ -91,11 +92,12 @@ async def qa_from_voice(
 
     # Save ASSISTANT message
     save_chat_message(
-        session_id=UUID(session_id),
-        sender="assistant",
-        message=answer,
-        tokens_used=0,
+    session_id=UUID(session_id),
+    role="assistant",
+    modality="text",
+    content=answer,
     )
+
 
     return {
         "question": question_text,
