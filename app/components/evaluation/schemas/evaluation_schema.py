@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator as pydantic_validator
 from typing import List, Dict, Optional
 
 
@@ -52,9 +52,20 @@ class PaperUpload(BaseModel):
     sub_questions_per_main: int  # legacy only
 
 
+class StudentAnswerInput(BaseModel):
+    student_id: str
+    raw_text: str
+
+
 class AnswerUpload(BaseModel):
     user_id: str
-    raw_text: str
+    answers: List[StudentAnswerInput]
+
+    @pydantic_validator('answers')
+    def validate_answers_length(cls, v):
+        if not (1 <= len(v) <= 10):
+            raise ValueError('Number of answer scripts must be between 1 and 10')
+        return v
 
 
 # --- NEW: Paper Structure Schemas ---

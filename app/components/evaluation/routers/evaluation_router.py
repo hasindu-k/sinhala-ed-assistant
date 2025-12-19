@@ -318,26 +318,41 @@ def upload_answers(payload: AnswerUpload, db: Session = Depends(get_db)):
     if not settings:
         raise HTTPException(status_code=400, detail="Paper settings not found. Upload settings first.")
 
-    # IMPORTANT CHANGE:
-    # We no longer rely on settings.subquestions_per_main (removed from system logic).
-    numbered = build_numbered_answers(
-        raw_text=payload.raw_text,
-        total_main_questions=settings.total_main_questions,
-        subquestions_per_main=26,  # soft cap, supports variable structures
-    )
+    processed_results = []
 
-    existing = db.query(UserAnswers).filter_by(user_id=payload.user_id).first()
-    if existing:
-        existing.answers = numbered
-    else:
-        db.add(UserAnswers(user_id=payload.user_id, answers=numbered))
+    for answer_input in payload.answers:
+        # We no longer rely on settings.subquestions_per_main (removed from system logic).
+        numbered = build_numbered_answers(
+            raw_text=answer_input.raw_text,
+            total_main_questions=settings.total_main_questions,
+            subquestions_per_main=26,  # soft cap, supports variable structures
+        )
+
+        existing = db.query(UserAnswers).filter_by(
+            user_id=payload.user_id, 
+            student_id=answer_input.student_id
+        ).first()
+
+        if existing:
+            existing.answers = numbered
+        else:
+            db.add(UserAnswers(
+                user_id=payload.user_id, 
+                student_id=answer_input.student_id,
+                answers=numbered
+            ))
+        
+        processed_results.append({
+            "student_id": answer_input.student_id,
+            "extracted_answers_count": len(numbered)
+        })
 
     db.commit()
 
     return {
         "status": "success",
-        "message": "Student answers stored successfully",
-        "extracted_answers": numbered,
+        "message": f"Successfully processed {len(processed_results)} student answer scripts",
+        "details": processed_results,
     }
 
 

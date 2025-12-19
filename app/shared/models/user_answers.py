@@ -5,5 +5,6 @@ class UserAnswers(Base):
     __tablename__ = "user_answers"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, index=True, unique=True)
+    user_id = Column(String, index=True)
+    student_id = Column(String, index=True)
     answers = Column(JSON)   # dict: {"Q01_a": "...", "Q01_b": "..."}
