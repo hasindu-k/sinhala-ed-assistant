@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from uuid import UUID
 from app.schemas.message import (
     MessageCreate,
+    MessageDetail,
     MessageResponse,
     MessageDetail,
     MessageAttachRequest,
@@ -23,8 +24,16 @@ def create_user_message(session_id: UUID, payload: MessageCreate):
     pass
 
 
-@router.get("/{message_id}", response_model=MessageDetail)
+@router.get("/{message_id}", response_model=MessageResponse)
 def get_message(message_id: UUID):
+    """
+    Get a single message.
+    """
+    pass
+
+
+@router.get("/{message_id}/details", response_model=MessageDetail)
+def get_message_details(message_id: UUID):
     """
     Get a single message with all details.
     """

@@ -2,6 +2,7 @@ from fastapi import APIRouter, UploadFile, File
 from uuid import UUID
 from app.schemas.resource import (
     ResourceFileResponse,
+    ResourceFileCreate,
     ResourceFileUpdate,
     ResourceUploadResponse,
     ResourceProcessResponse
@@ -35,12 +36,12 @@ def get_resource(resource_id: UUID):
     pass
 
 
-# @router.put("/{resource_id}", response_model=ResourceFileResponse)
-# def update_resource(resource_id: UUID, payload: ResourceFileUpdate):
-#     """
-#     Update resource metadata.
-#     """
-#     pass
+@router.put("/{resource_id}", response_model=ResourceFileResponse)
+def update_resource(resource_id: UUID, payload: ResourceFileUpdate):
+    """
+    Update resource metadata.
+    """
+    pass
 
 
 @router.delete("/{resource_id}")
