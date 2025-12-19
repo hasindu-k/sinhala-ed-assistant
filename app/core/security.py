@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
-from typing import Any, Optional
+import uuid
+from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
@@ -29,24 +30,38 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(sha256_hash, hashed_password)
 
 
-def _create_token(data: dict[str, Any], expires_delta: timedelta) -> str:
+def _create_token(data: dict[str, Any], expires_delta: timedelta) -> tuple[str, str]:
+    """Create a JWT token and return (token, jti)."""
+    jti = str(uuid.uuid4())
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + expires_delta
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    to_encode.update({"exp": expire, "jti": jti})
+    token = jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    return token, jti
 
 
 def create_access_token(user_id: UUID) -> str:
-    return _create_token(
+    token, _ = _create_token(
         {"sub": str(user_id), "type": "access"},
         timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     )
+    return token
 
 
-def create_refresh_token(user_id: UUID) -> str:
-    return _create_token(
+def create_refresh_token(user_id: UUID) -> tuple[str, str, datetime]:
+    """Create refresh token and return (token, jti, expires_at)."""
+    token, jti = _create_token(
         {"sub": str(user_id), "type": "refresh"},
         timedelta(minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES),
+    )
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES)
+    return token, jti, expires_at
+
+
+def create_password_reset_token(user_id: UUID) -> str:
+    return _create_token(
+        {"sub": str(user_id), "type": "reset"},
+        timedelta(minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES),
     )
 
 
