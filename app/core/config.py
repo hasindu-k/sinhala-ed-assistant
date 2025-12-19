@@ -23,6 +23,17 @@ class Settings(BaseSettings):
     # Embedding model for RAG
     MODEL_EMBEDDING_NAME: str = "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
 
+    # Email (SMTP)
+    MAIL_MAILER: str = "smtp"
+    MAIL_HOST: str = "smtp.gmail.com"
+    MAIL_PORT: int = 587
+    MAIL_USERNAME: Optional[str] = None
+    MAIL_PASSWORD: Optional[str] = None
+    MAIL_ENCRYPTION: str = "tls"
+    MAIL_FROM_ADDRESS: str = "admin@sinhalalearn.online"
+    MAIL_FROM_NAME: str = "Sinhala Educational Assistant"
+    FRONTEND_URL: str = "http://localhost:3000"  # for reset link
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

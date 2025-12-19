@@ -24,6 +24,7 @@ from app.core.security import (
 )
 from app.services.user_service import UserService
 from app.repositories.refresh_token_repository import RefreshTokenRepository
+from app.services.email_service import EmailService
 
 router = APIRouter()
 
@@ -86,18 +87,35 @@ def signin(payload: SignInRequest, db: Session = Depends(get_db)):
 
 @router.post("/forgot-password")
 def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    """Start password reset flow: generate a short-lived reset token.
-
-    In production, you'd email this token to the user. Here, we return it
-    conditionally for development/testing.
+    """Start password reset flow: generate reset token and send email.
+    
+    Always returns success message to prevent email enumeration attacks.
+    In development, also returns the token for testing.
     """
     service = UserService(db)
     user = service.get_user_by_email(payload.email)
 
-    # Always return a generic message; include token only if the account exists.
-    response = {"detail": "Password reset instructions sent if the account exists."}
+    # Always return generic message
+    response = {"detail": "If an account exists with this email, password reset instructions have been sent."}
+    
     if user:
-        response["reset_token"] = create_password_reset_token(user.id)
+        # Generate reset token
+        reset_token = create_password_reset_token(user.id)
+        
+        # Send email
+        email_service = EmailService()
+        email_sent = email_service.send_password_reset_email(
+            to_email=user.email,
+            reset_token=reset_token,
+            user_name=user.full_name
+        )
+        
+        # In development, include token in response for testing
+        from app.core.config import settings
+        if settings.ENV == "development":
+            response["reset_token"] = reset_token
+            response["email_sent"] = email_sent
+    
     return response
 
 
