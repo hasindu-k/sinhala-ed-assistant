@@ -104,24 +104,4 @@ class VoiceQAService:
         except Exception as e:
             print(f"[VoiceQAService] LLM generation failed: {e}")
             return ""
-
-    @staticmethod
-    def qa_from_audio(file_path: str, top_k: int = 3) -> Dict:
-        """Run the end-to-end pipeline given a local audio file path.
-
-        Returns a dict with keys: question, retrieved_chunks, answer
-        """
-        raw_text = VoiceService.transcribe_audio(file_path)
-        normalized, standard = VoiceService.standardize_southern_sinhala(raw_text)
-        question_text = standard or normalized or raw_text
-        # Use the hybrid retrieval pipeline which performs lexical + dense retrieval
-        # and cross-encoder re-ranking to return the final top-K contexts.
-        top_chunks = retrieve_top_k(question_text, top_k=top_k)
-        prompt = VoiceQAService.build_prompt(question_text, top_chunks)
-        answer = VoiceQAService.llm_generate(prompt)
-
-        return {
-            "question": question_text,
-            "retrieved_chunks": top_chunks,
-            "answer": answer,
-        }
+        
