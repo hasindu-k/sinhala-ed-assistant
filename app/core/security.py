@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 from typing import Any, Optional
 from uuid import UUID
 
@@ -12,16 +13,20 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.repositories.user_repository import UserRepository
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 http_bearer = HTTPBearer(auto_error=True)
 
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    password_bytes = password.encode("utf-8")
+    sha256_hash = hashlib.sha256(password_bytes).digest()
+    return pwd_context.hash(sha256_hash)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    password_bytes = plain_password.encode("utf-8")
+    sha256_hash = hashlib.sha256(password_bytes).digest()
+    return pwd_context.verify(sha256_hash, hashed_password)
 
 
 def _create_token(data: dict[str, Any], expires_delta: timedelta) -> str:
