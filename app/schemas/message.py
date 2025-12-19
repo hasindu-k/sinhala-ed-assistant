@@ -23,12 +23,21 @@ class GradeLevel(str, Enum):
     grade_12_13 = "12 - 13"
     university = "university"
 
+class MessageAttachmentType(str, Enum):
+    audio = "audio"
+    image = "image"
+    file = "file"
+    document = "document"
+
 
 # Message Schemas
 class MessageCreate(BaseModel):
     modality: MessageModality
     content: Optional[str] = None
     audio_url: Optional[str] = None
+    transcript: Optional[str] = None
+    audio_duration_sec: Optional[Decimal] = None
+    grade_level: Optional[GradeLevel] = None
 
 
 class MessageUpdate(BaseModel):
@@ -78,6 +87,8 @@ class MessageAttachmentResponse(BaseModel):
 
 class MessageAttachRequest(BaseModel):
     resource_ids: list[UUID]
+    display_name: Optional[str] = None
+    attachment_type: Optional[MessageAttachmentType] = None
 
 
 # Message Context Schemas
