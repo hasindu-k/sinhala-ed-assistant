@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
-from app.models.message_attachment import MessageAttachment
-from app.models.session_resource import SessionResource
+from app.shared.models.message_relations import MessageAttachment
+from app.shared.models.session_resources import SessionResource
 
 
 def get_allowed_resource_ids(
