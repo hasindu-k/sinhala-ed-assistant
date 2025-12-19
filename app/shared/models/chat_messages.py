@@ -13,7 +13,7 @@ class ChatMessage(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     chat_id = Column(UUID(as_uuid=True), ForeignKey("user_chats.chat_id"), nullable=False)
     user_id = Column(String, nullable=False)
-    role = Column(String, nullable=False)  # "user" or "teacher"
+    role = Column(String, nullable=False)  # "user" or "assistant"
     prompt_original = Column(Text, nullable=False)
     prompt_cleaned = Column(Text, nullable=True)
     model_raw_output = Column(Text, nullable=False)

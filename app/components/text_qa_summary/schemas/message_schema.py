@@ -8,7 +8,7 @@ class MessageResponse(BaseModel):
     id: uuid_pkg.UUID = Field(..., description="Message ID")
     chat_id: uuid_pkg.UUID = Field(..., description="Chat session ID")
     user_id: str = Field(..., description="User ID")
-    role: str = Field(..., description="Role: user or teacher")
+    role: str = Field(..., description="Role: user or assistant")
     prompt_original: str = Field(..., description="Original prompt")
     prompt_cleaned: Optional[str] = Field(None, description="Cleaned prompt")
     model_raw_output: str = Field(..., description="Raw model output")
