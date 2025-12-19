@@ -1,0 +1,75 @@
+# app/services/message_repository.py
+
+from typing import Optional, List, Dict
+from uuid import UUID
+from sqlalchemy.orm import Session
+
+from app.shared.models.message import Message
+
+
+class MessageRepository:
+    """Data access layer for Message."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create_user_message(
+        self,
+        session_id: UUID,
+        content: Optional[str],
+        modality: str = "text",
+        grade_level: Optional[str] = None,
+        audio_url: Optional[str] = None,
+        transcript: Optional[str] = None,
+        audio_duration_sec: Optional[float] = None,
+    ) -> Message:
+        msg = Message(
+            session_id=session_id,
+            role="user",
+            modality=modality,
+            content=content,
+            grade_level=grade_level,
+            audio_url=audio_url,
+            transcript=transcript,
+            audio_duration_sec=audio_duration_sec,
+        )
+        self.db.add(msg)
+        self.db.commit()
+        self.db.refresh(msg)
+        return msg
+
+    def create_system_message(self, session_id: UUID, content: Optional[str]) -> Message:
+        msg = Message(session_id=session_id, role="system", modality="text", content=content)
+        self.db.add(msg)
+        self.db.commit()
+        self.db.refresh(msg)
+        return msg
+
+    def create_assistant_message(
+        self,
+        session_id: UUID,
+        content: Optional[str],
+        model_info: Optional[Dict] = None,
+    ) -> Message:
+        msg = Message(
+            session_id=session_id,
+            role="assistant",
+            modality="text",
+            content=content,
+            model_name=(model_info or {}).get("model_name"),
+            prompt_tokens=(model_info or {}).get("prompt_tokens"),
+            completion_tokens=(model_info or {}).get("completion_tokens"),
+            total_tokens=(model_info or {}).get("total_tokens"),
+        )
+        self.db.add(msg)
+        self.db.commit()
+        self.db.refresh(msg)
+        return msg
+
+    def list_session_messages(self, session_id: UUID) -> List[Message]:
+        return (
+            self.db.query(Message)
+            .filter(Message.session_id == session_id)
+            .order_by(Message.created_at.asc())
+            .all()
+        )
