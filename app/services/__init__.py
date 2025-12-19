@@ -18,6 +18,8 @@ from app.services.evaluation import (
     QuestionPaperService,
     AnswerEvaluationService,
     EvaluationSessionService,
+    EvaluationResourceService,
+    PaperConfigService,
 )
 
 __all__ = [
@@ -36,4 +38,6 @@ __all__ = [
     "QuestionPaperService",
     "AnswerEvaluationService",
     "EvaluationSessionService",
+    "EvaluationResourceService",
+    "PaperConfigService",
 ]

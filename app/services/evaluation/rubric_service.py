@@ -139,6 +139,3 @@ class RubricService:
             criteria=criteria,
             description="Standard evaluation rubric with semantic, coverage, and BM25 criteria"
         )
-        rubric_type="evaluation",
-        created_by=created_by
-    )
