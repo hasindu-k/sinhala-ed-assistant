@@ -1,4 +1,4 @@
-# app/services/evaluation/evaluation_session_repository.py
+# app/repositories/evaluation/evaluation_session_repository.py
 
 from typing import Optional, List
 from uuid import UUID

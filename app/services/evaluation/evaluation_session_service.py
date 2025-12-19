@@ -4,7 +4,7 @@ from typing import Optional, List
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-from app.services.evaluation.evaluation_session_repository import EvaluationSessionRepository
+from app.repositories.evaluation.evaluation_session_repository import EvaluationSessionRepository
 
 
 class EvaluationSessionService:

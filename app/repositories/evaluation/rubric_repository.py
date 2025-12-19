@@ -1,4 +1,4 @@
-# app/services/evaluation/rubric_repository.py
+# app/repositories/evaluation/rubric_repository.py
 
 from typing import Optional, List
 from uuid import UUID

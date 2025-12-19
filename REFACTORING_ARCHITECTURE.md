@@ -1,8 +1,8 @@
-# Evaluation Services - Refactored Architecture
+# Services - Refactored Architecture
 
 ## Overview
 
-The evaluation services have been refactored into a clean **Service + Repository** pattern, separating data access logic from business logic.
+The evaluation and core services have been refactored into a clean **Service + Repository** pattern, separating data access logic from business logic.
 
 ---
 
@@ -45,6 +45,27 @@ Handles all database operations (CRUD) directly with models.
   - `create_paper_config()`, `get_paper_config()`
   - `update_paper_config()`
 
+#### Core Repositories
+
+- **`chat_session_repository.py`** - `ChatSessionRepository`
+  - `create_session()`, `get_session()`, `list_user_sessions()`, `validate_ownership()`
+- **`message_repository.py`** - `MessageRepository`
+  - `create_user_message()`, `create_system_message()`, `create_assistant_message()`, `list_session_messages()`
+- **`message_attachment_repository.py`** - `MessageAttachmentRepository`
+  - `attach_resource()`, `get_message_resources()`
+- **`message_context_repository.py`** - `MessageContextRepository`
+  - `log_used_chunks()`, `get_message_sources()`
+- **`message_safety_repository.py`** - `MessageSafetyRepository`
+  - `create_safety_report()`, `get_safety_report()`
+- **`resource_repository.py`** - `ResourceRepository`
+  - `upload_resource()`, `get_resource()`, `list_user_resources()`
+- **`resource_chunk_repository.py`** - `ResourceChunkRepository`
+  - `create_chunks()`, `get_chunks_by_resource()`, `vector_search()`
+- **`session_resource_repository.py`** - `SessionResourceRepository`
+  - `attach_resource_to_session()`, `get_session_resources()`
+- **`user_repository.py`** - `UserRepository`
+  - `get_user()`, `get_user_by_email()`, `create_user()`
+
 ### Service Layer
 
 Implements business logic by delegating to repositories.
@@ -70,6 +91,29 @@ Implements business logic by delegating to repositories.
   - Manages evaluation sessions and their resources
   - Handles paper configuration
 
+#### Core Services
+
+- **`chat_session_service.py`** - `ChatSessionService`
+  - Create/list sessions, ownership validation
+- **`message_service.py`** - `MessageService`
+  - Create user/system/assistant messages, list messages
+- **`message_attachment_service.py`** - `MessageAttachmentService`
+  - Attach resources to messages, list attachments
+- **`message_context_service.py`** - `MessageContextService`
+  - Log and read used chunks per message
+- **`message_safety_service.py`** - `MessageSafetyService`
+  - Create/get safety reports for messages
+- **`resource_service.py`** - `ResourceService`
+  - Upload and read user resources
+- **`resource_chunk_service.py`** - `ResourceChunkService`
+  - Persist chunks and perform vector search via pgvector
+- **`session_resource_service.py`** - `SessionResourceService`
+  - Link resources to chat sessions
+- **`user_service.py`** - `UserService`
+  - Basic user CRUD helpers
+- **`rag_service.py`** - `RAGService`
+  - Orchestrates retrieval, logs sources, and creates assistant messages
+
 ---
 
 ## Usage Example
@@ -77,12 +121,16 @@ Implements business logic by delegating to repositories.
 ```python
 from sqlalchemy.orm import Session
 from app.services.evaluation import RubricService, QuestionPaperService
+from app.services import MessageService, ChatSessionService, RAGService
 from uuid import UUID
 
 # Initialize services
 db: Session  # dependency injection from FastAPI
 rubric_service = RubricService(db)
 question_service = QuestionPaperService(db)
+message_service = MessageService(db)
+chat_session_service = ChatSessionService(db)
+rager = RAGService(db)
 
 # Create evaluation rubric
 user_id = UUID("...")
@@ -102,6 +150,21 @@ paper = question_service.create_question_paper(
 
 # Get complete paper with questions
 full_paper = question_service.get_question_paper_with_questions(paper.id)
+
+# Create a user message and generate an assistant response via RAG
+user_msg = message_service.create_user_message(
+  session_id=eval_session_id,
+  content="Explain the main idea of question 1",
+  modality="text",
+)
+resp = rager.generate_response(
+  session_id=eval_session_id,
+  user_message_id=user_msg.id,
+  user_query=user_msg.content,
+  resource_ids=[resource_id],
+  query_embedding=None,  # supply embedding to enable vector search
+)
+print(resp["assistant_message_id"], len(resp["sources"]))
 ```
 
 ---
@@ -148,6 +211,29 @@ app/services/evaluation/
 └── paper_config_service.py              # (legacy - to be migrated)
 ```
 
+```
+app/services/
+├── __init__.py                          # Exports core + evaluation services
+├── chat_session_repository.py           # ChatSessionRepository
+├── chat_session_service.py              # ChatSessionService
+├── message_repository.py                # MessageRepository
+├── message_service.py                   # MessageService
+├── message_attachment_repository.py     # MessageAttachmentRepository
+├── message_attachment_service.py        # MessageAttachmentService
+├── message_context_repository.py        # MessageContextRepository
+├── message_context_service.py           # MessageContextService
+├── message_safety_repository.py         # MessageSafetyRepository
+├── message_safety_service.py            # MessageSafetyService
+├── resource_repository.py               # ResourceRepository
+├── resource_service.py                  # ResourceService
+├── resource_chunk_repository.py         # ResourceChunkRepository
+├── resource_chunk_service.py            # ResourceChunkService
+├── session_resource_repository.py       # SessionResourceRepository
+├── session_resource_service.py          # SessionResourceService
+├── user_repository.py                   # UserRepository
+└── user_service.py                      # UserService
+```
+
 ---
 
 ## Migration Notes
@@ -156,3 +242,17 @@ app/services/evaluation/
 - Initialization: `service = ServiceClass(db: Session)`
 - All database operations delegated to repository methods
 - Services implement business logic and orchestration
+
+### Import Aggregation
+
+- Core and evaluation services are re-exported from `app/services/__init__.py` for convenience.
+
+```python
+from app.services import (
+  ChatSessionService,
+  MessageService,
+  ResourceService,
+  RubricService,
+  EvaluationSessionService,
+)
+```

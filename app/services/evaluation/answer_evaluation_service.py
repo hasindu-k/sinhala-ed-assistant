@@ -12,7 +12,7 @@ from uuid import UUID
 from decimal import Decimal
 from sqlalchemy.orm import Session
 
-from app.services.evaluation.answer_evaluation_repository import AnswerEvaluationRepository
+from app.repositories.evaluation.answer_evaluation_repository import AnswerEvaluationRepository
 
 
 class AnswerEvaluationService:

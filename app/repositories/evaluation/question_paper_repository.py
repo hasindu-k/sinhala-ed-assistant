@@ -1,4 +1,4 @@
-# app/services/evaluation/question_paper_repository.py
+# app/repositories/evaluation/question_paper_repository.py
 
 from typing import Optional, List, Dict
 from uuid import UUID

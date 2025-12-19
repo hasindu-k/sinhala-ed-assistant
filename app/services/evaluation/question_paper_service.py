@@ -4,7 +4,7 @@ from typing import Optional, List, Dict
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-from app.services.evaluation.question_paper_repository import QuestionPaperRepository
+from app.repositories.evaluation.question_paper_repository import QuestionPaperRepository
 
 
 class QuestionPaperService:

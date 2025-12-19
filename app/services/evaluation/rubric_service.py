@@ -4,7 +4,7 @@ from typing import Optional, List
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-from app.services.evaluation.rubric_repository import RubricRepository
+from app.repositories.evaluation.rubric_repository import RubricRepository
 
 
 class RubricService:
