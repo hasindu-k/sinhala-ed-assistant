@@ -1,17 +1,20 @@
 from sqlalchemy.orm import Session
-from app.models.message_attachment import MessageAttachment
-from app.models.session_resource import SessionResource
+from uuid import UUID
+
+from app.shared.models.message_relations import MessageAttachment
+from app.shared.models.session_resources import SessionResource
 
 
 def get_allowed_resource_ids(
+    *,
     db: Session,
-    session_id,
-    message_id,
+    session_id: UUID,
+    message_id: UUID,
 ):
     """
     Priority:
-    1. Files attached to this message
-    2. Files attached to the session
+    1. Message-level attachments
+    2. Session-level resources
     """
 
     # 1️⃣ message-level attachments
