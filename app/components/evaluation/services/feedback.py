@@ -104,22 +104,26 @@ Format:
 # ------------------------------------------------------------
 # OVERALL FEEDBACK
 # ------------------------------------------------------------
-def generate_overall_feedback(results: dict, final_score: float, max_score: float, language: str):
+def generate_overall_feedback(results: dict, final_score: float, max_score: float, language: str, ignored_main_questions: list = None):
 
     perf_lines = []
     for qid, r in results.items():
         perf_lines.append(
-            f"{qid}: {r.total_score}/{r.max_score} (sem={r.semantic_score}, cov={r.coverage_score}, bm25={r.bm25_score})"
+            f"{qid}: {r.total_score}/{r.max_score} (sem={r.semantic_score:.2f}, cov={r.coverage_score:.2f})"
         )
 
     perf_text = "\n".join(perf_lines)
+    
+    ignored_note = ""
+    if ignored_main_questions:
+        ignored_note = f"\nNote: The following main questions were answered but not counted towards the final grade (best N rule): {', '.join(ignored_main_questions)}"
 
     if language == "sinhala":
         prompt = f"""
 සිසුවාගේ මුළු ප්‍රශ්න පත්‍රය සඳහා structured සාරාංශ ප්‍රතිචාරයක් JSON ආකාරයෙන් ලබා දෙන්න.
 Markdown නොකරන්න.
 
-මුළු ලකුණු: {final_score} / {max_score}
+මුළු ලකුණු: {final_score} / {max_score}{ignored_note}
 
 විස්තර:
 {perf_text}
@@ -137,7 +141,7 @@ JSON format:
 Give an overall evaluation summary as structured JSON.
 No markdown.
 
-Final Score: {final_score} / {max_score}
+Final Score: {final_score} / {max_score}{ignored_note}
 
 Breakdown:
 {perf_text}
@@ -177,3 +181,4 @@ JSON format:
 
     except Exception:
         return raw
+

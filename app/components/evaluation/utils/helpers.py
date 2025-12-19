@@ -1,46 +1,40 @@
-# app/components/evaluation/utils/helpers.py
-
-# ------------------------------------------------------------
-# Extract Main Question ID
-# ------------------------------------------------------------
 def extract_main_question_id(qid: str) -> str:
-    """
-    Q03_a → Q03
-    Q02_d → Q02
-    """
     return qid.split("_")[0]
 
 
-# ------------------------------------------------------------
-# Get subquestion index (a,b,c,d → 0,1,2,3)
-# ------------------------------------------------------------
 def get_sub_index(qid: str) -> int:
     """
-    Converts Q04_c → 2
+    Q04_c -> 2, supports full alphabet a-z.
     """
     try:
         sub = qid.split("_")[1].lower()
-        return "abcd".index(sub)
-    except:
+        return "abcdefghijklmnopqrstuvwxyz".index(sub)
+    except Exception:
         return 0
 
 
-# ------------------------------------------------------------
-# Select BEST N main questions based on total scores
-# ------------------------------------------------------------
+def _main_sort_key(main_id: str) -> int:
+    """
+    "Q01" -> 1, safe fallback.
+    """
+    try:
+        return int(main_id.replace("Q", ""))
+    except Exception:
+        return 10**9
+
+
 def select_best_main_questions(grouped: dict, required: int):
     """
-    grouped = {
-        "Q01": [SubResult, SubResult, ...],
-        "Q02": [...],
-    }
+    Deterministic:
+    - Higher total first
+    - If tie: smaller main id first (Q01 before Q02)
     """
     totals = {}
-
     for main_id, subresults in grouped.items():
-        score_sum = sum(r.total_score for r in subresults)
-        totals[main_id] = score_sum
+        totals[main_id] = sum(r.total_score for r in subresults)
 
-    ordered = sorted(totals.keys(), key=lambda x: totals[x], reverse=True)
-
+    ordered = sorted(
+        totals.keys(),
+        key=lambda mid: (-totals[mid], _main_sort_key(mid)),
+    )
     return ordered[:required]

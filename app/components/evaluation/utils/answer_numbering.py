@@ -10,7 +10,7 @@ def clean_inline_markers(text: str):
 ).strip()
 
 
-def build_numbered_answers(raw_text: str, total_main_questions: int, subquestions_per_main: int):
+def build_numbered_answers(raw_text: str, total_main_questions: int, subquestions_per_main: int = 26):
     """
     UNIVERSAL ANSWER EXTRACTOR (FINAL VERSION)
 
@@ -18,6 +18,7 @@ def build_numbered_answers(raw_text: str, total_main_questions: int, subquestion
     - Subquestions mapped by ORDER only (0→a, 1→b…)
     - Removes roman numerals from inside content
     - Removes a), b., c), iv), v) from answer paragraphs
+    - Note: subquestions_per_main is now soft-capped (default high) to allow variable structures.
     """
 
     if not raw_text:
@@ -48,8 +49,10 @@ def build_numbered_answers(raw_text: str, total_main_questions: int, subquestion
     def store_answer(main_q, sub_idx, text):
         if main_q is None or sub_idx is None:
             return
-        if sub_idx >= subquestions_per_main:
-            return
+        
+        # We no longer strictly enforce subquestions_per_main here
+        # to allow flexibility for papers with varying subcounts.
+        # Max limit is implicitly 'z' (26) by logic below.
 
         cleaned = clean_inline_markers(text)
         key = chr(ord('a') + sub_idx)  # 0->a, 1->b, etc.
@@ -90,8 +93,8 @@ def build_numbered_answers(raw_text: str, total_main_questions: int, subquestion
             else:
                 current_sub_index += 1
 
-            # too many → treat as text
-            if current_sub_index >= subquestions_per_main:
+            # Limit subquestions to avoid infinite drift
+            if current_sub_index >= 26: 
                 current_sub_index -= 1
                 buffer.append(stripped)
                 continue

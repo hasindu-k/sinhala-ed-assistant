@@ -1,5 +1,3 @@
-# app/components/evaluation/services/scorer.py
-
 from app.components.evaluation.services.semantic_model import xlmr
 from app.components.evaluation.utils.text_utils import tokenize_sinhala, normalize_sinhala
 from rank_bm25 import BM25Okapi
@@ -23,13 +21,11 @@ def semantic_score(student_answer: str, retrieved: str) -> float:
         b = xlmr.encode(clean_retrieved, convert_to_tensor=True)
 
         similarity = float((a @ b.T) / (a.norm() * b.norm()))
-
         return (similarity + 1) / 2
 
     except Exception as e:
         print(f"[XLM-R ERROR] {e}")
         return 0.0
-
 
 
 def coverage_score(student_answer: str, retrieved: str) -> float:
@@ -51,21 +47,30 @@ def bm25_score(question_text: str, bm25: BM25Okapi) -> float:
         return 0.0
 
     scores = bm25.get_scores(tokens)
-    max_score = float(scores.max()) if len(scores) else 0.0
+    if scores is None or len(scores) == 0:
+        return 0.0
 
-    BM25_MAX = 6.0  # replace with dynamic if needed
-    return min(max_score / BM25_MAX, 1.0)
+    max_score = float(np.max(scores))
+    if max_score <= 0:
+        return 0.0
+
+    # Dynamic normalization:
+    # Use a high percentile as a soft "normalizer" to avoid a fixed magic number.
+    p95 = float(np.percentile(scores, 95))
+    normalizer = p95 if p95 > 0 else max_score
+    return float(min(max_score / (normalizer + 1e-9), 1.0))
 
 
 def retrieve_chunks(question_text: str, bm25: BM25Okapi, syllabus_chunks, top_n=3):
     tokens = tokenize_sinhala(question_text)
-
     if not tokens:
-        return [syllabus_chunks[0]]
+        return [syllabus_chunks[0]] if syllabus_chunks else []
 
     scores = bm25.get_scores(tokens)
-    top_indices = np.argsort(scores)[::-1][:top_n]
+    if scores is None or len(scores) == 0:
+        return [syllabus_chunks[0]] if syllabus_chunks else []
 
+    top_indices = np.argsort(scores)[::-1][:top_n]
     retrieved = [syllabus_chunks[i] for i in top_indices if scores[i] > 0.1]
 
     if not retrieved:
@@ -75,23 +80,13 @@ def retrieve_chunks(question_text: str, bm25: BM25Okapi, syllabus_chunks, top_n=
 
 
 def compute_scores_for_answer(
-    question_text,
-    student_answer,
-    syllabus_chunks,
-    rubric,
-    marks_distribution,
-    qid,
-    bm25
-
+    question_text: str,
+    student_answer: str,
+    syllabus_chunks: list,
+    rubric: dict,
+    allocated_marks: float,
+    bm25: BM25Okapi,
 ):
-
-    main_id = qid.split("_")[0]
-    sub_id = qid.split("_")[1]          # a, b, c, d
-    sub_index = ord(sub_id) - 97        # 0, 1, 2, 3
-
-    # NEW FIX: use single universal marks list
-    allocated_marks = marks_distribution[sub_index]
-
     retrieved_list = retrieve_chunks(question_text, bm25, syllabus_chunks)
     combined_text = " ".join(retrieved_list)
 
@@ -100,13 +95,13 @@ def compute_scores_for_answer(
     bm = bm25_score(question_text, bm25)
 
     final_weighted = (
-        sem * rubric["semantic_weight"] +
-        cov * rubric["coverage_weight"] +
-        bm * rubric["bm25_weight"]
+        sem * rubric["semantic_weight"]
+        + cov * rubric["coverage_weight"]
+        + bm * rubric["bm25_weight"]
     )
 
     final_marks = final_weighted * allocated_marks
-    final_marks = max(0, min(final_marks, allocated_marks))
+    final_marks = max(0.0, min(final_marks, allocated_marks))
 
     return {
         "semantic": sem,
