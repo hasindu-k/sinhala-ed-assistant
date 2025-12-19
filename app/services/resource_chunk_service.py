@@ -2,7 +2,7 @@ from typing import List, Dict
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-from app.services.resource_chunk_repository import ResourceChunkRepository
+from app.repositories.resource_chunk_repository import ResourceChunkRepository
 
 
 class ResourceChunkService:

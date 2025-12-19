@@ -2,7 +2,7 @@ from typing import Optional, Dict
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-from app.services.message_safety_repository import MessageSafetyRepository
+from app.repositories.message_safety_repository import MessageSafetyRepository
 
 
 class MessageSafetyService:

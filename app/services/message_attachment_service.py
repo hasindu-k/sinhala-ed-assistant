@@ -2,7 +2,7 @@ from typing import Optional, List
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-from app.services.message_attachment_repository import MessageAttachmentRepository
+from app.repositories.message_attachment_repository import MessageAttachmentRepository
 
 
 class MessageAttachmentService:

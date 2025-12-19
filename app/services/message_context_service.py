@@ -2,7 +2,7 @@ from typing import List, Dict
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-from app.services.message_context_repository import MessageContextRepository
+from app.repositories.message_context_repository import MessageContextRepository
 
 
 class MessageContextService:

@@ -1,4 +1,4 @@
-# app/services/resource_repository.py
+# app/repositories/resource_repository.py
 
 from typing import Optional, List
 from uuid import UUID

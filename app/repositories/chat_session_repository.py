@@ -1,4 +1,4 @@
-# app/services/chat_session_repository.py
+# app/repositories/chat_session_repository.py
 
 from typing import Optional, List
 from uuid import UUID

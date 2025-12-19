@@ -1,4 +1,4 @@
-# app/services/resource_chunk_repository.py
+# app/repositories/resource_chunk_repository.py
 
 from typing import List, Optional
 from uuid import UUID

@@ -1,4 +1,4 @@
-# app/services/message_context_repository.py
+# app/repositories/message_context_repository.py
 
 from typing import List, Optional, Dict
 from uuid import UUID

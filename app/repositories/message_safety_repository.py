@@ -1,4 +1,4 @@
-# app/services/message_safety_repository.py
+# app/repositories/message_safety_repository.py
 
 import json
 from typing import Optional, Dict

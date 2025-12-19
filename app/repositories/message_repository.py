@@ -1,4 +1,4 @@
-# app/services/message_repository.py
+# app/repositories/message_repository.py
 
 from typing import Optional, List, Dict
 from uuid import UUID

@@ -1,4 +1,4 @@
-# app/services/session_resource_repository.py
+# app/repositories/session_resource_repository.py
 
 from typing import List
 from uuid import UUID

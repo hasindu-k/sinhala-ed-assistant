@@ -2,7 +2,7 @@ from typing import Optional, List, Dict
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-from app.services.message_repository import MessageRepository
+from app.repositories.message_repository import MessageRepository
 
 
 class MessageService:

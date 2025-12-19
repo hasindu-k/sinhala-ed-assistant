@@ -1,4 +1,4 @@
-# app/services/user_repository.py
+# app/repositories/user_repository.py
 
 from typing import Optional
 from uuid import UUID

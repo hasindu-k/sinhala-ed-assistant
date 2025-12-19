@@ -2,7 +2,7 @@ from typing import Optional, List
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-from app.services.resource_repository import ResourceRepository
+from app.repositories.resource_repository import ResourceRepository
 
 
 class ResourceService:

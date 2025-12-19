@@ -2,7 +2,7 @@ from typing import List
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-from app.services.session_resource_repository import SessionResourceRepository
+from app.repositories.session_resource_repository import SessionResourceRepository
 
 
 class SessionResourceService:

@@ -1,4 +1,4 @@
-# app/services/message_attachment_repository.py
+# app/repositories/message_attachment_repository.py
 
 from typing import Optional, List
 from uuid import UUID
