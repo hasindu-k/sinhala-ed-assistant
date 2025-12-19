@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     # Database (optional)
     DATABASE_URL: Optional[str] = None
 
+    # Auth
+    JWT_SECRET_KEY: str = "change-me"  # override in .env
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    REFRESH_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
+
     # Embedding model for RAG
     MODEL_EMBEDDING_NAME: str = "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
 

@@ -10,3 +10,6 @@ pytesseract==0.3.13
 torch==2.9.1
 PyMuPDF==1.26.6
 firebase_admin
+pydantic[email]
+passlib[bcrypt]
+python-jose[cryptography]
