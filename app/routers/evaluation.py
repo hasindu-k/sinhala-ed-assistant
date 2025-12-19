@@ -2,14 +2,24 @@ from fastapi import APIRouter
 from uuid import UUID
 from app.schemas.evaluation import (
     EvaluationSessionCreate,
+    EvaluationSessionUpdate,
+    EvaluationSessionResponse,
+    EvaluationResourceAttach,
+    EvaluationResourceResponse,
     PaperConfigCreate,
-    AnswerDocumentCreate
+    PaperConfigResponse,
+    AnswerDocumentCreate,
+    AnswerDocumentResponse,
+    QuestionResponse,
+    SubQuestionResponse,
+    EvaluationResultDetail
 )
+from typing import List
 
 router = APIRouter()
 
 
-@router.post("/sessions")
+@router.post("/sessions", response_model=EvaluationSessionResponse)
 def create_evaluation_session(payload: EvaluationSessionCreate):
     """
     Start a new evaluation session with a rubric.
@@ -17,7 +27,15 @@ def create_evaluation_session(payload: EvaluationSessionCreate):
     pass
 
 
-@router.get("/sessions/{evaluation_id}")
+@router.get("/sessions", response_model=List[EvaluationSessionResponse])
+def list_evaluation_sessions():
+    """
+    List all evaluation sessions.
+    """
+    pass
+
+
+@router.get("/sessions/{evaluation_id}", response_model=EvaluationSessionResponse)
 def get_evaluation_session(evaluation_id: UUID):
     """
     Get evaluation session details.
@@ -25,11 +43,18 @@ def get_evaluation_session(evaluation_id: UUID):
     pass
 
 
-@router.post("/sessions/{evaluation_id}/resources")
+@router.put("/sessions/{evaluation_id}", response_model=EvaluationSessionResponse)
+def update_evaluation_session(evaluation_id: UUID, payload: EvaluationSessionUpdate):
+    """
+    Update evaluation session.
+    """
+    pass
+
+
+@router.post("/sessions/{evaluation_id}/resources", response_model=EvaluationResourceResponse)
 def attach_evaluation_resource(
     evaluation_id: UUID,
-    resource_id: UUID,
-    role: str
+    payload: EvaluationResourceAttach
 ):
     """
     Attach syllabus / question paper / answer script.
@@ -45,7 +70,15 @@ def parse_question_paper(evaluation_id: UUID):
     pass
 
 
-@router.post("/sessions/{evaluation_id}/paper-config")
+@router.get("/sessions/{evaluation_id}/questions", response_model=List[QuestionResponse])
+def get_parsed_questions(evaluation_id: UUID):
+    """
+    Get parsed questions from question paper.
+    """
+    pass
+
+
+@router.post("/sessions/{evaluation_id}/paper-config", response_model=PaperConfigResponse)
 def save_paper_config(evaluation_id: UUID, payload: PaperConfigCreate):
     """
     Save paper marking configuration.
@@ -53,13 +86,29 @@ def save_paper_config(evaluation_id: UUID, payload: PaperConfigCreate):
     pass
 
 
-@router.post("/sessions/{evaluation_id}/answers")
+@router.get("/sessions/{evaluation_id}/paper-config", response_model=PaperConfigResponse)
+def get_paper_config(evaluation_id: UUID):
+    """
+    Get paper marking configuration.
+    """
+    pass
+
+
+@router.post("/sessions/{evaluation_id}/answers", response_model=AnswerDocumentResponse)
 def register_answer_document(
     evaluation_id: UUID,
     payload: AnswerDocumentCreate
 ):
     """
     Register a student answer script.
+    """
+    pass
+
+
+@router.get("/sessions/{evaluation_id}/answers", response_model=List[AnswerDocumentResponse])
+def list_answer_documents(evaluation_id: UUID):
+    """
+    List all answer documents for an evaluation session.
     """
     pass
 
@@ -72,7 +121,7 @@ def evaluate_answer(answer_id: UUID):
     pass
 
 
-@router.get("/answers/{answer_id}/result")
+@router.get("/answers/{answer_id}/result", response_model=EvaluationResultDetail)
 def get_evaluation_result(answer_id: UUID):
     """
     Get evaluation result for an answer.
