@@ -24,6 +24,7 @@ from app.core.security import (
 )
 from app.services.user_service import UserService
 from app.repositories.refresh_token_repository import RefreshTokenRepository
+from app.repositories.password_reset_token_repository import PasswordResetTokenRepository
 from app.services.email_service import EmailService
 
 router = APIRouter()
@@ -99,8 +100,13 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     response = {"detail": "If an account exists with this email, password reset instructions have been sent."}
     
     if user:
-        # Generate reset token
-        reset_token = create_password_reset_token(user.id)
+        # Revoke any existing active reset tokens for this user
+        reset_token_repo = PasswordResetTokenRepository(db)
+        reset_token_repo.revoke_all_user_tokens(user.id)
+        
+        # Generate and store new reset token
+        reset_token, jti, expires_at = create_password_reset_token(user.id)
+        reset_token_repo.create_token(user.id, jti, expires_at)
         
         # Send email
         email_service = EmailService()
@@ -128,18 +134,32 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
         if data.get("type") != "reset":
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
         user_id = data.get("sub")
-        if not user_id:
+        jti = data.get("jti")
+        if not user_id or not jti:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+
+    # Check if token is valid in DB (not used, not revoked, not expired)
+    reset_token_repo = PasswordResetTokenRepository(db)
+    if not reset_token_repo.is_token_valid(jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="Token has already been used, revoked, or expired"
+        )
 
     service = UserService(db)
     user = service.get_user(UUID(user_id))
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
+    # Update password
     service.update_user(user, password=payload.new_password)
-    return {"detail": "Password reset processed."}
+    
+    # Mark token as used
+    reset_token_repo.mark_token_as_used(jti)
+    
+    return {"detail": "Password reset successfully."}
 
 
 @router.post("/refresh", response_model=AuthTokensResponse)

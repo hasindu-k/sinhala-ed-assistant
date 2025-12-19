@@ -58,11 +58,14 @@ def create_refresh_token(user_id: UUID) -> tuple[str, str, datetime]:
     return token, jti, expires_at
 
 
-def create_password_reset_token(user_id: UUID) -> str:
-    return _create_token(
+def create_password_reset_token(user_id: UUID) -> tuple[str, str, datetime]:
+    """Create password reset token and return (token, jti, expires_at) for DB storage."""
+    token, jti = _create_token(
         {"sub": str(user_id), "type": "reset"},
         timedelta(minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES),
     )
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES)
+    return token, jti, expires_at
 
 
 def decode_token(token: str) -> dict[str, Any]:
