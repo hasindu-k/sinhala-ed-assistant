@@ -43,6 +43,7 @@ class RAGService:
             top_k: Number of chunks to retrieve from filtered documents
             top_n_docs: Number of documents to filter to in stage 1
         """
+        # TODO: move vector_search client/model selection into config to vary per tenant
         if query_embedding is not None:
             # Stage 1: Find top-N documents using document embeddings
             top_documents = self.resource_repository.vector_search_documents(
@@ -83,6 +84,7 @@ class RAGService:
             ]
 
         # Log sources
+        # TODO: persist similarity_score once vector store returns it for traceability
         self.context_service.log_used_chunks(
             user_message_id,
             [
@@ -95,7 +97,7 @@ class RAGService:
             ],
         )
 
-        # Mock generation (replace with actual LLM call):
+        # TODO: replace mock generation with actual LLM call and streaming support
         context_snippets = "\n\n".join((h["content"] if isinstance(h, dict) else h["content"]) or "" for h in hits)
         draft_answer = f"Answer based on retrieved context:\n\n{context_snippets}\n\nUser query: {user_query}"
 

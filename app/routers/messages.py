@@ -362,8 +362,13 @@ def generate_ai_response(
         HTTPException 500: Generation or database error
     """
     try:
-        resource_ids = payload.resource_ids if payload else []
         message_service = MessageService(db)
+        # get resource IDs from message attachments if not provided get session level resources
+        attachments = message_service.get_message_attachments(message_id, current_user.id)
+        resource_ids = [att.resource_id for att in attachments]
+        # if not resource_ids:
+            # get session level resources
+
         assistant_message = message_service.generate_ai_response(
             message_id=message_id,
             user_id=current_user.id,

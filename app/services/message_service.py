@@ -123,6 +123,7 @@ class MessageService:
         message = self.get_message_with_ownership_check(message_id, user_id)
         
         # Get additional details
+        # TODO: consolidate these service calls into a single repo join to reduce round trips
         from app.services.message_attachment_service import MessageAttachmentService
         from app.services.message_context_service import MessageContextService
         from app.services.message_safety_service import MessageSafetyService
@@ -225,6 +226,7 @@ class MessageService:
             raise ValueError("Cannot generate response without user query content")
         
         # Generate response using RAG
+        # TODO: inject RAG service to reuse LLM client/config rather than instantiating each call
         from app.services.rag_service import RAGService
         rag_service = RAGService(self.db)
         
