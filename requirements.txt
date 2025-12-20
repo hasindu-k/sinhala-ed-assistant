@@ -13,3 +13,6 @@ firebase_admin
 pydantic[email]
 passlib[bcrypt]
 python-jose[cryptography]
+
+# Migrations
+alembic==1.13.3
