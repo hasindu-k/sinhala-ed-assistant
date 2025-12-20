@@ -41,6 +41,10 @@ class EvaluationSessionRepository:
         return self.db.query(EvaluationSession).filter(
             EvaluationSession.session_id == session_id
         ).all()
+
+    def list_all_sessions(self) -> List[EvaluationSession]:
+        """Get all evaluation sessions."""
+        return self.db.query(EvaluationSession).all()
     
     def update_evaluation_status(
         self,
@@ -53,6 +57,26 @@ class EvaluationSessionRepository:
             eval_session.status = status
             self.db.commit()
             self.db.refresh(eval_session)
+        return eval_session
+
+    def update_evaluation_session(
+        self,
+        evaluation_session_id: UUID,
+        status: Optional[str] = None,
+        rubric_id: Optional[UUID] = None
+    ) -> Optional[EvaluationSession]:
+        """Update evaluation session metadata."""
+        eval_session = self.get_evaluation_session(evaluation_session_id)
+        if not eval_session:
+            return None
+
+        if status is not None:
+            eval_session.status = status
+        if rubric_id is not None:
+            eval_session.rubric_id = rubric_id
+
+        self.db.commit()
+        self.db.refresh(eval_session)
         return eval_session
     
     def add_evaluation_resource(

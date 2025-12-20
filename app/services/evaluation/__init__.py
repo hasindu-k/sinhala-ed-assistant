@@ -6,6 +6,7 @@ from app.services.evaluation.answer_evaluation_service import AnswerEvaluationSe
 from app.services.evaluation.evaluation_session_service import EvaluationSessionService
 from app.services.evaluation.evaluation_resource_service import EvaluationResourceService
 from app.services.evaluation.paper_config_service import PaperConfigService
+from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
 
 __all__ = [
     "RubricService",
@@ -14,4 +15,5 @@ __all__ = [
     "EvaluationSessionService",
     "EvaluationResourceService",
     "PaperConfigService",
+    "EvaluationWorkflowService",
 ]
