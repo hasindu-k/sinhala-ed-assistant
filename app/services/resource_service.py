@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Iterable, Set
 from uuid import UUID
 from sqlalchemy.orm import Session
 
@@ -102,6 +102,32 @@ class ResourceService:
 
     def list_user_resources(self, user_id: UUID) -> List:
         return self.repository.list_user_resources(user_id)
+
+    def ensure_resources_owned(self, resource_ids: Iterable[UUID], user_id: UUID):
+        """Validate that all provided resources exist and belong to the user.
+
+        Raises:
+            ValueError: if any resource id does not exist
+            PermissionError: if any resource is not owned by the user
+        """
+        unique_ids: Set[UUID] = set(resource_ids)
+        if not unique_ids:
+            return
+
+        rows = (
+            self.db.query(ResourceFile.id, ResourceFile.user_id)
+            .filter(ResourceFile.id.in_(unique_ids))
+            .all()
+        )
+
+        found_ids = {row.id for row in rows}
+        missing = unique_ids - found_ids
+        if missing:
+            raise ValueError("One or more resources were not found")
+
+        not_owned = {row.id for row in rows if row.user_id != user_id}
+        if not_owned:
+            raise PermissionError("One or more resources are not owned by the user")
     
     def get_resource_with_ownership_check(self, resource_id: UUID, user_id: UUID):
         """Get resource and verify ownership."""

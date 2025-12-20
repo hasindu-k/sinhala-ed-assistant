@@ -163,7 +163,12 @@ class MessageService:
         
         # Validate message and ownership
         self.get_message_with_ownership_check(message_id, user_id)
-        
+
+        # Validate resources (exist + ownership)
+        from app.services.resource_service import ResourceService
+        resource_service = ResourceService(self.db)
+        resource_service.ensure_resources_owned(resource_ids, user_id)
+
         # Attach resources
         from app.services.message_attachment_service import MessageAttachmentService
         attachment_service = MessageAttachmentService(self.db)
