@@ -16,7 +16,7 @@ class ResourceChunk(Base):
     content = Column(Text, nullable=True)
     content_length = Column(Integer, nullable=True)
     token_count = Column(Integer, nullable=True)
-    embedding = Column(Vector(1536), nullable=True)
+    embedding = Column(Vector(768), nullable=True)
     embedding_model = Column(String, nullable=True)
     start_char = Column(Integer, nullable=True)
     end_char = Column(Integer, nullable=True)

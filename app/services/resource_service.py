@@ -180,16 +180,34 @@ class ResourceService:
         """Process resource (OCR, chunk, embed) after validation."""
         resource = self.get_resource_with_ownership_check(resource_id, user_id)
         
-        # Check if resource file exists
-        if not resource.storage_path or not os.path.exists(resource.storage_path):
-            raise ValueError("Resource file not found on disk")
+        # Delegate to document processor service
+        from app.components.document_processing.services.resource_processor_service import ResourceProcessorService
         
-        # TODO: Implement actual OCR, chunking, and embedding logic here
-        # For now, return a placeholder response
+        processor = ResourceProcessorService(self.db)
+        result = processor.process_resource(resource)
         
-        return {
-            "resource_id": resource_id,
-            "status": "processing",
-            "chunks_created": 0,
-            "message": "Processing initiated successfully"
-        }
+        return result
+
+    def search_documents(
+        self, 
+        resource_ids: List[UUID], 
+        query_embedding: List[float], 
+        top_k: int = 5
+    ):
+        """
+        Search documents by semantic similarity using document embeddings.
+        This is the first stage in two-stage retrieval.
+        
+        Args:
+            resource_ids: List of resource IDs to search
+            query_embedding: Query embedding vector
+            top_k: Number of top documents to return
+            
+        Returns:
+            List of most relevant documents with similarity scores
+        """
+        return self.repository.vector_search_documents(
+            resource_ids=resource_ids,
+            query_embedding=query_embedding,
+            top_k=top_k
+        )
