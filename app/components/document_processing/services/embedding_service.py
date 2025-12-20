@@ -1,7 +1,7 @@
 # app/components/document_processing/services/embedding_service.py
 from typing import List, Dict
 
-from app.shared.ai.embeddings import generate_embedding
+from app.shared.ai.embeddings import generate_embedding, EMBED_MODEL
 from app.components.document_processing.utils.text_cleaner import basic_clean
 from app.components.document_processing.utils.chunker import chunk_text
 
@@ -47,7 +47,10 @@ def embed_chunks(
         "global_id": "<doc_id>_0",
         "text": "...",
         "numbering": "1.1",
-        "embedding": [...]
+        "embedding": [...],
+        "embedding_model": "gemini-embedding-001",
+        "start_char": 0,
+        "end_char": 150
       }
     ]
     """
@@ -62,6 +65,8 @@ def embed_chunks(
         c_text = ch["text"]
         c_id = ch["chunk_id"]
         c_numbering = ch.get("numbering")
+        c_start = ch.get("start_char", 0)
+        c_end = ch.get("end_char", len(c_text))
         
         vec = generate_embedding(c_text)
 
@@ -72,7 +77,10 @@ def embed_chunks(
             "global_id": global_id,
             "text": c_text,
             "numbering": c_numbering,
-            "embedding": vec
+            "embedding": vec,
+            "embedding_model": EMBED_MODEL,
+            "start_char": c_start,
+            "end_char": c_end
         })
 
     return results

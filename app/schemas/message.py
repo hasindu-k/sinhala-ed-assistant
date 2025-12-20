@@ -90,6 +90,9 @@ class MessageAttachRequest(BaseModel):
     display_name: Optional[str] = None
     attachment_type: Optional[MessageAttachmentType] = None
 
+class MessageDetachRequest(BaseModel):
+    resource_ids: list[UUID]
+
 
 # Message Context Schemas
 class MessageContextChunkResponse(BaseModel):

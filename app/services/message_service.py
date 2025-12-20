@@ -185,6 +185,29 @@ class MessageService:
         
         return attachments
     
+    def detach_resources_from_message(
+        self,
+        message_id: UUID,
+        user_id: UUID,
+        resource_ids: List[UUID],
+    ):
+        """Detach resources from message after validation."""
+        if not resource_ids:
+            raise ValueError("At least one resource ID is required")
+        
+        # Validate message and ownership
+        self.get_message_with_ownership_check(message_id, user_id)
+
+        # Detach resources
+        from app.services.message_attachment_service import MessageAttachmentService
+        attachment_service = MessageAttachmentService(self.db)
+        
+        for resource_id in resource_ids:
+            attachment_service.detach_resource(
+                message_id=message_id,
+                resource_id=resource_id,
+            )
+            
     def generate_ai_response(
         self,
         message_id: UUID,
