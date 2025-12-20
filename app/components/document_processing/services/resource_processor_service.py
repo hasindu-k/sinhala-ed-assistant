@@ -91,6 +91,19 @@ class ResourceProcessorService:
         self.db.commit()
         logger.info("Saved %d chunks for resource %s", len(chunks), resource_id)
 
+    def _create_document_embedding(self, text: str, resource_id: str) -> Optional[List[float]]:
+        """Generate a document-level embedding for fast filtering."""
+        from app.components.document_processing.services.embedding_service import embed_document_text
+        
+        try:
+            embedding = embed_document_text(text)
+            if embedding:
+                logger.info("Generated document embedding for resource %s", resource_id)
+            return embedding
+        except Exception as e:
+            logger.error(f"Failed to create document embedding for resource {resource_id}: {e}")
+            return None
+    
     def process_resource(
         self, 
         resource: ResourceFile, 
@@ -122,15 +135,13 @@ class ResourceProcessorService:
         logger.info("Extracted %d characters from %d pages", len(extracted_text), page_count)
         
         # Generate document-level embedding (for fast filtering)
-        from app.components.document_processing.services.embedding_service import embed_document_text
         from app.shared.ai.embeddings import EMBED_MODEL
         
-        document_embedding = embed_document_text(extracted_text)
+        document_embedding = self._create_document_embedding(extracted_text, str(resource.id))
         if document_embedding:
             resource.document_embedding = document_embedding
             resource.embedding_model = EMBED_MODEL
             self.db.commit()
-            logger.info("Generated document embedding for resource %s", resource.id)
 
         # Create chunks with embeddings (for detailed retrieval)
         chunks = self._create_chunks(extracted_text, str(resource.id))
