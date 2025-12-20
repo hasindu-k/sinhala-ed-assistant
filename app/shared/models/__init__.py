@@ -11,6 +11,8 @@ from app.shared.models.rubrics import Rubric, RubricCriterion
 from app.shared.models.resource_chunks import ResourceChunk
 from app.shared.models.message_relations import MessageContextChunk, MessageAttachment, MessageSafetyReport
 from app.shared.models.session_resources import SessionResource
+from app.shared.models.password_reset_token import PasswordResetToken
+from app.shared.models.refresh_token import RefreshToken
 
 __all__ = [
     "User",
@@ -33,4 +35,6 @@ __all__ = [
     "MessageAttachment",
     "MessageSafetyReport",
     "SessionResource",
+    "PasswordResetToken",
+    "RefreshToken",
 ]
