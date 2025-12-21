@@ -88,6 +88,42 @@ class RubricRepository:
         return self.db.query(RubricCriterion).filter(
             RubricCriterion.rubric_id == rubric_id
         ).all()
+
+    def update_rubric_criterion(
+        self,
+        rubric_id: UUID,
+        criterion_id: UUID,
+        criterion_name: Optional[str] = None,
+        description: Optional[str] = None,
+        weight: Optional[int] = None
+    ) -> Optional[RubricCriterion]:
+        """Update a rubric criterion scoped by rubric id."""
+        criterion = self.db.query(RubricCriterion).filter(
+            RubricCriterion.id == criterion_id,
+            RubricCriterion.rubric_id == rubric_id,
+        ).first()
+        if criterion:
+            if criterion_name is not None:
+                criterion.criterion_name = criterion_name
+            if description is not None:
+                criterion.description = description
+            if weight is not None:
+                criterion.weight = weight
+            self.db.commit()
+            self.db.refresh(criterion)
+        return criterion
+
+    def delete_rubric_criterion(self, rubric_id: UUID, criterion_id: UUID) -> bool:
+        """Delete a rubric criterion scoped by rubric id."""
+        criterion = self.db.query(RubricCriterion).filter(
+            RubricCriterion.id == criterion_id,
+            RubricCriterion.rubric_id == rubric_id,
+        ).first()
+        if criterion:
+            self.db.delete(criterion)
+            self.db.commit()
+            return True
+        return False
     
     def get_rubric_with_criteria(self, rubric_id: UUID) -> Optional[dict]:
         """Get rubric with all its criteria."""

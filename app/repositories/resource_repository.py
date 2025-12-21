@@ -3,6 +3,7 @@
 from typing import Optional, List
 from uuid import UUID
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from app.shared.models.resource_file import ResourceFile
 
@@ -47,3 +48,47 @@ class ResourceRepository:
             .order_by(ResourceFile.created_at.desc())
             .all()
         )
+
+    def vector_search_documents(
+        self, 
+        resource_ids: List[UUID], 
+        query_embedding: List[float], 
+        top_k: int = 5
+    ) -> List[dict]:
+        """
+        First-stage retrieval: Find top-K most relevant documents using document embeddings.
+        This is much faster than searching all chunks.
+        
+        Args:
+            resource_ids: List of resource IDs to search within
+            query_embedding: Query embedding vector
+            top_k: Number of top documents to return
+            
+        Returns:
+            List of dicts with resource_id and similarity_score
+        """
+        if not resource_ids:
+            return []
+            
+        placeholders = ", ".join([f":id{i}" for i in range(len(resource_ids))])
+        sql = text(
+            f"""
+            SELECT 
+                id as resource_id,
+                original_filename,
+                1 - (document_embedding <=> :query_embedding) as similarity_score
+            FROM resource_files
+            WHERE id IN ({placeholders})
+                AND document_embedding IS NOT NULL
+            ORDER BY document_embedding <=> :query_embedding
+            LIMIT :top_k
+            """
+        )
+        
+        params = {f"id{i}": str(rid) for i, rid in enumerate(resource_ids)}
+        params["query_embedding"] = query_embedding
+        params["top_k"] = top_k
+        
+        result = self.db.execute(sql, params)
+        return [dict(row) for row in result]
+

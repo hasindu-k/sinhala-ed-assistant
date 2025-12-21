@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 from app.schemas.message import (
     MessageCreate,
+    MessageDetachRequest,
     MessageDetail,
     MessageResponse,
     MessageAttachRequest,
@@ -285,6 +286,55 @@ def attach_files_to_message(
             detail="Failed to attach resources"
         )
 
+# remove attachments
+@router.delete("/{message_id}/attachments", status_code=status.HTTP_204_NO_CONTENT)
+def detach_files_from_message(
+    message_id: UUID,
+    payload: MessageDetachRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Detach files/resources from this message.
+    
+    Args:
+        message_id: ID of the message
+        payload: Resource detachment data
+        current_user: Authenticated user
+        db: Database session
+    Raises:
+        HTTPException 400: Invalid resource IDs
+        HTTPException 403: User doesn't own the session
+        HTTPException 404: Message not found
+        HTTPException 500: Database error
+    """
+    try:
+        message_service = MessageService(db)
+        message_service.detach_resources_from_message(
+            message_id=message_id,
+            user_id=current_user.id,
+            resource_ids=payload.resource_ids,
+        )
+        logger.info(f"Detached resources from message {message_id} by user {current_user.id}")
+        
+    except ValueError as e:
+        logger.warning(f"Validation error detaching resources from message {message_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except PermissionError as e:
+        logger.warning(f"User {current_user.id} attempted unauthorized detachment from message {message_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error detaching resources from message {message_id} for user {current_user.id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to detach resources"
+        )
 
 @router.post("/{message_id}/generate", response_model=MessageResponse)
 def generate_ai_response(
@@ -312,8 +362,13 @@ def generate_ai_response(
         HTTPException 500: Generation or database error
     """
     try:
-        resource_ids = payload.resource_ids if payload else []
         message_service = MessageService(db)
+        # get resource IDs from message attachments if not provided get session level resources
+        attachments = message_service.get_message_attachments(message_id, current_user.id)
+        resource_ids = [att.resource_id for att in attachments]
+        # if not resource_ids:
+            # get session level resources
+
         assistant_message = message_service.generate_ai_response(
             message_id=message_id,
             user_id=current_user.id,

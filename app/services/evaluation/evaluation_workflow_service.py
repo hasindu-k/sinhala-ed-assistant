@@ -1,0 +1,161 @@
+from typing import Optional, List
+from uuid import UUID
+from sqlalchemy.orm import Session
+
+from app.schemas.evaluation import (
+    EvaluationSessionCreate,
+    EvaluationSessionUpdate,
+    EvaluationResourceAttach,
+    PaperConfigCreate,
+    AnswerDocumentCreate,
+)
+from app.services.evaluation.evaluation_session_service import EvaluationSessionService
+from app.services.evaluation.evaluation_resource_service import EvaluationResourceService
+from app.services.evaluation.question_paper_service import QuestionPaperService
+from app.services.evaluation.paper_config_service import PaperConfigService
+from app.services.evaluation.answer_evaluation_service import AnswerEvaluationService
+from app.services.chat_session_service import ChatSessionService
+from app.services.resource_service import ResourceService
+
+
+class EvaluationWorkflowService:
+    """Orchestrates evaluation-related operations while keeping routers thin."""
+
+    def __init__(self, db: Session):
+        self.sessions = EvaluationSessionService(db)
+        self.resources = EvaluationResourceService(db)
+        self.question_papers = QuestionPaperService(db)
+        self.paper_configs = PaperConfigService(db)
+        self.answers = AnswerEvaluationService(db)
+        self.chat_sessions = ChatSessionService(db)
+        self.resource_files = ResourceService(db)
+
+    # ------------------------------------------------------------------
+    # Ownership helpers
+    # ------------------------------------------------------------------
+    def _ensure_chat_session_owner(self, session_id: UUID, user_id: UUID):
+        if not self.chat_sessions.validate_ownership(session_id, user_id):
+            raise PermissionError("You don't have permission to access this session")
+
+    def _get_eval_session_with_owner_check(self, evaluation_id: UUID, user_id: UUID):
+        eval_session = self.sessions.get_evaluation_session(evaluation_id)
+        if not eval_session:
+            raise ValueError("Evaluation session not found")
+        self._ensure_chat_session_owner(eval_session.session_id, user_id)
+        return eval_session
+
+    def _ensure_resource_owner(self, resource_id: UUID, user_id: UUID):
+        # Will raise PermissionError / ValueError if unauthorized or missing
+        self.resource_files.get_resource_with_ownership_check(resource_id, user_id)
+
+    def _ensure_answer_owner(self, answer_id: UUID, user_id: UUID):
+        answer_doc = self.answers.get_answer_document(answer_id)
+        if not answer_doc:
+            raise ValueError("Answer document not found")
+        self._get_eval_session_with_owner_check(answer_doc.evaluation_session_id, user_id)
+        return answer_doc
+
+    def create_session(self, payload: EvaluationSessionCreate, user_id: UUID):
+        self._ensure_chat_session_owner(payload.session_id, user_id)
+        return self.sessions.create_evaluation_session(
+            session_id=payload.session_id,
+            rubric_id=payload.rubric_id,
+        )
+
+    def list_sessions(self, user_id: UUID, session_id: Optional[UUID] = None) -> List:
+        if session_id:
+            self._ensure_chat_session_owner(session_id, user_id)
+            return self.sessions.get_evaluation_sessions_by_chat_session(session_id)
+
+        # Filter to only the caller's chat sessions
+        sessions = self.sessions.list_all_sessions()
+        return [s for s in sessions if self.chat_sessions.validate_ownership(s.session_id, user_id)]
+
+    def get_session(self, evaluation_id: UUID, user_id: UUID):
+        return self._get_eval_session_with_owner_check(evaluation_id, user_id)
+
+    def update_session(self, evaluation_id: UUID, payload: EvaluationSessionUpdate, user_id: UUID):
+        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+        return self.sessions.update_evaluation_session(
+            evaluation_session_id=evaluation_id,
+            status=payload.status.value if payload.status else None,
+            rubric_id=payload.rubric_id,
+        )
+
+    def attach_resource(self, evaluation_id: UUID, payload: EvaluationResourceAttach, user_id: UUID):
+        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+        self._ensure_resource_owner(payload.resource_id, user_id)
+        return self.resources.attach_resource(
+            evaluation_session_id=evaluation_id,
+            resource_id=payload.resource_id,
+            role=payload.role.value,
+        )
+
+    def parse_question_paper(self, evaluation_id: UUID, user_id: UUID):
+        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+
+        question_papers = self.question_papers.get_question_papers_by_evaluation_session(evaluation_id)
+        if question_papers:
+            return question_papers[0]
+
+        resources = self.resources.get_resources_by_role(
+            evaluation_session_id=evaluation_id,
+            role="question_paper",
+        )
+        if not resources:
+            raise ValueError("No question paper resource attached to this evaluation session")
+
+        self._ensure_resource_owner(resources[0].resource_id, user_id)
+
+        return self.question_papers.create_question_paper(
+            evaluation_session_id=evaluation_id,
+            resource_id=resources[0].resource_id,
+        )
+
+    def get_parsed_questions(self, evaluation_id: UUID, user_id: UUID):
+        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+        question_papers = self.question_papers.get_question_papers_by_evaluation_session(evaluation_id)
+        if not question_papers:
+            return []
+
+        return self.question_papers.get_questions_by_paper(question_papers[0].id)
+
+    def save_paper_config(self, evaluation_id: UUID, payload: PaperConfigCreate, user_id: UUID):
+        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+        return self.paper_configs.save_config(
+            evaluation_session_id=evaluation_id,
+            total_marks=payload.total_marks,
+            total_main_questions=payload.total_main_questions,
+            required_questions=payload.required_questions,
+        )
+
+    def get_paper_config(self, evaluation_id: UUID, user_id: UUID):
+        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+        return self.paper_configs.get_config(evaluation_id)
+
+    def register_answer_document(self, evaluation_id: UUID, payload: AnswerDocumentCreate, user_id: UUID):
+        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+        self._ensure_resource_owner(payload.resource_id, user_id)
+        return self.answers.create_answer_document(
+            evaluation_session_id=evaluation_id,
+            resource_id=payload.resource_id,
+            student_identifier=payload.student_identifier,
+        )
+
+    def list_answer_documents(self, evaluation_id: UUID, user_id: UUID):
+        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+        return self.answers.get_answer_documents_by_evaluation_session(evaluation_id)
+
+    def evaluate_answer(self, answer_id: UUID, user_id: UUID):
+        self._ensure_answer_owner(answer_id, user_id)
+        existing = self.answers.get_evaluation_result_by_answer_document(answer_id)
+        if existing:
+            return existing
+        return self.answers.create_evaluation_result(answer_document_id=answer_id)
+
+    def get_evaluation_result(self, answer_id: UUID, user_id: UUID):
+        self._ensure_answer_owner(answer_id, user_id)
+        result = self.answers.get_evaluation_result_by_answer_document(answer_id)
+        if not result:
+            return None
+        return self.answers.get_complete_evaluation_result(result.id)

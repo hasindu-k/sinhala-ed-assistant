@@ -33,6 +33,10 @@ class EvaluationSessionService:
     def get_evaluation_sessions_by_chat_session(self, session_id: UUID) -> List:
         """Get all evaluation sessions for a chat session."""
         return self.repository.get_evaluation_sessions_by_chat_session(session_id)
+
+    def list_all_sessions(self) -> List:
+        """Get every evaluation session."""
+        return self.repository.list_all_sessions()
     
     def update_evaluation_status(
         self,
@@ -43,6 +47,19 @@ class EvaluationSessionService:
         return self.repository.update_evaluation_status(
             evaluation_session_id=evaluation_session_id,
             status=status
+        )
+
+    def update_evaluation_session(
+        self,
+        evaluation_session_id: UUID,
+        status: Optional[str] = None,
+        rubric_id: Optional[UUID] = None
+    ):
+        """Update evaluation session metadata."""
+        return self.repository.update_evaluation_session(
+            evaluation_session_id=evaluation_session_id,
+            status=status,
+            rubric_id=rubric_id,
         )
     
     def add_evaluation_resource(

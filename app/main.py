@@ -31,7 +31,16 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     logger.info("Starting Sinhala Educational Assistant API...")
-    Base.metadata.create_all(bind=engine)
+    try:
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables created/verified successfully")
+    except Exception as e:
+        logger.warning(
+            "Could not connect to database during startup: %s. "
+            "The application will start but database operations may fail. "
+            "Ensure PostgreSQL is running on the configured host and port.",
+            str(e)
+        )
 
 
 def custom_openapi():

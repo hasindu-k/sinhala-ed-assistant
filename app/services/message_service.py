@@ -123,6 +123,7 @@ class MessageService:
         message = self.get_message_with_ownership_check(message_id, user_id)
         
         # Get additional details
+        # TODO: consolidate these service calls into a single repo join to reduce round trips
         from app.services.message_attachment_service import MessageAttachmentService
         from app.services.message_context_service import MessageContextService
         from app.services.message_safety_service import MessageSafetyService
@@ -163,7 +164,12 @@ class MessageService:
         
         # Validate message and ownership
         self.get_message_with_ownership_check(message_id, user_id)
-        
+
+        # Validate resources (exist + ownership)
+        from app.services.resource_service import ResourceService
+        resource_service = ResourceService(self.db)
+        resource_service.ensure_resources_owned(resource_ids, user_id)
+
         # Attach resources
         from app.services.message_attachment_service import MessageAttachmentService
         attachment_service = MessageAttachmentService(self.db)
@@ -180,6 +186,29 @@ class MessageService:
         
         return attachments
     
+    def detach_resources_from_message(
+        self,
+        message_id: UUID,
+        user_id: UUID,
+        resource_ids: List[UUID],
+    ):
+        """Detach resources from message after validation."""
+        if not resource_ids:
+            raise ValueError("At least one resource ID is required")
+        
+        # Validate message and ownership
+        self.get_message_with_ownership_check(message_id, user_id)
+
+        # Detach resources
+        from app.services.message_attachment_service import MessageAttachmentService
+        attachment_service = MessageAttachmentService(self.db)
+        
+        for resource_id in resource_ids:
+            attachment_service.detach_resource(
+                message_id=message_id,
+                resource_id=resource_id,
+            )
+            
     def generate_ai_response(
         self,
         message_id: UUID,
@@ -197,6 +226,7 @@ class MessageService:
             raise ValueError("Cannot generate response without user query content")
         
         # Generate response using RAG
+        # TODO: inject RAG service to reuse LLM client/config rather than instantiating each call
         from app.services.rag_service import RAGService
         rag_service = RAGService(self.db)
         

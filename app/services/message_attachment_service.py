@@ -24,6 +24,17 @@ class MessageAttachmentService:
             display_name=display_name,
             attachment_type=attachment_type,
         )
+    
+    
+    def detach_resource(
+        self,
+        message_id: UUID,
+        resource_id: UUID,
+    ):
+        return self.repository.detach_resource(
+            message_id=message_id,
+            resource_id=resource_id,
+        )
 
     def get_message_resources(self, message_id: UUID) -> List:
         return self.repository.get_message_resources(message_id)

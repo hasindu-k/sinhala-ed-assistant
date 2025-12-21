@@ -20,6 +20,7 @@ from app.services.evaluation import (
     EvaluationSessionService,
     EvaluationResourceService,
     PaperConfigService,
+    EvaluationWorkflowService,
 )
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     "EvaluationSessionService",
     "EvaluationResourceService",
     "PaperConfigService",
+    "EvaluationWorkflowService",
 ]

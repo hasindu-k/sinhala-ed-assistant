@@ -30,6 +30,23 @@ class MessageAttachmentRepository:
         self.db.commit()
         self.db.refresh(att)
         return att
+    
+    def detach_resource(
+        self,
+        message_id: UUID,
+        resource_id: UUID,
+    ) -> None:
+        att = (
+            self.db.query(MessageAttachment)
+            .filter(
+                MessageAttachment.message_id == message_id,
+                MessageAttachment.resource_id == resource_id,
+            )
+            .first()
+        )
+        if att:
+            self.db.delete(att)
+            self.db.commit()
 
     def get_message_resources(self, message_id: UUID) -> List[MessageAttachment]:
         return (
