@@ -55,6 +55,28 @@ class RubricService:
                     weight_percentage=criterion_data.get("weight_percentage"),
                 )
         return rubric
+
+    def create_system_rubric(
+        self,
+        name: str,
+        description: Optional[str] = None,
+        criteria: Optional[List[dict]] = None,
+    ):
+        """Create a system rubric (created_by=None, rubric_type='system')."""
+        rubric = self.repository.create_rubric(
+            created_by=None,
+            name=name,
+            description=description,
+            rubric_type="system",
+        )
+        if criteria:
+            for c in criteria:
+                self.repository.create_rubric_criterion(
+                    rubric_id=rubric.id,
+                    criterion=c.get("criterion"),
+                    weight_percentage=c.get("weight_percentage"),
+                )
+        return rubric
     
     def get_rubric(self, rubric_id: UUID):
         """Get rubric by ID."""

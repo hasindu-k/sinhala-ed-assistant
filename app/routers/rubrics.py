@@ -51,6 +51,27 @@ def create_rubric(payload: RubricCreate, current_user: User = Depends(get_curren
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create rubric")
 
 
+@router.post("/system", response_model=RubricResponse)
+def create_system_rubric(payload: RubricCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Create a system rubric (admin-only): created_by=NULL, rubric_type='system'.
+    """
+    service = RubricService(db)
+    # Basic admin check; adjust to your auth/roles model
+    is_admin = bool(getattr(current_user, "is_admin", False) or getattr(current_user, "role", None) == "admin")
+    if not is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    try:
+        return service.create_system_rubric(
+            name=payload.name,
+            description=payload.description,
+            criteria=payload.criteria,
+        )
+    except Exception as exc:
+        logger.error(f"Failed to create system rubric: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create system rubric")
+
+
 @router.get("/{rubric_id}", response_model=RubricDetail)
 def get_rubric(rubric_id: UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """

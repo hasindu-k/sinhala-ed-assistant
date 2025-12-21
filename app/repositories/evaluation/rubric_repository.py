@@ -15,7 +15,7 @@ class RubricRepository:
     
     def create_rubric(
         self,
-        created_by: UUID,
+        created_by: Optional[UUID],
         name: str,
         description: Optional[str] = None,
         rubric_type: Optional[str] = None,
