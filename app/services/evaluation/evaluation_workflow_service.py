@@ -17,6 +17,11 @@ from app.services.evaluation.paper_config_service import PaperConfigService
 from app.services.evaluation.answer_evaluation_service import AnswerEvaluationService
 from app.services.chat_session_service import ChatSessionService
 from app.services.resource_service import ResourceService
+from app.components.document_processing.services.classifier_service import separate_paper_content
+from app.components.document_processing.services.ocr_service import extract_and_clean_text_from_file
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class EvaluationWorkflowService:
@@ -93,12 +98,18 @@ class EvaluationWorkflowService:
         )
 
     def parse_question_paper(self, evaluation_id: UUID, user_id: UUID):
+        """
+        Parse question paper by extracting text and structuring content.
+        Uses OCR if needed and AI-based content separation.
+        """
         self._get_eval_session_with_owner_check(evaluation_id, user_id)
 
+        # Check if already parsed
         question_papers = self.question_papers.get_question_papers_by_evaluation_session(evaluation_id)
         if question_papers:
-            return question_papers[0]
+            return self.question_papers.get_question_paper_with_questions(question_papers[0].id)
 
+        # Get attached question paper resource
         resources = self.resources.get_resources_by_role(
             evaluation_session_id=evaluation_id,
             role="question_paper",
@@ -107,11 +118,79 @@ class EvaluationWorkflowService:
             raise ValueError("No question paper resource attached to this evaluation session")
 
         self._ensure_resource_owner(resources[0].resource_id, user_id)
+        
+        # Get resource file
+        resource = self.resource_files.get_resource_with_ownership_check(
+            resources[0].resource_id, 
+            user_id
+        )
+        
+        if not resource.storage_path:
+            raise ValueError("Resource file not found on disk")
 
-        return self.question_papers.create_question_paper(
+        # Extract and clean text from file
+        try:
+            cleaned_text, page_count = extract_and_clean_text_from_file(resource.storage_path)
+            logger.info("Extracted %s characters from %d0 pages in question paper", len(cleaned_text), page_count)
+            
+        except Exception as e:
+            logger.error(f"Failed to extract text from resource {resource.id}: {e}", exc_info=True)
+            raise ValueError(f"Failed to extract text from question paper: {e}")
+
+        # Parse and structure content using AI
+        try:
+            paper_metadata, instructions, paper_structure = separate_paper_content(cleaned_text)
+            logger.info(f"Parsed question paper structure: {len(paper_structure)} papers found")
+        except Exception as e:
+            logger.error(f"Failed to parse paper structure: {e}", exc_info=True)
+            raise ValueError(f"Failed to parse question paper structure: {e}")
+
+        # Create question paper entry
+        question_paper = self.question_papers.create_question_paper(
             evaluation_session_id=evaluation_id,
             resource_id=resources[0].resource_id,
+            extracted_text=cleaned_text,
         )
+
+        # Create structured questions from parsed data
+        try:
+            # Process each paper (Paper_I, Paper_II, etc.)
+            for paper_key, paper_data in paper_structure.items():
+                questions_dict = paper_data.get("questions", {})
+                
+                if questions_dict:
+                    # Transform structure to match create_structured_questions format
+                    structured_data = {}
+                    for q_num, q_data in questions_dict.items():
+                        structured_data[q_num] = {
+                            "question_text": q_data.get("text", ""),
+                            "max_marks": q_data.get("marks"),
+                            "sub_questions": {}
+                        }
+                        
+                        # Handle sub-questions if present
+                        sub_questions = q_data.get("sub_questions", {})
+                        for sq_label, sq_data in sub_questions.items():
+                            structured_data[q_num]["sub_questions"][sq_label] = {
+                                "text": sq_data.get("text", ""),
+                                "marks": sq_data.get("marks")
+                            }
+                    
+                    # Create questions in database
+                    if structured_data:
+                        self.question_papers.create_structured_questions(
+                            question_paper_id=question_paper.id,
+                            structured_data=structured_data
+                        )
+                        logger.info(f"Created {len(structured_data)} questions for {paper_key}")
+        
+        except Exception as e:
+            logger.error(f"Failed to create structured questions: {e}", exc_info=True)
+            # Don't fail the entire operation if question creation fails
+            # The paper is still parsed and text is saved
+
+        # Return complete question paper with questions
+        return self.question_papers.get_question_paper_with_questions(question_paper.id)
 
     def get_parsed_questions(self, evaluation_id: UUID, user_id: UUID):
         self._get_eval_session_with_owner_check(evaluation_id, user_id)
