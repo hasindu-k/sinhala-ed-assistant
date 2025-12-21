@@ -3,7 +3,8 @@
 from google import generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import json
-import re
+import logging
+logger = logging.getLogger(__name__)
 
 # Define prompts and constants
 CLASSIFY_PROMPT = """
@@ -60,68 +61,69 @@ Your task is to structure the provided text into a strict JSON format.
 IMPORTANT MARKING RULES
 ========================
 - In Sri Lankan exam papers, NO question or subquestion has 0 marks.
-- If marks are NOT clearly specified, use null.
+- If marks are NOT clearly specified, use null (not 0).
 - NEVER assign marks = 0.
+- Common mark indicators: "ලකුණු", "marks", numbers in parentheses like (05)
 
 ========================
 PAPER & NUMBERING RULES
 ========================
 - Sri Lankan exam papers are divided into sections such as:
-  - Paper I (usually MCQs)
-  - Paper II (Structured / Essay questions)
+  - Paper I (usually MCQs) - "I කොටස", "Part I", "භාගය I"
+  - Paper II (Structured / Essay questions) - "II කොටස", "Part II", "භාගය II"
 
 - EACH paper has its OWN numbering system.
-  - Paper I numbering starts from 1.
-  - Paper II numbering starts again from 1.
-  - DO NOT continue numbering across papers (e.g., avoid 41, 42 for Paper II).
+  - Paper I numbering: 1, 2, 3, ... (typically 1-40 for MCQs)
+  - Paper II numbering: starts again from 1 or continues with own sequence
+  - DO NOT continue numbering across papers
 
 - Questions MUST be grouped under their correct paper.
 - NEVER mix Paper I and Paper II questions in the same numbering scope.
 
 ========================
-MCQ STRUCTURE RULES
+MCQ STRUCTURE RULES (Paper I)
 ========================
 - MCQs usually belong to Paper I unless explicitly stated otherwise.
-- Do NOT create artificial group keys (e.g., mcq_group_1).
+- Detect MCQs by options like:
+  - (1)(2)(3)(4), (A)(B)(C)(D), (අ)(ආ)(ඉ)(ඊ)
+  - Numbered list format: 1. ... 2. ... 3. ... 4. ...
 - If multiple MCQs share common instructions or data:
-  - Attach the shared information ONLY to the FIRST question number using "shared_stem".
-  - Subsequent questions must reference it using "inherits_shared_stem_from".
+  - Attach the shared information to the first question using "shared_stem"
+  - Subsequent questions reference it using "inherits_shared_stem_from"
+- Each MCQ MUST include:
+  - "type": "mcq"
+  - "text": question text
+  - "options": array of option texts
+  - "marks": usually null or 1
 
 ========================
-TARGET ANALYSIS
+STRUCTURED QUESTIONS (Paper II)
 ========================
+- Main questions: numbered (1, 2, 3, etc.) or labeled (Q01, Q02, etc.)
+- Sub-questions: labeled with letters (a, b, c) or (i, ii, iii) or (අ, ආ, ඉ)
+- Extract marks from patterns:
+  - "(05 ලකුණු)", "(5 marks)", "(10)", "05 ලකුණු"
+- If a main question has sub-questions:
+  - Main question "marks" = sum of sub-question marks (or null if unclear)
+  - Each sub-question should have its own marks
 
-1. **Metadata Extraction**
-   Identify Sinhala or English indicators for:
-   - Subject (විෂය)
-   - Grade (ශ්‍රේණිය)
-   - Term (වාරය)
-   - Duration (කාලය)
-   - Year (වර්ෂය)
-   - Medium (Sinhala / English)
+========================
+TEXT PATTERNS TO DETECT
+========================
+**Question Numbers:**
+- "01.", "1)", "ප්‍රශ්නය 01", "Question 1"
+- Look for consistent numbering patterns
 
-2. **Instructions (උපදෙස්)**
-   - Extract general instructions at the beginning of EACH paper.
-   - Store Paper I and Paper II instructions separately if applicable.
+**Sub-question Labels:**
+- "(අ)", "(ආ)", "(ඉ)", "(a)", "(b)", "(c)", "(i)", "(ii)"
 
-3. **Question Identification**
-   - Detect which paper a question belongs to using headings such as:
-     - "Paper I", "I කොටස", "බහුවරණ ප්‍රශ්න"
-     - "Paper II", "II කොටස", "ව්‍යුහගත ප්‍රශ්න"
-   - Group questions under the correct paper.
+**Marks Patterns:**
+- "(05 ලකුණු)", "(5 marks)", "05 ලකුණු", "5 marks"
+- Extract the number before "ලකුණු" or "marks"
 
-4. **Multiple Choice Questions (Paper I)**
-   - Detect MCQs by options like:
-     - (1)(2)(3)(4), (A)(B)(C)(D), (අ)(ආ)(ඉ)(ඊ)
-   - Each MCQ MUST include:
-     - "type": "mcq"
-     - "text"
-     - "options"
-     - "marks": null
-
-5. **Structured / Essay Questions (Paper II)**
-   - Identify main questions and subquestions.
-   - Assign marks ONLY if explicitly stated.
+**Section Headers:**
+- "I කොටස", "II කොටස", "Part A", "Part B"
+- "බහුවරණ ප්‍රශ්න" (MCQs), "ව්‍යුහගත ප්‍රශ්න" (Structured)
 
 ========================
 OUTPUT FORMAT (STRICT JSON)
@@ -129,28 +131,58 @@ OUTPUT FORMAT (STRICT JSON)
 
 {{
   "metadata": {{
-    "subject": "string",
-    "grade": "string",
-    "year": "string",
-    "term": "string",
-    "duration": "string",
-    "medium": "Sinhala/English"
+    "subject": "string or null",
+    "grade": "string or null", 
+    "year": "string or null",
+    "term": "string or null",
+    "duration": "string or null",
+    "medium": "Sinhala or English"
   }},
   "instructions": {{
-    "Paper_I": [],
-    "Paper_II": []
+    "Paper_I": ["instruction 1", "instruction 2"],
+    "Paper_II": ["instruction 1", "instruction 2"]
   }},
   "PaperStructure": {{
     "Paper_I": {{
       "type": "MCQ",
-      "questions": {{}}
+      "questions": {{
+        "1": {{
+          "type": "mcq",
+          "text": "question text",
+          "options": ["option 1", "option 2", "option 3", "option 4"],
+          "marks": null
+        }},
+        "2": {{ ... }}
+      }}
     }},
     "Paper_II": {{
       "type": "Structured",
-      "questions": {{}}
+      "questions": {{
+        "1": {{
+          "type": "structured",
+          "text": "main question text",
+          "marks": 20,
+          "sub_questions": {{
+            "a": {{"text": "sub-question a", "marks": 5}},
+            "b": {{"text": "sub-question b", "marks": 5}},
+            "c": {{"text": "sub-question c", "marks": 10}}
+          }}
+        }},
+        "2": {{ ... }}
+      }}
     }}
   }}
 }}
+
+========================
+IMPORTANT NOTES
+========================
+1. If a paper section is not found in the text, return an empty questions object for that paper
+2. Preserve original question numbers/labels from the text
+3. Extract marks carefully - use null if uncertain, never use 0
+4. For MCQs without explicit marks, use null
+5. Group all MCQs under Paper_I and structured questions under Paper_II
+6. If there's only one paper type, fill only that section
 
 ========================
 TEXT TO PROCESS
@@ -204,6 +236,10 @@ def separate_paper_content(text: str):
             if paper and "questions" not in paper:
                 paper["questions"] = {}
 
+        # log for debugging
+        logger.debug("Extracted Paper Metadata: %s", paper_metadata)
+        logger.debug("Extracted Instructions: %s", instructions)
+        logger.debug("Extracted Paper Structure: %s", paper_structure)
         return paper_metadata, instructions, paper_structure
 
     except json.JSONDecodeError:
