@@ -33,7 +33,7 @@ def embed_document_text(text: str) -> List[float]:
 
 def embed_chunks(
     text: str,
-    doc_id: str,
+    doc_id: str | None = None,  # optional
     max_tokens: int = 300,
     overlap_tokens: int = 30
 ) -> List[Dict]:
@@ -51,27 +51,25 @@ def embed_chunks(
       }
     ]
     """
-
     if not text or not text.strip():
         return []
 
     cleaned = basic_clean(text)
-
-    # chunk_text returns: [{chunk_id, text, numbering}]
     chunk_list = chunk_text(cleaned, max_tokens=max_tokens, overlap_tokens=overlap_tokens)
-
     results = []
 
     for ch in chunk_list:
         c_text = ch["text"]
         c_id = ch["chunk_id"]
         c_numbering = ch.get("numbering")
-
+        
         vec = generate_embedding(c_text)
+
+        global_id = f"{doc_id}_{c_id}" if doc_id else str(c_id)  # fallback if doc_id not yet known
 
         results.append({
             "chunk_id": c_id,
-            "global_id": f"{doc_id}_{c_id}",
+            "global_id": global_id,
             "text": c_text,
             "numbering": c_numbering,
             "embedding": vec

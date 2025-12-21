@@ -2,6 +2,8 @@
 
 import re
 import unicodedata
+import logging
+logger = logging.getLogger(__name__)
 
 def normalize_sinhala(text: str) -> str:
     """
@@ -15,8 +17,10 @@ def remove_weird_chars(text: str) -> str:
     """
     Remove garbage but keep Sinhala + English + numbers + numbering symbols.
     """
-    allowed = r"[^\u0D80-\u0DFFa-zA-Z0-9\s\.\-\(\)\[\]\/:;]"
+    logger.debug("Original text before removing weird chars: %s", text)
+    allowed = r"[^\u0D80-\u0DFF\u200D\u200Ca-zA-Z0-9\s\.\-\(\)\[\]\/:;]"
     text = re.sub(allowed, " ", text)
+    logger.debug("Text after removing weird chars: %s", text)
     return text
 
 
@@ -40,8 +44,22 @@ def basic_clean(text: str) -> str:
 
     # Step 4: Trim
     text = text.strip()
+
+    text = rule_based_correction(text)
     
     # log cleaned text
-    print(f"Cleaned text: {text}")
+    logger.debug("Cleaned text: %s", text)
+    logger.info("Text cleaned successfully.")
+
+    return text
+
+def rule_based_correction(text: str) -> str:
+    rules = {
+        r"\bwa\b": "සහ",
+        r"\bA\s*wa\b": "A සහ",
+    }
+
+    for pattern, replacement in rules.items():
+        text = re.sub(pattern, replacement, text)
 
     return text
