@@ -7,6 +7,7 @@ from app.schemas.evaluation import (
     EvaluationSessionUpdate,
     EvaluationResourceAttach,
     PaperConfigCreate,
+    PaperConfigUpdate,
     AnswerDocumentCreate,
 )
 from app.services.evaluation.evaluation_session_service import EvaluationSessionService
@@ -124,14 +125,32 @@ class EvaluationWorkflowService:
         self._get_eval_session_with_owner_check(evaluation_id, user_id)
         return self.paper_configs.save_config(
             evaluation_session_id=evaluation_id,
+            paper_part=payload.paper_part,
+            subject_name=payload.subject_name,
+            medium=payload.medium,
             total_marks=payload.total_marks,
+            weightage=float(payload.weightage) if payload.weightage is not None else None,
             total_main_questions=payload.total_main_questions,
-            required_questions=payload.required_questions,
+            selection_rules=payload.selection_rules,
         )
 
     def get_paper_config(self, evaluation_id: UUID, user_id: UUID):
         self._get_eval_session_with_owner_check(evaluation_id, user_id)
         return self.paper_configs.get_config(evaluation_id)
+
+    def confirm_paper_config(self, evaluation_id: UUID, payload: PaperConfigUpdate, user_id: UUID):
+        """Update provided fields and confirm the paper configuration for an evaluation session."""
+        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+        return self.paper_configs.confirm_config(
+            evaluation_session_id=evaluation_id,
+            paper_part=payload.paper_part,
+            subject_name=payload.subject_name,
+            medium=payload.medium,
+            total_marks=payload.total_marks,
+            weightage=float(payload.weightage) if payload.weightage is not None else None,
+            total_main_questions=payload.total_main_questions,
+            selection_rules=payload.selection_rules,
+        )
 
     def register_answer_document(self, evaluation_id: UUID, payload: AnswerDocumentCreate, user_id: UUID):
         self._get_eval_session_with_owner_check(evaluation_id, user_id)

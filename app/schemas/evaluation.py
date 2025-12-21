@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Dict
 from uuid import UUID
 from datetime import datetime
 from decimal import Decimal
@@ -59,17 +59,37 @@ class EvaluationResourceResponse(BaseModel):
 
 # Paper Config Schemas
 class PaperConfigCreate(BaseModel):
+    paper_part: Optional[str] = None
+    subject_name: Optional[str] = None
+    medium: Optional[str] = None
     total_marks: Optional[int] = None
+    weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
-    required_questions: Optional[int] = None
+    selection_rules: Optional[Dict[str, int]] = None
+
+
+class PaperConfigUpdate(BaseModel):
+    paper_part: Optional[str] = None
+    subject_name: Optional[str] = None
+    medium: Optional[str] = None
+    total_marks: Optional[int] = None
+    weightage: Optional[Decimal] = None
+    total_main_questions: Optional[int] = None
+    selection_rules: Optional[Dict[str, int]] = None
+    is_confirmed: Optional[bool] = None
 
 
 class PaperConfigResponse(BaseModel):
     id: UUID
     evaluation_session_id: UUID
+    paper_part: Optional[str] = None
+    subject_name: Optional[str] = None
+    medium: Optional[str] = None
     total_marks: Optional[int] = None
+    weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
-    required_questions: Optional[int] = None
+    selection_rules: Optional[Dict[str, int]] = None
+    is_confirmed: Optional[bool] = None
     created_at: datetime
 
     class Config:

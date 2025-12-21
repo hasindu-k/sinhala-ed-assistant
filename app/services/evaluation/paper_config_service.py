@@ -55,3 +55,27 @@ class PaperConfigService:
     def get_config(self, evaluation_session_id: UUID):
         """Fetch paper config for a session."""
         return self.repository.get_paper_config(evaluation_session_id)
+
+    def confirm_config(
+        self,
+        evaluation_session_id: UUID,
+        paper_part: Optional[str] = None,
+        subject_name: Optional[str] = None,
+        medium: Optional[str] = None,
+        total_marks: Optional[int] = None,
+        weightage: Optional[float] = None,
+        total_main_questions: Optional[int] = None,
+        selection_rules: Optional[dict] = None,
+    ):
+        """Update any provided fields and mark paper config as confirmed."""
+        return self.repository.update_paper_config(
+            evaluation_session_id=evaluation_session_id,
+            paper_part=paper_part,
+            subject_name=subject_name,
+            medium=medium,
+            total_marks=total_marks,
+            weightage=weightage,
+            total_main_questions=total_main_questions,
+            selection_rules=selection_rules,
+            is_confirmed=True,
+        )

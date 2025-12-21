@@ -12,6 +12,7 @@ from app.schemas.evaluation import (
     EvaluationResourceAttach,
     EvaluationResourceResponse,
     PaperConfigCreate,
+    PaperConfigUpdate,
     PaperConfigResponse,
     AnswerDocumentCreate,
     AnswerDocumentResponse,
@@ -203,6 +204,28 @@ def get_paper_config(
     service = EvaluationWorkflowService(db)
     try:
         config = service.get_paper_config(evaluation_id, current_user.id)
+        if not config:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper config not found")
+        return config
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.post("/sessions/{evaluation_id}/paper-config/confirm", response_model=PaperConfigResponse)
+def confirm_paper_config(
+    evaluation_id: UUID,
+    payload: PaperConfigUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Confirm the paper marking configuration for this evaluation session.
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        config = service.confirm_paper_config(evaluation_id, payload, current_user.id)
         if not config:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper config not found")
         return config
