@@ -205,6 +205,7 @@ def separate_paper_content(text: str):
     model = genai.GenerativeModel("gemini-2.5-flash")
 
     try:
+        logger.info("Starting Sinhala structure extraction.")
         response = model.generate_content(
             SINHALA_STRUCTURE_PROMPT.format(content=text[:20000]),
             generation_config={"response_mime_type": "application/json"},
@@ -217,6 +218,7 @@ def separate_paper_content(text: str):
         )
 
         result = json.loads(response.text)
+        logger.info("Sinhala structure extraction completed successfully.")
 
         paper_metadata = result.get("metadata", {})
 
