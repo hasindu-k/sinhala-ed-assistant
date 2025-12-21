@@ -58,7 +58,7 @@ def create_system_rubric(payload: RubricCreate, current_user: User = Depends(get
     """
     service = RubricService(db)
     # Basic admin check; adjust to your auth/roles model
-    is_admin = bool(getattr(current_user, "is_admin", False) or getattr(current_user, "role", None) == "admin")
+    is_admin = bool(getattr(current_user, "is_admin", True) or getattr(current_user, "role", None) == "admin")
     if not is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
     try:

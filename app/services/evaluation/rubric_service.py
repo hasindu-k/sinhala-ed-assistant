@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.repositories.evaluation.rubric_repository import RubricRepository
+from app.schemas.rubric import RubricCriterionCreate
 
 
 class RubricService:
@@ -60,7 +61,7 @@ class RubricService:
         self,
         name: str,
         description: Optional[str] = None,
-        criteria: Optional[List[dict]] = None,
+        criteria: Optional[List[RubricCriterionCreate]] = None,
     ):
         """Create a system rubric (created_by=None, rubric_type='system')."""
         rubric = self.repository.create_rubric(
@@ -73,8 +74,8 @@ class RubricService:
             for c in criteria:
                 self.repository.create_rubric_criterion(
                     rubric_id=rubric.id,
-                    criterion=c.get("criterion"),
-                    weight_percentage=c.get("weight_percentage"),
+                    criterion=c.criterion,
+                    weight_percentage=c.weight_percentage,
                 )
         return rubric
     
