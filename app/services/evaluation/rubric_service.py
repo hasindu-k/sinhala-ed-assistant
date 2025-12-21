@@ -18,22 +18,43 @@ class RubricService:
         rubric = self.repository.get_rubric(rubric_id)
         if not rubric:
             raise ValueError("Rubric not found")
-        if rubric.user_id != user_id:
+        # Ownership is required for write operations; system rubrics (created_by is None) are not writable
+        if rubric.created_by != user_id:
+            raise PermissionError("You don't have permission to modify this rubric")
+        return rubric
+
+    def _get_accessible_rubric(self, rubric_id: UUID, user_id: UUID):
+        """Allow reading system rubrics (created_by is None) or owned rubrics."""
+        rubric = self.repository.get_rubric(rubric_id)
+        if not rubric:
+            raise ValueError("Rubric not found")
+        if rubric.created_by is not None and rubric.created_by != user_id:
             raise PermissionError("You don't have permission to access this rubric")
         return rubric
-    
+
     def create_rubric(
         self,
         user_id: UUID,
         name: str,
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        rubric_type: Optional[str] = None,
+        criteria: Optional[List[dict]] = None,
     ):
-        """Create a new rubric."""
-        return self.repository.create_rubric(
-            user_id=user_id,
+        """Create a new rubric; optionally add criteria."""
+        rubric = self.repository.create_rubric(
+            created_by=user_id,
             name=name,
-            description=description
+            description=description,
+            rubric_type=rubric_type,
         )
+        if criteria:
+            for criterion_data in criteria:
+                self.repository.create_rubric_criterion(
+                    rubric_id=rubric.id,
+                    criterion=criterion_data.get("criterion"),
+                    weight_percentage=criterion_data.get("weight_percentage"),
+                )
+        return rubric
     
     def get_rubric(self, rubric_id: UUID):
         """Get rubric by ID."""
@@ -44,22 +65,26 @@ class RubricService:
         return self._get_owned_rubric(rubric_id, user_id)
     
     def get_rubrics_by_user(self, user_id: UUID) -> List:
-        """Get all rubrics for a user."""
-        return self.repository.get_rubrics_by_user(user_id)
+        """Get system and user-created rubrics for a user."""
+        user_rubrics = self.repository.get_rubrics_by_creator(user_id)
+        system_rubrics = self.repository.get_system_rubrics()
+        return user_rubrics + system_rubrics
     
     def update_rubric(
         self,
         rubric_id: UUID,
         user_id: UUID,
         name: Optional[str] = None,
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        rubric_type: Optional[str] = None,
     ):
-        """Update rubric."""
+        """Update rubric (owned by user)."""
         self._get_owned_rubric(rubric_id, user_id)
         return self.repository.update_rubric(
             rubric_id=rubric_id,
             name=name,
-            description=description
+            description=description,
+            rubric_type=rubric_type,
         )
     
     def delete_rubric(self, rubric_id: UUID, user_id: UUID) -> bool:
@@ -71,17 +96,15 @@ class RubricService:
         self,
         rubric_id: UUID,
         user_id: UUID,
-        criterion_name: str,
-        description: Optional[str] = None,
-        weight: int = 0
+        criterion: Optional[str] = None,
+        weight_percentage: Optional[int] = None,
     ):
-        """Create a rubric criterion."""
+        """Create a rubric criterion (owned rubric)."""
         self._get_owned_rubric(rubric_id, user_id)
         return self.repository.create_rubric_criterion(
             rubric_id=rubric_id,
-            criterion_name=criterion_name,
-            description=description,
-            weight=weight
+            criterion=criterion,
+            weight_percentage=weight_percentage,
         )
     
     def get_rubric_criteria(self, rubric_id: UUID, user_id: UUID) -> List:
@@ -94,18 +117,16 @@ class RubricService:
         rubric_id: UUID,
         criterion_id: UUID,
         user_id: UUID,
-        criterion_name: Optional[str] = None,
-        description: Optional[str] = None,
-        weight: Optional[int] = None,
+        criterion: Optional[str] = None,
+        weight_percentage: Optional[int] = None,
     ):
         """Update a rubric criterion after ownership validation."""
         self._get_owned_rubric(rubric_id, user_id)
         return self.repository.update_rubric_criterion(
             rubric_id=rubric_id,
             criterion_id=criterion_id,
-            criterion_name=criterion_name,
-            description=description,
-            weight=weight,
+            criterion=criterion,
+            weight_percentage=weight_percentage,
         )
 
     def delete_rubric_criterion(self, rubric_id: UUID, criterion_id: UUID, user_id: UUID) -> bool:
@@ -118,39 +139,27 @@ class RubricService:
         user_id: UUID,
         name: str,
         criteria: List[dict],
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        rubric_type: Optional[str] = None,
     ):
-        """
-        Create a complete rubric with criteria.
-        
-        criteria format:
-        [
-            {
-                "criterion_name": "Content",
-                "description": "Accuracy of content",
-                "weight": 40
-            }
-        ]
-        """
+        """Create a complete rubric with criteria (criterion, weight_percentage)."""
         rubric = self.repository.create_rubric(
-            user_id=user_id,
+            created_by=user_id,
             name=name,
-            description=description
+            description=description,
+            rubric_type=rubric_type,
         )
-        
         for criterion_data in criteria:
             self.repository.create_rubric_criterion(
                 rubric_id=rubric.id,
-                criterion_name=criterion_data["criterion_name"],
-                description=criterion_data.get("description"),
-                weight=criterion_data.get("weight", 0)
+                criterion=criterion_data.get("criterion"),
+                weight_percentage=criterion_data.get("weight_percentage"),
             )
-        
         return rubric
     
     def get_rubric_with_criteria(self, rubric_id: UUID, user_id: UUID) -> Optional[dict]:
-        """Get rubric with all its criteria after ownership validation."""
-        self._get_owned_rubric(rubric_id, user_id)
+        """Get rubric with all its criteria; allow access to system rubrics or owned rubrics."""
+        self._get_accessible_rubric(rubric_id, user_id)
         return self.repository.get_rubric_with_criteria(rubric_id)
     
     def create_evaluation_rubric(
@@ -160,26 +169,14 @@ class RubricService:
     ):
         """Create a standard evaluation rubric with semantic, coverage, and BM25 criteria."""
         criteria = [
-            {
-                "criterion_name": "Semantic Similarity",
-                "description": "How well the answer matches the reference semantically",
-                "weight": 40
-            },
-            {
-                "criterion_name": "Coverage",
-                "description": "How comprehensively the answer covers the question",
-                "weight": 35
-            },
-            {
-                "criterion_name": "BM25 Relevance",
-                "description": "How relevant the answer is based on BM25 scoring",
-                "weight": 25
-            }
+            {"criterion": "Semantic Similarity", "weight_percentage": 40},
+            {"criterion": "Coverage", "weight_percentage": 35},
+            {"criterion": "BM25 Relevance", "weight_percentage": 25},
         ]
-        
         return self.create_rubric_with_criteria(
             user_id=user_id,
             name=name,
             criteria=criteria,
-            description="Standard evaluation rubric with semantic, coverage, and BM25 criteria"
+            description="Standard evaluation rubric with semantic, coverage, and BM25 criteria",
+            rubric_type="custom",
         )
