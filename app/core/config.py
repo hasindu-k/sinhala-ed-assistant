@@ -14,8 +14,26 @@ class Settings(BaseSettings):
     # Database (optional)
     DATABASE_URL: Optional[str] = None
 
+    # Auth
+    JWT_SECRET_KEY: str = "change-me"  # override in .env
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 # 24 hours for development
+    REFRESH_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 15
+
     # Embedding model for RAG
     MODEL_EMBEDDING_NAME: str = "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
+
+    # Email (SMTP)
+    MAIL_MAILER: str = "smtp"
+    MAIL_HOST: str = "smtp.gmail.com"
+    MAIL_PORT: int = 587
+    MAIL_USERNAME: Optional[str] = None
+    MAIL_PASSWORD: Optional[str] = None
+    MAIL_ENCRYPTION: str = "tls"
+    MAIL_FROM_ADDRESS: str = "admin@sinhalalearn.online"
+    MAIL_FROM_NAME: str = "Sinhala Educational Assistant"
+    FRONTEND_URL: str = "http://localhost:3000"  # for reset link
 
     class Config:
         env_file = ".env"

@@ -13,3 +13,9 @@ firebase_admin
 sentence-transformers>=2.2.0
 numpy>=1.21.0
 rank-bm25>=0.2.1  # For BM25 implementation
+pydantic[email]
+passlib[bcrypt]
+python-jose[cryptography]
+
+# Migrations
+alembic==1.13.3
