@@ -112,16 +112,26 @@ class EvaluationSessionRepository:
     def create_paper_config(
         self,
         evaluation_session_id: UUID,
-        total_marks: int,
-        total_main_questions: int,
-        required_questions: int
+        paper_part: Optional[str] = None,
+        subject_name: Optional[str] = None,
+        medium: Optional[str] = None,
+        total_marks: Optional[int] = None,
+        weightage: Optional[float] = None,
+        total_main_questions: Optional[int] = None,
+        selection_rules: Optional[dict] = None,
+        is_confirmed: Optional[bool] = False,
     ) -> PaperConfig:
         """Create paper configuration for an evaluation session."""
         paper_config = PaperConfig(
             evaluation_session_id=evaluation_session_id,
+            paper_part=paper_part,
+            subject_name=subject_name,
+            medium=medium,
             total_marks=total_marks,
+            weightage=weightage,
             total_main_questions=total_main_questions,
-            required_questions=required_questions
+            selection_rules=selection_rules,
+            is_confirmed=is_confirmed,
         )
         self.db.add(paper_config)
         self.db.commit()
@@ -137,19 +147,34 @@ class EvaluationSessionRepository:
     def update_paper_config(
         self,
         evaluation_session_id: UUID,
+        paper_part: Optional[str] = None,
+        subject_name: Optional[str] = None,
+        medium: Optional[str] = None,
         total_marks: Optional[int] = None,
+        weightage: Optional[float] = None,
         total_main_questions: Optional[int] = None,
-        required_questions: Optional[int] = None
+        selection_rules: Optional[dict] = None,
+        is_confirmed: Optional[bool] = None,
     ) -> Optional[PaperConfig]:
         """Update paper configuration."""
         config = self.get_paper_config(evaluation_session_id)
         if config:
+            if paper_part is not None:
+                config.paper_part = paper_part
+            if subject_name is not None:
+                config.subject_name = subject_name
+            if medium is not None:
+                config.medium = medium
             if total_marks is not None:
                 config.total_marks = total_marks
+            if weightage is not None:
+                config.weightage = weightage
             if total_main_questions is not None:
                 config.total_main_questions = total_main_questions
-            if required_questions is not None:
-                config.required_questions = required_questions
+            if selection_rules is not None:
+                config.selection_rules = selection_rules
+            if is_confirmed is not None:
+                config.is_confirmed = is_confirmed
             self.db.commit()
             self.db.refresh(config)
         return config
