@@ -1,7 +1,7 @@
 # app/api/v1/router.py
 from fastapi import APIRouter
 
-from app.components.voice_qa.routers import voice_router
+from app.components.voice_qa.routers.voice_router import router as voice_router
 from app.routers import (
     chat_sessions,
     messages,
