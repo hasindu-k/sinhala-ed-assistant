@@ -144,7 +144,8 @@ class EvaluationWorkflowService:
         except Exception as e:
             logger.error(f"Failed to parse paper structure: {e}", exc_info=True)
             raise ValueError(f"Failed to parse question paper structure: {e}")
-
+        
+        return paper_structure
         # Create question paper entry
         question_paper = self.question_papers.create_question_paper(
             evaluation_session_id=evaluation_id,

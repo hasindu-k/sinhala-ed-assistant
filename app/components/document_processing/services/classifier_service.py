@@ -55,7 +55,7 @@ def classify_document(text: str) -> str:
 # 1. Specialized Prompt for Sinhala Exam Extraction
 SINHALA_STRUCTURE_PROMPT = """
 You are an expert AI for analyzing Sri Lankan exam papers (Sinhala and English medium).
-Your task is to structure the provided text into a strict JSON format.
+Your task is to structure the provided text into a strict JSON format containing ONLY the question structure.
 
 ========================
 IMPORTANT MARKING RULES
@@ -130,18 +130,6 @@ OUTPUT FORMAT (STRICT JSON)
 ========================
 
 {{
-  "metadata": {{
-    "subject": "string or null",
-    "grade": "string or null", 
-    "year": "string or null",
-    "term": "string or null",
-    "duration": "string or null",
-    "medium": "Sinhala or English"
-  }},
-  "instructions": {{
-    "Paper_I": ["instruction 1", "instruction 2"],
-    "Paper_II": ["instruction 1", "instruction 2"]
-  }},
   "PaperStructure": {{
     "Paper_I": {{
       "type": "MCQ",
@@ -177,12 +165,12 @@ OUTPUT FORMAT (STRICT JSON)
 ========================
 IMPORTANT NOTES
 ========================
-1. If a paper section is not found in the text, return an empty questions object for that paper
-2. Preserve original question numbers/labels from the text
-3. Extract marks carefully - use null if uncertain, never use 0
-4. For MCQs without explicit marks, use null
-5. Group all MCQs under Paper_I and structured questions under Paper_II
-6. If there's only one paper type, fill only that section
+1. Do NOT extract metadata (Subject, Year, Grade).
+2. Do NOT extract general instructions.
+3. Only extract the Question Structure.
+4. If a paper section is not found in the text, return an empty questions object for that paper.
+5. Preserve original question numbers/labels from the text.
+6. Extract marks carefully - use null if uncertain, never use 0.
 
 ========================
 TEXT TO PROCESS
@@ -192,17 +180,14 @@ TEXT TO PROCESS
 
 def separate_paper_content(text: str):
     """
-    Separates paper content into:
-    - Metadata
-    - Instructions (Paper I / Paper II)
-    - PaperStructure (Paper I / Paper II with independent numbering)
-
-    Fully aligned with Sri Lankan exam paper formats.
+    Separates paper content into PaperStructure only.
+    Returns: paper_structure (dict)
     """
     if not text or not text.strip():
-        return {}, {}, {}
+        return {}
 
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    # Initialize model (ensure api_key is configured elsewhere)
+    model = genai.GenerativeModel("gemini-2.0-flash-exp") # Updated to latest flash model for better speed/cost
 
     try:
         logger.info("Starting Sinhala structure extraction.")
@@ -220,37 +205,29 @@ def separate_paper_content(text: str):
         result = json.loads(response.text)
         logger.info("Sinhala structure extraction completed successfully.")
 
-        paper_metadata = result.get("metadata", {})
-
-        instructions = result.get("instructions", {
-            "Paper_I": [],
-            "Paper_II": []
-        })
-
         paper_structure = result.get("PaperStructure", {
             "Paper_I": {},
             "Paper_II": {}
         })
 
-        # 🔒 Defensive normalization (optional but recommended)
+        # 🔒 Defensive normalization
         for paper_key in ["Paper_I", "Paper_II"]:
             paper = paper_structure.get(paper_key)
             if paper and "questions" not in paper:
                 paper["questions"] = {}
 
-        # log for debugging
-        logger.debug("Extracted Paper Metadata: %s", paper_metadata)
-        logger.debug("Extracted Instructions: %s", instructions)
         logger.debug("Extracted Paper Structure: %s", paper_structure)
-        return paper_metadata, instructions, paper_structure
+        
+        # Only returning paper_structure now
+        return paper_structure
 
     except json.JSONDecodeError:
         print("❌ Error: Model output was not valid JSON.")
-        return {}, {}, {}
+        return {}
 
     except Exception as e:
         print(f"❌ Error in Sinhala structure extraction: {e}")
-        return {}, {}, {}
+        return {}
     
 def fix_sinhala_ocr(text: str) -> str:
     """
