@@ -293,7 +293,7 @@ Your task is to analyze the provided exam paper text (Sinhala/English) and extra
 ANALYSIS GOALS
 ========================
 1. **Identify Papers:** Detect if the text contains Paper I, Paper II, or both.
-2. **Extract Scoring Logic:** Find total marks and specific selection rules (e.g., "Answer 4 questions").
+2. **Extract Scoring Logic:** Find total marks and specific selection rules (e.g., "Answer 4 questions from Part II").
 3. **Calculate Counts:** Count the total available questions for each paper.
 
 ========================
@@ -307,19 +307,25 @@ EXTRACTION RULES
 
 **2. Selection Rules (`selection_rules`)**
    - Read the "Instructions" (උපදෙස්) section carefully.
-   - **MCQ (Paper I):** Usually requires answering ALL questions.
-     -> JSON: `{"mode": "all"}`
-   - **Structured (Paper II):** Often has choices.
-     - "Answer 4 questions" -> `{"required_count": 4}`
-     - "Answer Question 1 and any 4 others" -> `{"compulsory": [1], "choose_from_rest": 4}`
-     - "Answer 2 from Part A and 3 from Part B" -> `{"Part_A": 2, "Part_B": 3}`
+   - **Scenario A: Answer All**
+     - If instructions say "Answer all questions", return: `{"mode": "all"}`
+   
+   - **Scenario B: Specific Counts per Section (The most common for Paper II)**
+     - If it says "Answer 4 from Part II and 1 from Part III", return exactly:
+       `{"Part_II": 4, "Part_III": 1}`
+     - If it says "Answer 2 questions from Section A and 3 from Section B", return:
+       `{"Section_A": 2, "Section_B": 3}`
+
+   - **Scenario C: Compulsory + Choice**
+     - If it says "Question 1 is compulsory, select 4 others", return:
+       `{"compulsory": [1], "choose_any": 4}`
 
 **3. Total Marks (`total_marks`)**
    - **Paper I:** Usually 1 mark per question (e.g., 40 questions = 40 marks).
    - **Paper II:** Look for "Total Marks" or sum the marks of the *required* number of questions.
    - If unable to find explicit marks, estimate based on standard Sri Lankan Ordinary Level standards (Paper I: 40, Paper II: 100).
 
-**4. Weightage (`weightage`)**
+**4. Weightage (`suggested_weightage`)**
    - This is rarely in the text. Suggest a standard value:
    - Paper I default: 40% (0.4)
    - Paper II default: 60% (0.6)
@@ -332,14 +338,14 @@ Return a JSON object containing a list of configurations found.
 {
   "configs": [
     {
-      "paper_part": "Paper_I",      // or "Paper_II"
+      "paper_part": "Paper_I",       // e.g. "Paper_I", "Paper_II"
       "subject_detected": "History", // For UI verification only
       "medium": "Sinhala",           // "Sinhala" or "English"
       "total_marks": 40,             // Integer
       "total_questions_available": 40, // How many distinct questions exist in text
       "suggested_weightage": 40,     // Percentage (integer)
       "selection_rules": {           // The logic for valid submission
-         "mode": "all"               // or complex logic like {"compulsory": [1], "additional": 4}
+         "mode": "all"               
       }
     },
     {
@@ -349,10 +355,10 @@ Return a JSON object containing a list of configurations found.
       "total_marks": 100,
       "total_questions_available": 9,
       "suggested_weightage": 60,
-      "selection_rules": {
-         "compulsory": [1],
-         "choose_count": 4,
-         "note": "Select 1 from Part III and 3 from Part II"
+      "selection_rules": {           // Example for "Answer 4 from Part II and 1 from Part III"
+         "Part_II": 4,
+         "Part_III": 1,
+         "compulsory": [1]           // Include only if specific questions are mandatory
       }
     }
   ]
