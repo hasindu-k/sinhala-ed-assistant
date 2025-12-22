@@ -140,7 +140,7 @@ OUTPUT FORMAT (STRICT JSON)
           "options": ["option 1", "option 2", "option 3", "option 4"],
           "marks": null
         }},
-        "2": {{ ... }}
+        "2": {{{{ ... }}}}
       }}
     }},
     "Paper_II": {{
@@ -151,12 +151,12 @@ OUTPUT FORMAT (STRICT JSON)
           "text": "main question text",
           "marks": 20,
           "sub_questions": {{
-            "a": {{"text": "sub-question a", "marks": 5}},
-            "b": {{"text": "sub-question b", "marks": 5}},
-            "c": {{"text": "sub-question c", "marks": 10}}
+            "a": {{{{"text": "sub-question a", "marks": 5}}}},
+            "b": {{{{"text": "sub-question b", "marks": 5}}}},
+            "c": {{{{"text": "sub-question c", "marks": 10}}}}
           }}
         }},
-        "2": {{ ... }}
+        "2": {{{{ ... }}}}
       }}
     }}
   }}
@@ -285,17 +285,17 @@ EXTRACTION RULES
 **2. Selection Rules (`selection_rules`)**
    - Read the "Instructions" (උපදෙස්) section carefully.
    - **Scenario A: Answer All**
-     - If instructions say "Answer all questions", return: `{"mode": "all"}`
+     - If instructions say "Answer all questions", return: `{{{{"mode": "all"}}}}`
    
    - **Scenario B: Specific Counts per Section (The most common for Paper II)**
      - If it says "Answer 4 from Part II and 1 from Part III", return exactly:
-       `{"Part_II": 4, "Part_III": 1}`
+       `{{{{"Part_II": 4, "Part_III": 1}}}}`
      - If it says "Answer 2 questions from Section A and 3 from Section B", return:
-       `{"Section_A": 2, "Section_B": 3}`
+       `{{{{"Section_A": 2, "Section_B": 3}}}}`
 
    - **Scenario C: Compulsory + Choice**
      - If it says "Question 1 is compulsory, select 4 others", return:
-       `{"compulsory": [1], "choose_any": 4}`
+       `{{{{"compulsory": [1], "choose_any": 4}}}}`
 
 **3. Total Marks (`total_marks`)**
    - **Paper I:** Usually 1 mark per question (e.g., 40 questions = 40 marks).
@@ -312,37 +312,195 @@ OUTPUT FORMAT (Strict JSON)
 ========================
 Return a JSON object containing a list of configurations found.
 
-{
+{{
   "configs": [
-    {
+    {{
       "paper_part": "Paper_I",       // e.g. "Paper_I", "Paper_II"
       "subject_detected": "History", // For UI verification only
       "medium": "Sinhala",           // "Sinhala" or "English"
       "total_marks": 40,             // Integer
       "total_questions_available": 40, // How many distinct questions exist in text
       "suggested_weightage": 40,     // Percentage (integer)
-      "selection_rules": {           // The logic for valid submission
+      "selection_rules": {{           // The logic for valid submission
          "mode": "all"               
-      }
-    },
-    {
+      }}
+    }},
+    {{
       "paper_part": "Paper_II",
       "subject_detected": "History",
       "medium": "Sinhala",
       "total_marks": 100,
       "total_questions_available": 9,
       "suggested_weightage": 60,
-      "selection_rules": {           // Example for "Answer 4 from Part II and 1 from Part III"
+      "selection_rules": {{           // Example for "Answer 4 from Part II and 1 from Part III"
          "Part_II": 4,
          "Part_III": 1,
          "compulsory": [1]           // Include only if specific questions are mandatory
-      }
-    }
+      }}
+    }}
   ]
-}
+}}
 
 ========================
 TEXT TO PROCESS
 ========================
 {content}
 """
+
+COMBINED_EXAM_PROMPT = """
+You are an expert AI for analyzing Sri Lankan exam papers (Sinhala and English medium).
+Your task is to extract BOTH the **grading configuration** and the **question structure** into a single strict JSON format.
+
+========================
+SECTION 1: CONFIGURATION RULES
+========================
+Analyze the text to determine how the paper should be graded.
+1. **Paper Identification:** Detect if text contains Paper I (MCQ), Paper II (Structured), or both.
+2. **Total Marks:** - Paper I: Usually 1 mark per question (e.g., 40 qs = 40 marks).
+   - Paper II: Look for "Total Marks" or sum the sub-question marks.
+3. **Selection Rules:** Read instructions (e.g., "Answer 4 questions").
+   - If "Answer all": return {{{{"mode": "all"}}}}
+   - If "Answer 4 from Part A and 1 from Part B": return {{{{"Part_A": 4, "Part_B": 1}}}}
+   - If "Question 1 compulsory, select 4 others": return {{{{"compulsory": [1], "choose_any": 4}}}}
+
+========================
+SECTION 2: QUESTION STRUCTURE RULES
+========================
+**Paper I (MCQ):**
+- Questions 1-40 (typically).
+- Format: Question text + Options list.
+- If multiple MCQs share common instructions or data:
+  - Attach the shared information to the first question using "shared_stem"
+  - Subsequent questions reference it using "inherits_shared_stem_from"
+- Only use "shared_stem" when two or more consecutive MCQs clearly depend on the same instruction, paragraph, diagram, or data.
+- Options: (1)..(4), (A)..(D), (අ)..(ඊ).
+- Marks: Usually 1 or null.
+
+**Paper II (Structured):**
+- Main Questions: 1, 2, 3...
+- Sub-questions: a, b, c... or i, ii, iii...
+- Marks: Extract specific marks like "(05 marks)", "(10)", "ලකුණු 05".
+- **Rule:** Never assign 0 marks. Use null if unknown.
+
+========================
+OUTPUT FORMAT (STRICT JSON)
+========================
+Return a single JSON object with keys "Paper_I" and "Paper_II". 
+If a paper is missing, set it to null.
+
+{{
+  "Paper_I": {{
+    "config": {{
+      "subject_detected": "History",
+      "medium": "Sinhala", 
+      "total_marks": 40,
+      "total_questions_available": 40,
+      "suggested_weightage": 40,
+      "selection_rules": {{{{"mode": "all"}}}}
+    }},
+    "questions": {{
+      "1": {{
+        "type": "mcq",
+        "text": "Question text here",
+        "options": ["Op1", "Op2", "Op3", "Op4"],
+        "marks": 1
+      }},
+      "2": {{
+        "type": "mcq",
+        "shared_stem": "Common instruction / paragraph here",
+        "text": "Next question text",
+        "options": ["Op1", "Op2", "Op3", "Op4"],
+        "marks": 1
+      }},
+      "3": {{
+          "type": "mcq",
+          "inherits_shared_stem_from": 2,
+          "text": "Next question text",
+          "options": ["Op1", "Op2", "Op3", "Op4"],
+          "marks": 1
+      }},
+      "4": {{{{ ... }}}}
+    }}
+  }},
+  "Paper_II": {{
+    "config": {{
+      "subject_detected": "History",
+      "medium": "Sinhala",
+      "total_marks": 100,
+      "total_questions_available": 7,
+      "suggested_weightage": 60,
+      "selection_rules": {{
+        "compulsory": [1],
+        "choose_any": 4
+      }}
+    }},
+    "questions": {{
+      "1": {{
+        "type": "structured",
+        "text": "Main question text",
+        "marks": 20,
+        "sub_questions": {{
+          "a": {{{{"text": "Sub Q text", "marks": 5}}}},
+          "b": {{{{"text": "Sub Q text", "marks": 15}}}}
+        }}
+      }}
+    }}
+  }}
+}}
+
+========================
+TEXT TO PROCESS
+========================
+{content}
+"""
+
+def extract_complete_exam_data(text: str):
+    """
+    Extracts both Configuration (Marks/Rules) and Structure (Questions) in one pass.
+    """
+    if not text or not text.strip():
+        return {}
+
+    # Initialize model
+    model = genai.GenerativeModel("gemini-2.5-flash") 
+
+    try:
+        logger.info("Starting combined exam extraction.")
+        response = model.generate_content(
+            COMBINED_EXAM_PROMPT.format(content=text[:30000]), # Increased char limit slightly for full papers
+            generation_config={"response_mime_type": "application/json"},
+            safety_settings={
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+        )
+
+        logger.debug("Raw model response: %s", response)
+        result = json.loads(response.text)
+        logger.info("Combined exam extraction completed successfully.")
+        logger.debug("Extracted Exam Data: %s", result)
+        
+        # 🔒 Defensive Normalization
+        # Ensure top-level keys exist even if model returns partially empty JSON
+        cleaned_result = {
+            "Paper_I": result.get("Paper_I"), 
+            "Paper_II": result.get("Paper_II")
+        }
+        
+        # Log basics for debugging
+        if cleaned_result["Paper_I"]:
+            logger.info(f"Paper I Detected: {len(cleaned_result['Paper_I'].get('questions', {}))} questions")
+        if cleaned_result["Paper_II"]:
+            logger.info(f"Paper II Detected: {len(cleaned_result['Paper_II'].get('questions', {}))} questions")
+
+        return cleaned_result
+
+    except json.JSONDecodeError:
+        logger.error("❌ Error: Model output was not valid JSON.")
+        return {}
+
+    except Exception as e:
+        logger.error(f"❌ Error in combined extraction: {e}")
+        return {}
