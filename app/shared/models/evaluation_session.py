@@ -1,3 +1,5 @@
+# app/shared/models/evaluation_session.py
+
 import uuid
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean, Numeric
 from sqlalchemy.dialects.postgresql import UUID, JSONB

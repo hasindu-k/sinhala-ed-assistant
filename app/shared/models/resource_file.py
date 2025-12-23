@@ -1,8 +1,10 @@
+# app/shared/models/resource_file.py
+
 import uuid
 from sqlalchemy import Column, String, Integer, DateTime, Enum, ForeignKey, BigInteger
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSON
 from sqlalchemy.sql import func
-from pgvector.sqlalchemy import Vector
+# from pgvector.sqlalchemy import Vector  # Temporarily disabled for development
 
 from app.core.database import Base
 
@@ -18,6 +20,6 @@ class ResourceFile(Base):
     size_bytes = Column(BigInteger, nullable=True)
     source_type = Column(Enum("user_upload", "url", "system", name="resource_source"), nullable=True)
     language = Column(String, nullable=True)
-    document_embedding = Column(Vector(768), nullable=True)  # Full document embedding for fast filtering
+    document_embedding = Column(JSON, nullable=True)  # Full document embedding for fast filtering (temporarily JSON)
     embedding_model = Column(String, nullable=True)  # Model used for document embedding
     created_at = Column(DateTime(timezone=True), server_default=func.now())

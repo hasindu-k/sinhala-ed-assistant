@@ -1,3 +1,5 @@
+# app/shared/models/rubrics.py
+
 import uuid
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID

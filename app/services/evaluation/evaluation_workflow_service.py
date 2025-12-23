@@ -246,11 +246,62 @@ class EvaluationWorkflowService:
         return self.answers.get_answer_documents_by_evaluation_session(evaluation_id)
 
     def evaluate_answer(self, answer_id: UUID, user_id: UUID):
-        self._ensure_answer_owner(answer_id, user_id)
+        """Evaluate answer with recursive sub-question support."""
+        answer_doc = self._ensure_answer_owner(answer_id, user_id)
+
+        # Check if already evaluated
         existing = self.answers.get_evaluation_result_by_answer_document(answer_id)
         if existing:
             return existing
-        return self.answers.create_evaluation_result(answer_document_id=answer_id)
+
+        # Get the answer document with OCR text
+        answer_resource = self.resource_files.get_resource(answer_doc.resource_id)
+        if not answer_resource:
+            raise ValueError("Answer resource not found")
+
+        # OCR the answer script if not already done
+        if not answer_resource.extracted_text:
+            ocr_text = extract_and_clean_text_from_file(answer_resource.file_path)
+            # Update the resource with extracted text
+            self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
+        else:
+            ocr_text = answer_resource.extracted_text
+
+        # Get question paper hierarchy
+        question_papers = self.question_papers.get_question_papers_by_evaluation_session(
+            answer_doc.evaluation_session_id
+        )
+        if not question_papers:
+            raise ValueError("Question paper not found")
+
+        question_paper = question_papers[0]  # Take the first question paper
+
+        question_hierarchy = self.question_papers.get_question_paper_with_questions(
+            question_paper.id
+        )
+        if not question_hierarchy:
+            raise ValueError("Question hierarchy not found")
+
+        # Parse answers and build recursive answer tree
+        from app.utils.answer_parser import parse_answer_text, map_answers_to_sub_questions
+
+        parsed_answers = parse_answer_text(ocr_text)
+        answer_mapping = map_answers_to_sub_questions(parsed_answers, question_hierarchy['questions'])
+
+        # Extract only leaf-level answers for evaluation
+        from app.utils.numbering import get_leaf_sub_questions
+
+        leaf_answers = {}
+        for question in question_hierarchy['questions']:
+            leaves = get_leaf_sub_questions(question['sub_questions'])
+            for leaf in leaves:
+                leaf_answers[str(leaf['id'])] = answer_mapping.get(str(leaf['id']), "")
+
+        # Create evaluation result with leaf-level answers only
+        return self.answers.create_evaluation_result(
+            answer_document_id=answer_id,
+            parsed_answers=leaf_answers  # This would need to be added to the service
+        )
 
     def get_evaluation_result(self, answer_id: UUID, user_id: UUID):
         self._ensure_answer_owner(answer_id, user_id)

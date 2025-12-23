@@ -1,3 +1,5 @@
+# app/schemas/evaluation.py
+
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
 from uuid import UUID
@@ -158,9 +160,11 @@ class SubQuestionCreate(BaseModel):
 class SubQuestionResponse(BaseModel):
     id: UUID
     question_id: UUID
+    parent_sub_question_id: Optional[UUID] = None
     label: Optional[str] = None
     sub_question_text: Optional[str] = None
     max_marks: Optional[int] = None
+    children: list['SubQuestionResponse'] = []
 
     class Config:
         from_attributes = True
