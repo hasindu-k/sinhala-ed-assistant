@@ -17,6 +17,7 @@ from app.services.message_service import MessageService
 from app.services.message_attachment_service import MessageAttachmentService
 from app.services.message_context_service import MessageContextService
 from app.services.message_safety_service import MessageSafetyService
+from app.services.session_resource_service import SessionResourceService
 from app.services.chat_session_service import ChatSessionService
 from app.services.rag_service import RAGService
 from app.core.database import get_db
@@ -363,11 +364,16 @@ def generate_ai_response(
     """
     try:
         message_service = MessageService(db)
-        # get resource IDs from message attachments if not provided get session level resources
-        attachments = message_service.get_message_attachments(message_id, current_user.id)
+        message = message_service.get_message_with_ownership_check(message_id, current_user.id)
+
+        attachment_service = MessageAttachmentService(db)
+        attachments = attachment_service.get_message_resources(message_id)
         resource_ids = [att.resource_id for att in attachments]
-        # if not resource_ids:
-            # get session level resources
+
+        if not resource_ids:
+            session_resource_service = SessionResourceService(db)
+            session_resources = session_resource_service.get_session_resources(message.session_id)
+            resource_ids = [res.resource_id for res in session_resources]
 
         assistant_message = message_service.generate_ai_response(
             message_id=message_id,
