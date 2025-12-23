@@ -1,8 +1,6 @@
 # app/components/text_qa_summary/routers/resource_router.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import Optional
 import uuid
 from datetime import datetime
 
@@ -13,21 +11,12 @@ from app.shared.models.text_chunk import TextChunk
 from app.components.text_qa_summary.services.chunking_service import ChunkingService
 from app.components.text_qa_summary.services.embedding_service import EmbeddingService
 from app.core.config import settings
+from app.components.text_qa_summary.schemas.resource_schema import (
+    ResourceUploadRequest,
+    ResourceUploadResponse,
+)
 
 router = APIRouter()
-
-# Request model
-class ResourceUploadRequest(BaseModel):
-    chat_id: str
-    user_id: str
-    resource_text: str
-
-# Response model
-class ResourceUploadResponse(BaseModel):
-    id: str
-    chat_id: str
-    user_id: str
-    created_at: str
 
 # In your existing resource_router.py, update the upload_resource function:
 @router.post("/upload", response_model=ResourceUploadResponse)
@@ -40,14 +29,9 @@ def upload_resource(request: ResourceUploadRequest, db: Session = Depends(get_db
     print(f"{'='*60}")
     
     try:
-        # Convert string to UUID
-        try:
-            chat_uuid = uuid.UUID(request.chat_id)
-            print(f"✓ Chat ID converted to UUID: {chat_uuid}")
-        except ValueError:
-            print(f"✗ Invalid chat_id format: {request.chat_id}")
-            raise HTTPException(status_code=400, detail="Invalid chat_id format")
-        
+        # Use provided UUID (pydantic ensures correct type)
+        chat_uuid = request.chat_id
+
         # Verify or create chat
         chat = db.query(UserChat).filter(UserChat.chat_id == chat_uuid).first()
         
@@ -62,7 +46,7 @@ def upload_resource(request: ResourceUploadRequest, db: Session = Depends(get_db
         
         # Create resource
         resource_id = uuid.uuid4()
-        
+
         resource = ResourceData(
             id=resource_id,
             chat_id=chat_uuid,
@@ -119,10 +103,10 @@ def upload_resource(request: ResourceUploadRequest, db: Session = Depends(get_db
         print(f"✓ Total chunks in database: {total_chunks}")
         
         return ResourceUploadResponse(
-            id=str(resource.id),
-            chat_id=str(resource.chat_id),
+            id=resource.id,
+            chat_id=resource.chat_id,
             user_id=resource.user_id,
-            created_at=resource.created_at.isoformat() if resource.created_at else datetime.now().isoformat()
+            created_at=resource.created_at if resource.created_at else datetime.now()
         )
         
     except HTTPException as he:

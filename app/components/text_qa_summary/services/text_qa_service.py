@@ -76,6 +76,9 @@ class TextQAService:
         context, retrieval_metadata = RetrievalService.generate_context_from_chunks(
             scored_chunks
         )
+        # Diagnostic logs
+        print(f"[DEBUG] Generated context (len): {len(context)}")
+        print(f"[DEBUG] Retrieval metadata: {retrieval_metadata}")
         
         print(f"[RAG] Retrieved {retrieval_metadata['used_chunks']} chunks")
         print(f"[RAG] Average retrieval score: {retrieval_metadata['avg_score']:.3f}")
@@ -165,7 +168,13 @@ class TextQAService:
         print(f"[RAG] Raw summary length: {len(raw_output)} characters")
         
         # Step 5: Summary fidelity check (NEW - better than concept_map_check)
-        fidelity_check = summary_fidelity_check(raw_output, context, grade)
+        try:
+            fidelity_check = summary_fidelity_check(raw_output, context, grade)
+        except ZeroDivisionError:
+            print("[ERROR] ZeroDivisionError in summary_fidelity_check")
+            print(f"Context length: {len(context)}")
+            print(f"Raw output length: {len(raw_output)}")
+            raise
         
         # Step 6: Detect hallucinations
         flagged = detect_misconceptions(raw_output, context, grade)

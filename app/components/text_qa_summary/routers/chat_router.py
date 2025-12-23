@@ -1,28 +1,17 @@
 # app/components/text_qa_summary/routers/chat_router.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import Optional
 import uuid
 from datetime import datetime
 
 from app.core.database import get_db
 from app.shared.models.user_chat import UserChat
+from app.components.text_qa_summary.schemas.chat_schema import (
+    ChatCreateRequest,
+    ChatCreateResponse,
+)
 
 router = APIRouter()
-
-# Request model
-class ChatCreateRequest(BaseModel):
-    user_id: str
-    title: Optional[str] = "New Chat"
-
-# Response model
-class ChatCreateResponse(BaseModel):
-    chat_id: str
-    user_id: str
-    title: Optional[str]
-    created_at: str
-    message: str = "Chat created successfully"
 
 @router.post("/create", response_model=ChatCreateResponse)
 def create_chat(request: ChatCreateRequest, db: Session = Depends(get_db)):
@@ -33,7 +22,7 @@ def create_chat(request: ChatCreateRequest, db: Session = Depends(get_db)):
         # Generate UUID
         new_chat_id = uuid.uuid4()
         print(f"[DEBUG] Attempting to create chat with ID: {new_chat_id}")
-        
+
         # Create chat object
         chat = UserChat(
             chat_id=new_chat_id,
@@ -62,10 +51,10 @@ def create_chat(request: ChatCreateRequest, db: Session = Depends(get_db)):
         print(f"[DEBUG] Chat verified in database: {saved_chat.chat_id}")
         
         return ChatCreateResponse(
-            chat_id=str(chat.chat_id),
+            chat_id=chat.chat_id,
             user_id=chat.user_id,
             title=chat.title,
-            created_at=chat.created_at.isoformat() if chat.created_at else datetime.now().isoformat()
+            created_at=chat.created_at if chat.created_at else datetime.now()
         )
         
     except Exception as e:

@@ -7,12 +7,14 @@ import uuid as uuid_pkg
 class TextQAGenerateRequest(BaseModel):
     chat_id: uuid_pkg.UUID = Field(..., description="Chat session ID")
     user_id: str = Field(..., description="User ID")
+    query: Optional[str] = Field(default="Generate Q&A from all content", description="Optional user query / intent")
     count: int = Field(default=10, ge=1, le=50, description="Number of Q&A pairs to generate")
 
 
 class SummaryGenerateRequest(BaseModel):
     chat_id: uuid_pkg.UUID = Field(..., description="Chat session ID")
     user_id: str = Field(..., description="User ID")
+    query: Optional[str] = Field(default="Generate summary", description="Optional user query / intent")
     grade: str = Field(
         default="9-11", 
         description="Grade level: 6-8, 9-11, 12-13, university"
