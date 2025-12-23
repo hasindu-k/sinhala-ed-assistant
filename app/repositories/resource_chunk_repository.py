@@ -66,7 +66,7 @@ class ResourceChunkRepository:
             SELECT id, resource_id, chunk_index, content, embedding_model
             FROM resource_chunks
             WHERE resource_id IN ({placeholders})
-            ORDER BY embedding <-> :query_embedding
+            ORDER BY embedding <=> :query_embedding
             LIMIT :top_k
             """
         )
