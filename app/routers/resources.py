@@ -9,7 +9,9 @@ from app.schemas.resource import (
     ResourceUploadResponse,
     ResourceProcessResponse
 )
+from app.schemas.resource_chunk import ResourceChunkResponse
 from app.services.resource_service import ResourceService
+from app.services.resource_chunk_service import ResourceChunkService
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
@@ -154,6 +156,59 @@ def get_resource(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve resource"
+        )
+
+
+@router.get("/{resource_id}/chunks", response_model=List[ResourceChunkResponse])
+def get_resource_chunks(
+    resource_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    List all chunks for a resource (admin/debug use).
+    
+    Args:
+        resource_id: ID of the resource
+        current_user: Authenticated user
+        db: Database session
+        
+    Returns:
+        List of ResourceChunkResponse objects
+        
+    Raises:
+        HTTPException 403: User doesn't own the resource
+        HTTPException 404: Resource not found
+        HTTPException 500: Database error
+    """
+    try:
+        # Verify ownership
+        resource_service = ResourceService(db)
+        resource_service.get_resource_with_ownership_check(resource_id, current_user.id)
+        
+        # Get chunks
+        chunk_service = ResourceChunkService(db)
+        chunks = chunk_service.get_chunks_for_resource(resource_id)
+        logger.debug(f"Retrieved {len(chunks)} chunks for resource {resource_id}")
+        return chunks
+        
+    except ValueError as e:
+        logger.warning(f"Resource {resource_id} not found for user {current_user.id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except PermissionError as e:
+        logger.warning(f"User {current_user.id} attempted unauthorized access to resource {resource_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error retrieving chunks for resource {resource_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve chunks"
         )
 
 

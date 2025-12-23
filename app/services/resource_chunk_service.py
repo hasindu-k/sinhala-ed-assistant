@@ -19,5 +19,9 @@ class ResourceChunkService:
     def get_chunks_by_resource(self, resource_ids: List[UUID]):
         return self.repository.get_chunks_by_resource(resource_ids)
 
+    def get_chunks_for_resource(self, resource_id: UUID):
+        """Get all chunks for a single resource."""
+        return self.get_chunks_by_resource([resource_id])
+
     def vector_search(self, resource_ids: List[UUID], query_embedding: List[float], top_k: int = 10):
         return self.repository.vector_search(resource_ids, query_embedding, top_k)
