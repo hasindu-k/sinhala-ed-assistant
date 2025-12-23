@@ -64,9 +64,22 @@ def create_user_message(
             transcript=payload.transcript,
             audio_duration_sec=payload.audio_duration_sec,
         )
+        logger.info(f"User message created: {message.id} in session {parsed_session_id} by user {current_user.id}")
 
         return message
 
+    except ValueError as e:
+        logger.warning(f"Validation error creating message in session {session_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except PermissionError as e:
+        logger.warning(f"User {current_user.id} attempted unauthorized message creation in session {session_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:

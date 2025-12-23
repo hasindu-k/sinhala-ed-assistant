@@ -49,10 +49,10 @@ class MessageService:
         self.logger.debug(" start: session_id=%s user_id=%s modality=%s", session_id, user_id, modality)
         # If session doesn't exist, create it on-demand using sensible defaults.
         # Otherwise verify ownership.
-        session = session_service.get_session(session_id)
-        if not session:
+        session_exists = session_service.get_session(session_id)
+        if not session_exists:
             # create session owned by this user. Defaults mirror ChatSessionCreate schema
-            session = session_service.create_session(
+            session_service.create_session(
                 user_id=user_id,
                 mode="learning",
                 channel="text",

@@ -37,7 +37,7 @@ class MessageCreate(BaseModel):
     audio_url: Optional[str] = None
     transcript: Optional[str] = None
     audio_duration_sec: Optional[Decimal] = None
-    grade_level: Optional[str] = None
+    grade_level: Optional[GradeLevel] = None
 
 
 class MessageUpdate(BaseModel):
