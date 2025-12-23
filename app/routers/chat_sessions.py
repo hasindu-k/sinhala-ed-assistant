@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 from app.schemas.chat import ChatSessionCreate, ChatSessionUpdate, ChatSessionResponse, SessionResourceAttach
 from app.services.chat_session_service import ChatSessionService
+from app.services.session_resource_service import SessionResourceService
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
@@ -221,6 +222,8 @@ def delete_chat_session(
     """
     try:
         service = ChatSessionService(db)
+        session_resources_service = SessionResourceService(db)
+        session_resources_service.detach_all_resources(session_id)
         service.delete_session(session_id, current_user.id)
         logger.info(f"Chat session {session_id} deleted by user {current_user.id}")
         
