@@ -17,14 +17,13 @@ class PaperConfigService:
         paper_part: Optional[str] = None,
         subject_name: Optional[str] = None,
         medium: Optional[str] = None,
-        total_marks: Optional[int] = None,
         weightage: Optional[float] = None,
         total_main_questions: Optional[int] = None,
         selection_rules: Optional[dict] = None,
         is_confirmed: Optional[bool] = None,
     ):
         """Create or update paper config for a session."""
-        existing_config = self.repository.get_paper_config(evaluation_session_id)
+        existing_config = self.repository.get_paper_config(evaluation_session_id, paper_part)
 
         if existing_config:
             return self.repository.update_paper_config(
@@ -32,7 +31,6 @@ class PaperConfigService:
                 paper_part=paper_part,
                 subject_name=subject_name,
                 medium=medium,
-                total_marks=total_marks,
                 weightage=weightage,
                 total_main_questions=total_main_questions,
                 selection_rules=selection_rules,
@@ -45,7 +43,6 @@ class PaperConfigService:
             paper_part=paper_part,
             subject_name=subject_name,
             medium=medium,
-            total_marks=total_marks,
             weightage=weightage,
             total_main_questions=total_main_questions,
             selection_rules=selection_rules,

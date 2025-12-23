@@ -37,7 +37,6 @@ class PaperConfig(Base):
     medium = Column(String, nullable=True)
     
     # Scoring Logic (Crucial for calculation)
-    total_marks = Column(Integer, nullable=True)  # Raw marks for this paper (e.g., 40 or 100)
     weightage = Column(Numeric(5, 2), nullable=True)  # How much this paper contributes to final grade (e.g., 40.0% or 60.0%)
     
     # Selection Rules (Needed to validate if student answered enough questions)

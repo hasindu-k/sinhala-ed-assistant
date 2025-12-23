@@ -33,7 +33,7 @@ from app.components.document_processing.utils.pdf_analysis import (
 logger = logging.getLogger(__name__)
 
 # Utility function
-async def extract_and_clean_text_from_file(file_path: str) -> tuple[str, int]:
+def extract_and_clean_text_from_file(file_path: str) -> tuple[str, int]:
     """
     Extract text from a file (PDF or image) and return cleaned text with page count.
     

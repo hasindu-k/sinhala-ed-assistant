@@ -50,14 +50,18 @@ class QuestionPaperRepository:
         question_paper_id: UUID,
         question_number: str,
         question_text: str,
-        max_marks: int
+        max_marks: Optional[int] = None,
+        shared_stem: Optional[str] = None,
+        inherits_shared_stem_from: Optional[str] = None,
     ) -> Question:
         """Create a main question."""
         question = Question(
             question_paper_id=question_paper_id,
             question_number=question_number,
             question_text=question_text,
-            max_marks=max_marks
+            max_marks=max_marks,
+            shared_stem=shared_stem,
+            inherits_shared_stem_from=inherits_shared_stem_from,
         )
         self.db.add(question)
         self.db.commit()
@@ -75,7 +79,7 @@ class QuestionPaperRepository:
         question_id: UUID,
         label: str,
         sub_question_text: str,
-        max_marks: int
+        max_marks: Optional[int] = None,
     ) -> SubQuestion:
         """Create a sub-question."""
         sub_question = SubQuestion(

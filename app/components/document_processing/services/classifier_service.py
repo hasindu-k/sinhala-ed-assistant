@@ -55,7 +55,7 @@ def classify_document(text: str) -> str:
 # 1. Specialized Prompt for Sinhala Exam Extraction
 SINHALA_STRUCTURE_PROMPT = """
 You are an expert AI for analyzing Sri Lankan exam papers (Sinhala and English medium).
-Your task is to structure the provided text into a strict JSON format.
+Your task is to structure the provided text into a strict JSON format containing ONLY the question structure.
 
 ========================
 IMPORTANT MARKING RULES
@@ -130,18 +130,6 @@ OUTPUT FORMAT (STRICT JSON)
 ========================
 
 {{
-  "metadata": {{
-    "subject": "string or null",
-    "grade": "string or null", 
-    "year": "string or null",
-    "term": "string or null",
-    "duration": "string or null",
-    "medium": "Sinhala or English"
-  }},
-  "instructions": {{
-    "Paper_I": ["instruction 1", "instruction 2"],
-    "Paper_II": ["instruction 1", "instruction 2"]
-  }},
   "PaperStructure": {{
     "Paper_I": {{
       "type": "MCQ",
@@ -152,7 +140,7 @@ OUTPUT FORMAT (STRICT JSON)
           "options": ["option 1", "option 2", "option 3", "option 4"],
           "marks": null
         }},
-        "2": {{ ... }}
+        "2": {{{{ ... }}}}
       }}
     }},
     "Paper_II": {{
@@ -163,12 +151,12 @@ OUTPUT FORMAT (STRICT JSON)
           "text": "main question text",
           "marks": 20,
           "sub_questions": {{
-            "a": {{"text": "sub-question a", "marks": 5}},
-            "b": {{"text": "sub-question b", "marks": 5}},
-            "c": {{"text": "sub-question c", "marks": 10}}
+            "a": {{{{"text": "sub-question a", "marks": 5}}}},
+            "b": {{{{"text": "sub-question b", "marks": 5}}}},
+            "c": {{{{"text": "sub-question c", "marks": 10}}}}
           }}
         }},
-        "2": {{ ... }}
+        "2": {{{{ ... }}}}
       }}
     }}
   }}
@@ -177,12 +165,12 @@ OUTPUT FORMAT (STRICT JSON)
 ========================
 IMPORTANT NOTES
 ========================
-1. If a paper section is not found in the text, return an empty questions object for that paper
-2. Preserve original question numbers/labels from the text
-3. Extract marks carefully - use null if uncertain, never use 0
-4. For MCQs without explicit marks, use null
-5. Group all MCQs under Paper_I and structured questions under Paper_II
-6. If there's only one paper type, fill only that section
+1. Do NOT extract metadata (Subject, Year, Grade).
+2. Do NOT extract general instructions.
+3. Only extract the Question Structure.
+4. If a paper section is not found in the text, return an empty questions object for that paper.
+5. Preserve original question numbers/labels from the text.
+6. Extract marks carefully - use null if uncertain, never use 0.
 
 ========================
 TEXT TO PROCESS
@@ -192,19 +180,17 @@ TEXT TO PROCESS
 
 def separate_paper_content(text: str):
     """
-    Separates paper content into:
-    - Metadata
-    - Instructions (Paper I / Paper II)
-    - PaperStructure (Paper I / Paper II with independent numbering)
-
-    Fully aligned with Sri Lankan exam paper formats.
+    Separates paper content into PaperStructure only.
+    Returns: paper_structure (dict)
     """
     if not text or not text.strip():
-        return {}, {}, {}
+        return {}
 
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    # Initialize model (ensure api_key is configured elsewhere)
+    model = genai.GenerativeModel("gemini-2.0-flash-exp") # Updated to latest flash model for better speed/cost
 
     try:
+        logger.info("Starting Sinhala structure extraction.")
         response = model.generate_content(
             SINHALA_STRUCTURE_PROMPT.format(content=text[:20000]),
             generation_config={"response_mime_type": "application/json"},
@@ -217,38 +203,31 @@ def separate_paper_content(text: str):
         )
 
         result = json.loads(response.text)
-
-        paper_metadata = result.get("metadata", {})
-
-        instructions = result.get("instructions", {
-            "Paper_I": [],
-            "Paper_II": []
-        })
+        logger.info("Sinhala structure extraction completed successfully.")
 
         paper_structure = result.get("PaperStructure", {
             "Paper_I": {},
             "Paper_II": {}
         })
 
-        # 🔒 Defensive normalization (optional but recommended)
+        # 🔒 Defensive normalization
         for paper_key in ["Paper_I", "Paper_II"]:
             paper = paper_structure.get(paper_key)
             if paper and "questions" not in paper:
                 paper["questions"] = {}
 
-        # log for debugging
-        logger.debug("Extracted Paper Metadata: %s", paper_metadata)
-        logger.debug("Extracted Instructions: %s", instructions)
         logger.debug("Extracted Paper Structure: %s", paper_structure)
-        return paper_metadata, instructions, paper_structure
+        
+        # Only returning paper_structure now
+        return paper_structure
 
     except json.JSONDecodeError:
         print("❌ Error: Model output was not valid JSON.")
-        return {}, {}, {}
+        return {}
 
     except Exception as e:
         print(f"❌ Error in Sinhala structure extraction: {e}")
-        return {}, {}, {}
+        return {}
     
 def fix_sinhala_ocr(text: str) -> str:
     """
@@ -282,3 +261,159 @@ def fix_sinhala_ocr(text: str) -> str:
     except Exception as e:
         print("Error in Sinhala OCR correction:", e)
         return text
+
+COMBINED_EXAM_PROMPT = """
+You are an expert AI for analyzing Sri Lankan exam papers (Sinhala and English medium).
+Your task is to extract BOTH the **grading configuration** and the **question structure** into a single strict JSON format.
+
+========================
+SECTION 1: CONFIGURATION RULES
+========================
+Analyze the text to determine how the paper should be graded.
+1. **Paper Identification:** Detect if text contains Paper I (MCQ), Paper II (Structured), or both.
+2. **Total Marks:** - Paper I: Usually 1 mark per question (e.g., 40 qs = 40 marks).
+   - Paper II: Look for "Total Marks" or sum the sub-question marks.
+3. **Selection Rules:** Read instructions (e.g., "Answer 4 questions").
+   - If "Answer all": return {{{{"mode": "all"}}}}
+   - If "Answer 4 from Part A and 1 from Part B": return {{{{"Part_A": 4, "Part_B": 1}}}}
+   - If "Question 1 compulsory, select 4 others": return {{{{"compulsory": [1], "choose_any": 4}}}}
+
+========================
+SECTION 2: QUESTION STRUCTURE RULES
+========================
+**Paper I (MCQ):**
+- Questions 1-40 (typically).
+- Format: Question text + Options list.
+- If multiple MCQs share common instructions or data:
+  - Attach the shared information to the first question using "shared_stem"
+  - Subsequent questions reference it using "inherits_shared_stem_from"
+- Only use "shared_stem" when two or more consecutive MCQs clearly depend on the same instruction, paragraph, diagram, or data.
+- Options: (1)..(4), (A)..(D), (අ)..(ඊ).
+- Marks: Usually 1 or null.
+
+**Paper II (Structured):**
+- Main Questions: 1, 2, 3...
+- Sub-questions: a, b, c... or i, ii, iii...
+- Marks: Extract specific marks like "(05 marks)", "(10)", "ලකුණු 05".
+- **Rule:** Never assign 0 marks. Use null if unknown.
+
+========================
+OUTPUT FORMAT (STRICT JSON)
+========================
+Return a single JSON object with keys "Paper_I" and "Paper_II". 
+If a paper is missing, set it to null.
+
+{{
+  "Paper_I": {{
+    "config": {{
+      "subject_detected": "History",
+      "medium": "Sinhala", 
+      "total_marks": 40,
+      "total_questions_available": 40,
+      "suggested_weightage": 40,
+      "selection_rules": {{{{"mode": "all"}}}}
+    }},
+    "questions": {{
+      "1": {{
+        "type": "mcq",
+        "text": "Question text here",
+        "options": ["Op1", "Op2", "Op3", "Op4"],
+        "marks": 1
+      }},
+      "2": {{
+        "type": "mcq",
+        "shared_stem": "Common instruction / paragraph here",
+        "text": "Next question text",
+        "options": ["Op1", "Op2", "Op3", "Op4"],
+        "marks": 1
+      }},
+      "3": {{
+          "type": "mcq",
+          "inherits_shared_stem_from": 2,
+          "text": "Next question text",
+          "options": ["Op1", "Op2", "Op3", "Op4"],
+          "marks": 1
+      }},
+      "4": {{ ... }}
+    }}
+  }},
+  "Paper_II": {{
+    "config": {{
+      "subject_detected": "History",
+      "medium": "Sinhala",
+      "total_marks": 100,
+      "total_questions_available": 7,
+      "suggested_weightage": 60,
+      "selection_rules": {{
+        "compulsory": [1],
+        "choose_any": 4
+      }}
+    }},
+    "questions": {{
+      "1": {{
+        "type": "structured",
+        "text": "Main question text",
+        "marks": 20,
+        "sub_questions": {{
+          "a": {{{{"text": "Sub Q text", "marks": 5}}}},
+          "b": {{{{"text": "Sub Q text", "marks": 15}}}}
+        }}
+      }}
+    }}
+  }}
+}}
+
+========================
+TEXT TO PROCESS
+========================
+{content}
+"""
+
+def extract_complete_exam_data(text: str):
+    """
+    Extracts both Configuration (Marks/Rules) and Structure (Questions) in one pass.
+    """
+    if not text or not text.strip():
+        return {}
+
+    # Initialize model
+    model = genai.GenerativeModel("gemini-2.5-flash") 
+
+    try:
+        logger.info("Starting combined exam extraction.")
+        response = model.generate_content(
+            COMBINED_EXAM_PROMPT.format(content=text[:30000]), # Increased char limit slightly for full papers
+            generation_config={"response_mime_type": "application/json"},
+            safety_settings={
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+        )
+
+        result = json.loads(response.text)
+        logger.info("Combined exam extraction completed successfully.")
+        
+        # 🔒 Defensive Normalization
+        # Ensure top-level keys exist even if model returns partially empty JSON
+        cleaned_result = {
+            "Paper_I": result.get("Paper_I"), 
+            "Paper_II": result.get("Paper_II")
+        }
+        
+        # Log basics for debugging
+        if cleaned_result["Paper_I"]:
+            logger.info(f"Paper I Detected: {len(cleaned_result['Paper_I'].get('questions', {}))} questions")
+        if cleaned_result["Paper_II"]:
+            logger.info(f"Paper II Detected: {len(cleaned_result['Paper_II'].get('questions', {}))} questions")
+
+        return cleaned_result
+
+    except json.JSONDecodeError:
+        logger.error("❌ Error: Model output was not valid JSON.")
+        return {}
+
+    except Exception as e:
+        logger.error(f"❌ Error in combined extraction: {e}")
+        return {}
