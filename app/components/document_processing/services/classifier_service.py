@@ -419,7 +419,7 @@ If a paper is missing, set it to null.
           "options": ["Op1", "Op2", "Op3", "Op4"],
           "marks": 1
       }},
-      "4": {{{{ ... }}}}
+      "4": {{ ... }}
     }}
   }},
   "Paper_II": {{
@@ -477,10 +477,8 @@ def extract_complete_exam_data(text: str):
             }
         )
 
-        logger.debug("Raw model response: %s", response)
         result = json.loads(response.text)
         logger.info("Combined exam extraction completed successfully.")
-        logger.debug("Extracted Exam Data: %s", result)
         
         # 🔒 Defensive Normalization
         # Ensure top-level keys exist even if model returns partially empty JSON

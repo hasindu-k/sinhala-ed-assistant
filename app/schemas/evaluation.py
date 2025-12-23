@@ -62,7 +62,6 @@ class PaperConfigCreate(BaseModel):
     paper_part: Optional[str] = None
     subject_name: Optional[str] = None
     medium: Optional[str] = None
-    total_marks: Optional[int] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
     selection_rules: Optional[Dict[str, int]] = None
@@ -72,7 +71,6 @@ class PaperConfigUpdate(BaseModel):
     paper_part: Optional[str] = None
     subject_name: Optional[str] = None
     medium: Optional[str] = None
-    total_marks: Optional[int] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
     selection_rules: Optional[Dict[str, int]] = None
@@ -85,7 +83,6 @@ class PaperConfigResponse(BaseModel):
     paper_part: Optional[str] = None
     subject_name: Optional[str] = None
     medium: Optional[str] = None
-    total_marks: Optional[int] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
     selection_rules: Optional[Dict[str, int]] = None

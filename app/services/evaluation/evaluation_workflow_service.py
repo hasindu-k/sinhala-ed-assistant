@@ -17,7 +17,7 @@ from app.services.evaluation.paper_config_service import PaperConfigService
 from app.services.evaluation.answer_evaluation_service import AnswerEvaluationService
 from app.services.chat_session_service import ChatSessionService
 from app.services.resource_service import ResourceService
-from app.components.document_processing.services.classifier_service import separate_paper_content
+from app.components.document_processing.services.classifier_service import extract_complete_exam_data
 from app.components.document_processing.services.ocr_service import extract_and_clean_text_from_file
 import logging
 
@@ -132,20 +132,20 @@ class EvaluationWorkflowService:
         try:
             cleaned_text, page_count = extract_and_clean_text_from_file(resource.storage_path)
             logger.info("Extracted %s characters from %d0 pages in question paper", len(cleaned_text), page_count)
-            
+
         except Exception as e:
             logger.error(f"Failed to extract text from resource {resource.id}: {e}", exc_info=True)
             raise ValueError(f"Failed to extract text from question paper: {e}")
 
         # Parse and structure content using AI
         try:
-            paper_metadata, instructions, paper_structure = separate_paper_content(cleaned_text)
-            logger.info(f"Parsed question paper structure: {len(paper_structure)} papers found")
+            # extract with paper config and paper structure separation
+            result = extract_complete_exam_data(cleaned_text)
+            logger.info(f"Parsed question paper structure: {len(result)} papers found")
         except Exception as e:
             logger.error(f"Failed to parse paper structure: {e}", exc_info=True)
             raise ValueError(f"Failed to parse question paper structure: {e}")
         
-        return paper_structure
         # Create question paper entry
         question_paper = self.question_papers.create_question_paper(
             evaluation_session_id=evaluation_id,
@@ -156,35 +156,45 @@ class EvaluationWorkflowService:
         # Create structured questions from parsed data
         try:
             # Process each paper (Paper_I, Paper_II, etc.)
-            for paper_key, paper_data in paper_structure.items():
+            for paper_key, paper_data in result.items():
+                if not paper_data:
+                    continue  # Skip null papers
+
+                # 1️⃣ Create PaperConfig for this paper
+                paper_config = self.paper_config.save_config(
+                    evaluation_session_id=evaluation_id,
+                    paper_part=paper_key,
+                    subject_name=paper_data["config"].get("subject_detected"),
+                    medium=paper_data["config"].get("medium"),
+                    weightage=paper_data["config"].get("suggested_weightage"),
+                    total_main_questions=paper_data["config"].get("total_questions_available"),
+                    selection_rules=paper_data["config"].get("selection_rules"),
+                )
+
+                # 2️⃣ Create Questions
                 questions_dict = paper_data.get("questions", {})
-                
-                if questions_dict:
-                    # Transform structure to match create_structured_questions format
-                    structured_data = {}
-                    for q_num, q_data in questions_dict.items():
-                        structured_data[q_num] = {
-                            "question_text": q_data.get("text", ""),
-                            "max_marks": q_data.get("marks"),
-                            "sub_questions": {}
-                        }
-                        
-                        # Handle sub-questions if present
-                        sub_questions = q_data.get("sub_questions", {})
-                        for sq_label, sq_data in sub_questions.items():
-                            structured_data[q_num]["sub_questions"][sq_label] = {
-                                "text": sq_data.get("text", ""),
-                                "marks": sq_data.get("marks")
-                            }
-                    
-                    # Create questions in database
-                    if structured_data:
-                        self.question_papers.create_structured_questions(
-                            question_paper_id=question_paper.id,
-                            structured_data=structured_data
+                for q_num, q_data in questions_dict.items():
+                    question = self.questions.create_question(
+                        question_paper_id=question_paper.id,
+                        question_number=q_num,
+                        question_text=q_data.get("text"),
+                        max_marks=q_data.get("marks"),
+                        shared_stem=q_data.get("shared_stem"),
+                        inherits_shared_stem_from=q_data.get("inherits_shared_stem_from")
+                    )
+
+                    # 3️⃣ Create SubQuestions if any
+                    sub_questions = q_data.get("sub_questions", {})
+                    for sq_label, sq_data in sub_questions.items():
+                        self.sub_questions.create_sub_question(
+                            question_id=question.id,
+                            label=sq_label,
+                            sub_question_text=sq_data.get("text"),
+                            max_marks=sq_data.get("marks")
                         )
-                        logger.info(f"Created {len(structured_data)} questions for {paper_key}")
-        
+
+                logger.info(f"Created {len(questions_dict)} questions for {paper_key}")
+
         except Exception as e:
             logger.error(f"Failed to create structured questions: {e}", exc_info=True)
             # Don't fail the entire operation if question creation fails
@@ -208,7 +218,6 @@ class EvaluationWorkflowService:
             paper_part=payload.paper_part,
             subject_name=payload.subject_name,
             medium=payload.medium,
-            total_marks=payload.total_marks,
             weightage=float(payload.weightage) if payload.weightage is not None else None,
             total_main_questions=payload.total_main_questions,
             selection_rules=payload.selection_rules,
@@ -226,7 +235,6 @@ class EvaluationWorkflowService:
             paper_part=payload.paper_part,
             subject_name=payload.subject_name,
             medium=payload.medium,
-            total_marks=payload.total_marks,
             weightage=float(payload.weightage) if payload.weightage is not None else None,
             total_main_questions=payload.total_main_questions,
             selection_rules=payload.selection_rules,
