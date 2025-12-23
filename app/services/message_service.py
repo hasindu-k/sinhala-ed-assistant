@@ -221,8 +221,8 @@ class MessageService:
         
         # RAG parameters
         query_embedding = None
-        top_k: int = 8
-        top_n_docs: int = 3
+        bm25_k: int = 8 # number of documents for BM25 fallback
+        final_k: int = 3 # number of chunks after dense re-rank
 
         if message.role != "user":
             raise ValueError("Can only generate responses for user messages")
@@ -239,7 +239,7 @@ class MessageService:
         # query_embedding: Optional[List[float]] = None,
         from app.components.document_processing.services.embedding_service import generate_text_embedding
         query_embedding: list[float] = generate_text_embedding(user_query)
-         
+
         # Generate response using RAG
         from app.services.rag_service import RAGService
         rag_service = RAGService(self.db)
@@ -250,8 +250,8 @@ class MessageService:
             user_query=user_query,
             resource_ids=resource_ids,
             query_embedding=query_embedding,
-            top_k=top_k,
-            top_n_docs=top_n_docs,
+            bm25_k=bm25_k,
+            final_k=final_k,
             grade_level=message.grade_level,
         )
         

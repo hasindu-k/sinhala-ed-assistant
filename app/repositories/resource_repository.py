@@ -92,3 +92,10 @@ class ResourceRepository:
         result = self.db.execute(sql, params)
         return [dict(row) for row in result]
 
+    def list_resources_by_ids(self, resource_ids: List[UUID]) -> List[ResourceFile]:
+        """List resources by their IDs."""
+        return (
+            self.db.query(ResourceFile)
+            .filter(ResourceFile.id.in_(resource_ids))
+            .all()
+        ) 

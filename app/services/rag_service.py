@@ -1,23 +1,29 @@
-#app/services/rag_service.py
+# app/services/rag_service.py
 from typing import List, Dict, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
 
+from app.services.hybrid_retrieval_service import HybridRetrievalService
 from app.services.resource_chunk_service import ResourceChunkService
 from app.services.message_context_service import MessageContextService
 from app.services.message_service import MessageService
-from app.repositories.resource_repository import ResourceRepository
+from app.utils.sinhala_prompt_builder import build_qa_prompt
+from app.utils.sinhala_summary_prompt_builder import build_summary_prompt
+from app.utils.sinhala_safety_engine import concept_map_check, detect_misconceptions
+from app.services.message_safety_service import MessageSafetyService
+from app.core.gemini_client import GeminiClient
+import json
 
 
 class RAGService:
-    """RAG orchestration with two-stage retrieval: document filtering → chunk search."""
+    """RAG orchestration with hybrid retrieval, grounded generation, and safety checks."""
 
     def __init__(self, db: Session):
         self.db = db
         self.chunk_service = ResourceChunkService(db)
         self.context_service = MessageContextService(db)
         self.message_service = MessageService(db)
-        self.resource_repository = ResourceRepository(db)
+        self.safety_service = MessageSafetyService(db)
 
     def generate_response(
         self,
@@ -26,91 +32,117 @@ class RAGService:
         user_query: str,
         resource_ids: List[UUID],
         query_embedding: Optional[List[float]] = None,
-        top_k: int = 8,
-        top_n_docs: int = 3,  # Number of documents to filter to
+        bm25_k: int = 20,
+        final_k: int = 8,
+        grade_level: Optional[str] = None,
     ) -> Dict:
-        """
-        Two-stage retrieval:
-        1. Find top-N most relevant documents using document embeddings (fast filtering)
-        2. Search chunks only within those N documents (focused retrieval)
-        3. Log used chunks and create assistant message
-        
-        Args:
-            session_id: Chat session ID
-            user_message_id: User message ID for context tracking
-            user_query: User's query text
-            resource_ids: List of resource IDs to search
-            query_embedding: Query embedding vector
-            top_k: Number of chunks to retrieve from filtered documents
-            top_n_docs: Number of documents to filter to in stage 1
-        """
-        # TODO: move vector_search client/model selection into config to vary per tenant
-        if query_embedding is not None:
-            # Stage 1: Find top-N documents using document embeddings
-            top_documents = self.resource_repository.vector_search_documents(
-                resource_ids=resource_ids,
-                query_embedding=query_embedding,
-                top_k=top_n_docs
-            )
-            
-            if top_documents:
-                # Extract resource IDs from top documents
-                filtered_resource_ids = [doc["resource_id"] for doc in top_documents]
-                
-                # Stage 2: Search chunks only within top documents
-                hits = self.chunk_service.vector_search(
-                    resource_ids=filtered_resource_ids,
-                    query_embedding=query_embedding,
-                    top_k=top_k
-                )
-            else:
-                # Fallback if no documents have embeddings
-                hits = self.chunk_service.vector_search(
-                    resource_ids=resource_ids,
-                    query_embedding=query_embedding,
-                    top_k=top_k
-                )
-        else:
-            # Fallback: return first N chunks across resources (no embedding provided)
-            all_chunks = self.chunk_service.get_chunks_by_resource(resource_ids)
-            hits = [
-                {
-                    "id": ch.id,
-                    "resource_id": ch.resource_id,
-                    "chunk_index": ch.chunk_index,
-                    "content": ch.content,
-                    "embedding_model": ch.embedding_model,
-                }
-                for ch in all_chunks[:top_k]
-            ]
+        """Hybrid retrieval → grounded generation → safety checks → logging"""
 
-        # Log sources
-        # TODO: persist similarity_score once vector store returns it for traceability
+        if not query_embedding:
+            raise ValueError("Query embedding is required for hybrid retrieval")
+
+        # -----------------------------
+        # 1. Hybrid retrieval
+        # -----------------------------
+        hybrid_service = HybridRetrievalService(self.db)
+        hits = hybrid_service.retrieve(
+            resource_ids=resource_ids,
+            query=user_query,
+            query_embedding=query_embedding,
+            bm25_k=bm25_k,
+            final_k=final_k,
+        )
+
+        if not hits:
+            # Zero-hallucination refusal
+            refusal_text = "මෙම ප්‍රශ්නයට අදාල තොරතුරු ලබා දී ඇති අන්තර්ගතයේ නොමැත."
+            assistant_msg = self.message_service.create_assistant_message(
+                session_id=session_id,
+                content=refusal_text,
+                model_info={"model_name": "gemini-2.5-flash"},
+            )
+            return {
+                "assistant_message_id": assistant_msg.id,
+                "content": refusal_text,
+                "sources": [],
+                "retrieval_metadata": {"bm25_k": bm25_k, "final_k": final_k, "used_chunks": 0},
+            }
+
+        # -----------------------------
+        # 2. Log used chunks
+        # -----------------------------
         self.context_service.log_used_chunks(
             user_message_id,
             [
                 {
-                    "chunk_id": h["id"] if isinstance(h, dict) else h["id"],
-                    "similarity_score": None,
+                    "chunk_id": h["id"],
+                    "similarity_score": h.get("similarity"),
                     "rank": i + 1,
                 }
                 for i, h in enumerate(hits)
             ],
         )
 
-        # TODO: replace mock generation with actual LLM call and streaming support
-        context_snippets = "\n\n".join((h["content"] if isinstance(h, dict) else h["content"]) or "" for h in hits)
-        draft_answer = f"Answer based on retrieved context:\n\n{context_snippets}\n\nUser query: {user_query}"
+        # -----------------------------
+        # 3. Build context
+        # -----------------------------
+        context = "\n\n".join(h["content"] for h in hits)
 
+        # -----------------------------
+        # 4. Select prompt type
+        # -----------------------------
+        if "සාරාංශ" in user_query:
+            prompt = build_summary_prompt(context=context, grade="9 - 11", query=user_query)
+        else:
+            prompt = build_qa_prompt(context=context, count=5, query=user_query)
+
+        # -----------------------------
+        # 5. Generate response with Gemini
+        # -----------------------------
+        generated = GeminiClient.generate_content(prompt)
+
+        # -----------------------------
+        # 6. Safety & misconception checks
+        # -----------------------------
+        is_valid, missing, extra = concept_map_check(generated, context)
+        flagged = detect_misconceptions(generated, context)
+
+        # -----------------------------
+        # 7. Save assistant message
+        # -----------------------------
         assistant_msg = self.message_service.create_assistant_message(
             session_id=session_id,
-            content=draft_answer,
-            model_info={"model_name": "GPT-5"},
+            content=generated,
+            model_info={"model_name": "gemini-2.5-flash"},
         )
+
+        # -----------------------------
+        # 8. Save safety report
+        # -----------------------------
+        self.safety_service.create_safety_report(
+            assistant_msg.id,
+            {
+                "missing_concepts": json.dumps(list(missing)[:50]) if missing else None,
+                "extra_concepts": json.dumps(list(extra)[:50]) if extra else None,
+                "flagged_sentences": json.dumps(flagged) if flagged else None,
+                "reasoning": "Hybrid RAG with Sinhala QA/Summary",
+            },
+        )
+
+        # -----------------------------
+        # 9. Return full response with metadata
+        # -----------------------------
+        retrieval_metadata = {"bm25_k": bm25_k, "final_k": final_k, "used_chunks": len(hits)}
 
         return {
             "assistant_message_id": assistant_msg.id,
-            "content": assistant_msg.content,
+            "content": generated,
             "sources": hits,
+            "retrieval_metadata": retrieval_metadata,
+            "safety": {
+                "is_valid": is_valid,
+                "missing_concepts": list(missing)[:10],
+                "extra_concepts": list(extra)[:10],
+                "flagged": flagged,
+            },
         }
-
