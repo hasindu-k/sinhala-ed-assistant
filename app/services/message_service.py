@@ -216,18 +216,31 @@ class MessageService:
         user_id: UUID,
         resource_ids: Optional[List[UUID]] = None,
     ):
-        """Generate AI response for a user message."""
+        """Generate AI response for a user message using RAG."""
         message = self.get_message_with_ownership_check(message_id, user_id)
         
+        # RAG parameters
+        query_embedding = None
+        top_k: int = 8
+        top_n_docs: int = 3
+
         if message.role != "user":
             raise ValueError("Can only generate responses for user messages")
         
+        # Get user query from message
         user_query = message.content or message.transcript or ""
         if not user_query:
             raise ValueError("Cannot generate response without user query content")
         
+        if not resource_ids:
+            raise ValueError("No resources provided for RAG. Attach resources to generate a response.")
+        
+        # generate query embedding
+        # query_embedding: Optional[List[float]] = None,
+        from app.components.document_processing.services.embedding_service import generate_text_embedding
+        query_embedding: list[float] = generate_text_embedding(user_query)
+         
         # Generate response using RAG
-        # TODO: inject RAG service to reuse LLM client/config rather than instantiating each call
         from app.services.rag_service import RAGService
         rag_service = RAGService(self.db)
         
@@ -235,7 +248,11 @@ class MessageService:
             session_id=message.session_id,
             user_message_id=message_id,
             user_query=user_query,
-            resource_ids=resource_ids or [],
+            resource_ids=resource_ids,
+            query_embedding=query_embedding,
+            top_k=top_k,
+            top_n_docs=top_n_docs,
+            grade_level=message.grade_level,
         )
         
         # Get the created assistant message
