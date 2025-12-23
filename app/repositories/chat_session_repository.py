@@ -22,8 +22,12 @@ class ChatSessionRepository:
         description: Optional[str] = None,
         grade: Optional[int] = None,
         subject: Optional[str] = None,
+        session_id: Optional[UUID] = None,
     ) -> ChatSession:
-        session = ChatSession(
+        # Allow caller to provide a specific session ID (useful when creating
+        # a session on-demand for a pre-chosen UUID). If not provided, the
+        # model's default will generate an id.
+        session_kwargs = dict(
             user_id=user_id,
             mode=mode,
             channel=channel,
@@ -32,6 +36,10 @@ class ChatSessionRepository:
             grade=grade,
             subject=subject,
         )
+        if session_id:
+            session_kwargs["id"] = session_id
+
+        session = ChatSession(**session_kwargs)
         self.db.add(session)
         self.db.commit()
         self.db.refresh(session)

@@ -1,3 +1,4 @@
+import uuid
 from sqlalchemy.orm import Session
 from uuid import UUID
 
@@ -35,3 +36,20 @@ def get_allowed_resource_ids(
     )
 
     return [r.resource_id for r in rows]
+
+def attach_resource_to_message(
+    *,
+    db: Session,
+    message_id: UUID,
+    resource_id: UUID,
+    attachment_type: str = "resource",
+):
+    attachment = MessageAttachment(
+        id=uuid.uuid4(),
+        message_id=message_id,
+        resource_id=resource_id,
+        attachment_type=attachment_type,
+    )
+    db.add(attachment)
+    db.commit()
+

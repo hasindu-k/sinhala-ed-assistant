@@ -2,6 +2,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from uuid import UUID
+import uuid
 from app.schemas.message import (
     MessageCreate,
     MessageDetachRequest,
@@ -31,33 +32,30 @@ router = APIRouter()
 
 @router.post("/sessions/{session_id}", response_model=MessageResponse)
 def create_user_message(
-    session_id: UUID,
+    session_id: str,
     payload: MessageCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Create a user message (text or voice).
-    
-    Args:
-        session_id: ID of the chat session
-        payload: Message creation data
-        current_user: Authenticated user
-        db: Database session
-        
-    Returns:
-        MessageResponse with created message details
-        
-    Raises:
-        HTTPException 400: Invalid input or modality
-        HTTPException 403: User doesn't own the session
-        HTTPException 404: Session not found
-        HTTPException 500: Database or internal error
-    """
     try:
+        chat_session_service = ChatSessionService(db)
+
+        # 🔑 If frontend sends "undefined", CREATE SESSION PROPERLY
+        if session_id in ("undefined", "null", "", None):
+            session = chat_session_service.create_session(
+                user_id=current_user.id,
+                mode="learning",      # or infer later
+                channel="text",
+                title="New Chat",
+            )
+            parsed_session_id = session.id
+        else:
+            parsed_session_id = UUID(session_id)
+
         message_service = MessageService(db)
+
         message = message_service.create_user_message_with_validation(
-            session_id=session_id,
+            session_id=parsed_session_id,   # ✅ guaranteed to exist
             user_id=current_user.id,
             content=payload.content,
             modality=payload.modality,
@@ -66,28 +64,17 @@ def create_user_message(
             transcript=payload.transcript,
             audio_duration_sec=payload.audio_duration_sec,
         )
-        logger.info(f"User message created: {message.id} in session {session_id} by user {current_user.id}")
-        return message
-        
-    except ValueError as e:
-        logger.warning(f"Validation error creating message in session {session_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except PermissionError as e:
-        logger.warning(f"User {current_user.id} attempted unauthorized message creation in session {session_id}")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Error creating message in session {session_id} for user {current_user.id}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create message"
-        )
 
+        return message
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to create message", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create message",
+        )
 
 @router.get("/{message_id}", response_model=MessageResponse)
 def get_message(
