@@ -18,9 +18,9 @@ class MessageModality(str, Enum):
 
 
 class GradeLevel(str, Enum):
-    grade_6_8 = "6 - 8"
-    grade_9_11 = "9 - 11"
-    grade_12_13 = "12 - 13"
+    grade_6_8 = "grade_6_8"
+    grade_9_11 = "grade_9_11"
+    grade_12_13 = "grade_12_13"
     university = "university"
 
 class MessageAttachmentType(str, Enum):
@@ -37,7 +37,7 @@ class MessageCreate(BaseModel):
     audio_url: Optional[str] = None
     transcript: Optional[str] = None
     audio_duration_sec: Optional[Decimal] = None
-    grade_level: Optional[GradeLevel] = None
+    grade_level: Optional[str] = None
 
 
 class MessageUpdate(BaseModel):

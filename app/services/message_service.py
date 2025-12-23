@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, List, Dict
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -12,11 +13,14 @@ class MessageService:
     def __init__(self, db: Session):
         self.db = db
         self.repository = MessageRepository(db)
+        self.logger = logging.getLogger(__name__)
 
     def validate_message_payload(self, modality: str, content: Optional[str], audio_url: Optional[str]):
         """Validate message creation payload."""
-        if modality not in ["text", "voice", "image", "file"]:
-            raise ValueError(f"Invalid modality: {modality}")
+        # Accept enum values gracefully by coercing to string
+        modality_val = getattr(modality, "value", None) or str(modality)
+        if modality_val not in ["text", "voice", "image", "file"]:
+            raise ValueError(f"Invalid modality: {modality_val}")
         
         if modality == "text" and not content:
             raise ValueError("Text messages must have content")
@@ -42,14 +46,32 @@ class MessageService:
             from app.services.chat_session_service import ChatSessionService
             session_service = ChatSessionService(self.db)
         
-        # Validate session and ownership
-        session_service.get_session_with_ownership_check(session_id, user_id)
+        self.logger.debug(" start: session_id=%s user_id=%s modality=%s", session_id, user_id, modality)
+        # If session doesn't exist, create it on-demand using sensible defaults.
+        # Otherwise verify ownership.
+        session = session_service.get_session(session_id)
+        if not session:
+            # create session owned by this user. Defaults mirror ChatSessionCreate schema
+            session = session_service.create_session(
+                user_id=user_id,
+                mode="learning",
+                channel="text",
+                title=None,
+                description=None,
+                grade=None,
+                subject=None,
+            )
+        else:
+            # ownership check
+            if not session_service.validate_ownership(session_id, user_id):
+                raise PermissionError("You don't have permission to access this session")
         
-        # Validate message payload
+        # Validate message payload (coercion handled in validator)
         self.validate_message_payload(modality, content, audio_url)
         
         # Create message
-        return self.repository.create_user_message(
+        self.logger.debug("Creating user message for session_id=%s user_id=%s", session_id, user_id)
+        msg = self.repository.create_user_message(
             session_id=session_id,
             content=content,
             modality=modality,
@@ -58,6 +80,8 @@ class MessageService:
             transcript=transcript,
             audio_duration_sec=audio_duration_sec,
         )
+        self.logger.info("User message created: %s (session=%s)", getattr(msg, "id", None), session_id)
+        return msg
 
     def create_user_message(
         self,

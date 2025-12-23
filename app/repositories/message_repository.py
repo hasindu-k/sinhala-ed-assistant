@@ -5,6 +5,9 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.shared.models.message import Message
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class MessageRepository:
@@ -33,9 +36,16 @@ class MessageRepository:
             transcript=transcript,
             audio_duration_sec=audio_duration_sec,
         )
+        logger.debug("Persisting new user message to DB (session=%s)", session_id)
         self.db.add(msg)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            logger.exception("Failed to commit new message for session %s", session_id)
+            raise
         self.db.refresh(msg)
+        logger.debug("Message persisted with id=%s", getattr(msg, "id", None))
         return msg
 
     def create_system_message(self, session_id: UUID, content: Optional[str]) -> Message:
