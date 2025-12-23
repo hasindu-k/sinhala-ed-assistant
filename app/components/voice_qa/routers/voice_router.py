@@ -3,6 +3,12 @@
 from fastapi import APIRouter, UploadFile, File, Form
 from uuid import UUID
 
+from typing import Optional
+from fastapi import Depends
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+
+
 from app.components.voice_qa.services.hybrid_retrieval import retrieve_top_k
 from app.components.voice_qa.services.whisper_service import (
     VoiceService,
@@ -11,7 +17,9 @@ from app.components.voice_qa.services.whisper_service import (
 from app.services.audio_storage import upload_audio_to_firebase
 from app.services.chat_service import save_chat_message
 from app.components.voice_qa.services.context_service import get_allowed_resource_ids
+from app.components.voice_qa.services.context_service import attach_resource_to_message
 from app.core.database import get_db
+
 
 router = APIRouter()
 
@@ -47,8 +55,11 @@ async def transcribe(audio: UploadFile = File(...)):
 async def qa_from_voice(
     audio: UploadFile = File(...),
     session_id: str = Form(...),
+    resource_ids: Optional[str] = Form(None),  # comma-separated UUIDs
     top_k: int = 3,
+    db: Session = Depends(get_db), 
 ):
+
     # Save audio temporarily
     temp_path = "temp.wav"
     with open(temp_path, "wb") as f:
@@ -71,6 +82,18 @@ async def qa_from_voice(
     transcript=raw_text,        # raw whisper output
     audio_url=audio_url,
     )
+    
+    if resource_ids:
+        ids = [UUID(rid) for rid in resource_ids.split(",")]
+
+    for rid in ids:
+        attach_resource_to_message(
+            db=db,
+            message_id=user_message_id,
+            resource_id=rid,
+            attachment_type="resource",
+        )
+
 
     # Resolve allowed resources
     db = next(get_db())

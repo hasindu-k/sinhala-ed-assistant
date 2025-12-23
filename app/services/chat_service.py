@@ -61,3 +61,4 @@ def save_chat_message(
 
     finally:
         db.close()
+        
