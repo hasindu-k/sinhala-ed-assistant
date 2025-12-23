@@ -115,7 +115,6 @@ class EvaluationSessionRepository:
         paper_part: Optional[str] = None,
         subject_name: Optional[str] = None,
         medium: Optional[str] = None,
-        total_marks: Optional[int] = None,
         weightage: Optional[float] = None,
         total_main_questions: Optional[int] = None,
         selection_rules: Optional[dict] = None,
@@ -127,7 +126,6 @@ class EvaluationSessionRepository:
             paper_part=paper_part,
             subject_name=subject_name,
             medium=medium,
-            total_marks=total_marks,
             weightage=weightage,
             total_main_questions=total_main_questions,
             selection_rules=selection_rules,
@@ -138,11 +136,18 @@ class EvaluationSessionRepository:
         self.db.refresh(paper_config)
         return paper_config
     
-    def get_paper_config(self, evaluation_session_id: UUID) -> Optional[PaperConfig]:
-        """Get paper configuration for an evaluation session."""
-        return self.db.query(PaperConfig).filter(
+    def get_paper_config(
+        self,
+        evaluation_session_id: UUID,
+        paper_part: Optional[str] = None,
+    ) -> Optional[PaperConfig]:
+        """Get paper configuration for an evaluation session (optionally by paper)."""
+        query = self.db.query(PaperConfig).filter(
             PaperConfig.evaluation_session_id == evaluation_session_id
-        ).first()
+        )
+        if paper_part is not None:
+            query = query.filter(PaperConfig.paper_part == paper_part)
+        return query.first()
     
     def _apply_paper_config_updates(
         self,
@@ -150,7 +155,6 @@ class EvaluationSessionRepository:
         paper_part: Optional[str] = None,
         subject_name: Optional[str] = None,
         medium: Optional[str] = None,
-        total_marks: Optional[int] = None,
         weightage: Optional[float] = None,
         total_main_questions: Optional[int] = None,
         selection_rules: Optional[dict] = None,
@@ -163,8 +167,6 @@ class EvaluationSessionRepository:
             config.subject_name = subject_name
         if medium is not None:
             config.medium = medium
-        if total_marks is not None:
-            config.total_marks = total_marks
         if weightage is not None:
             config.weightage = weightage
         if total_main_questions is not None:
@@ -180,21 +182,19 @@ class EvaluationSessionRepository:
         paper_part: Optional[str] = None,
         subject_name: Optional[str] = None,
         medium: Optional[str] = None,
-        total_marks: Optional[int] = None,
         weightage: Optional[float] = None,
         total_main_questions: Optional[int] = None,
         selection_rules: Optional[dict] = None,
         is_confirmed: Optional[bool] = None,
     ) -> Optional[PaperConfig]:
         """Update paper configuration."""
-        config = self.get_paper_config(evaluation_session_id)
+        config = self.get_paper_config(evaluation_session_id, paper_part)
         if config:
             self._apply_paper_config_updates(
                 config,
                 paper_part=paper_part,
                 subject_name=subject_name,
                 medium=medium,
-                total_marks=total_marks,
                 weightage=weightage,
                 total_main_questions=total_main_questions,
                 selection_rules=selection_rules,

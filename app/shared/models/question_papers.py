@@ -24,6 +24,8 @@ class Question(Base):
     question_number = Column(String, nullable=True)
     question_text = Column(Text, nullable=True)
     max_marks = Column(Integer, nullable=True)
+    shared_stem = Column(Text, nullable=True)
+    inherits_shared_stem_from = Column(String, nullable=True)
 
 
 class SubQuestion(Base):

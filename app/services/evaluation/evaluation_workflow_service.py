@@ -131,7 +131,7 @@ class EvaluationWorkflowService:
         # Extract and clean text from file
         try:
             cleaned_text, page_count = extract_and_clean_text_from_file(resource.storage_path)
-            logger.info("Extracted %s characters from %d0 pages in question paper", len(cleaned_text), page_count)
+            logger.info("Extracted %s characters from %d pages in question paper", len(cleaned_text), page_count)
 
         except Exception as e:
             logger.error(f"Failed to extract text from resource {resource.id}: {e}", exc_info=True)
@@ -141,7 +141,9 @@ class EvaluationWorkflowService:
         try:
             # extract with paper config and paper structure separation
             result = extract_complete_exam_data(cleaned_text)
+            
             logger.info(f"Parsed question paper structure: {len(result)} papers found")
+            logger.debug(f"Parsed structure details: {result}")
         except Exception as e:
             logger.error(f"Failed to parse paper structure: {e}", exc_info=True)
             raise ValueError(f"Failed to parse question paper structure: {e}")
@@ -160,21 +162,23 @@ class EvaluationWorkflowService:
                 if not paper_data:
                     continue  # Skip null papers
 
+                config = paper_data.get("config", {}) or {}
+
                 # 1️⃣ Create PaperConfig for this paper
-                paper_config = self.paper_config.save_config(
+                self.paper_configs.save_config(
                     evaluation_session_id=evaluation_id,
                     paper_part=paper_key,
-                    subject_name=paper_data["config"].get("subject_detected"),
-                    medium=paper_data["config"].get("medium"),
-                    weightage=paper_data["config"].get("suggested_weightage"),
-                    total_main_questions=paper_data["config"].get("total_questions_available"),
-                    selection_rules=paper_data["config"].get("selection_rules"),
+                    subject_name=config.get("subject_detected"),
+                    medium=config.get("medium"),
+                    weightage=float(config.get("suggested_weightage")) if config.get("suggested_weightage") is not None else None,
+                    total_main_questions=config.get("total_questions_available"),
+                    selection_rules=config.get("selection_rules"),
                 )
 
                 # 2️⃣ Create Questions
-                questions_dict = paper_data.get("questions", {})
+                questions_dict = paper_data.get("questions", {}) or {}
                 for q_num, q_data in questions_dict.items():
-                    question = self.questions.create_question(
+                    question = self.question_papers.create_question(
                         question_paper_id=question_paper.id,
                         question_number=q_num,
                         question_text=q_data.get("text"),
@@ -184,9 +188,9 @@ class EvaluationWorkflowService:
                     )
 
                     # 3️⃣ Create SubQuestions if any
-                    sub_questions = q_data.get("sub_questions", {})
+                    sub_questions = q_data.get("sub_questions", {}) or {}
                     for sq_label, sq_data in sub_questions.items():
-                        self.sub_questions.create_sub_question(
+                        self.question_papers.create_sub_question(
                             question_id=question.id,
                             label=sq_label,
                             sub_question_text=sq_data.get("text"),

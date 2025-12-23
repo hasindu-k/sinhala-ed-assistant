@@ -39,14 +39,18 @@ class QuestionPaperService:
         question_paper_id: UUID,
         question_number: str,
         question_text: str,
-        max_marks: int
+        max_marks: Optional[int] = None,
+        shared_stem: Optional[str] = None,
+        inherits_shared_stem_from: Optional[str] = None,
     ):
         """Create a main question."""
         return self.repository.create_question(
             question_paper_id=question_paper_id,
             question_number=question_number,
             question_text=question_text,
-            max_marks=max_marks
+            max_marks=max_marks,
+            shared_stem=shared_stem,
+            inherits_shared_stem_from=inherits_shared_stem_from,
         )
     
     def get_questions_by_paper(self, question_paper_id: UUID) -> List:
@@ -58,7 +62,7 @@ class QuestionPaperService:
         question_id: UUID,
         label: str,
         sub_question_text: str,
-        max_marks: int
+        max_marks: Optional[int] = None,
     ):
         """Create a sub-question."""
         return self.repository.create_sub_question(
