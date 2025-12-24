@@ -17,10 +17,10 @@ def remove_weird_chars(text: str) -> str:
     """
     Remove garbage but keep Sinhala + English + numbers + numbering symbols.
     """
-    logger.debug("Original text before removing weird chars: %s", text)
+    # logger.debug("Original text before removing weird chars: %s", text)
     allowed = r"[^\u0D80-\u0DFF\u200D\u200Ca-zA-Z0-9\s\.\-\(\)\[\]\/:;]"
     text = re.sub(allowed, " ", text)
-    logger.debug("Text after removing weird chars: %s", text)
+    # logger.debug("Text after removing weird chars: %s", text)
     return text
 
 
@@ -48,7 +48,7 @@ def basic_clean(text: str) -> str:
     text = rule_based_correction(text)
     
     # log cleaned text
-    logger.debug("Cleaned text: %s", text)
+    # logger.debug("Cleaned text: %s", text)
     logger.info("Text cleaned successfully.")
 
     return text

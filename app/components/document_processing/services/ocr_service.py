@@ -1,12 +1,13 @@
 # app/components/document_processing/services/ocr_service.py
 
 import logging
-logger = logging.getLogger(__name__)
+from typing import Optional
 
 from fastapi import UploadFile, Depends
 
 from sqlalchemy.orm import Session
-from app.shared.models.ocr_models import OCRDocument, ChunkModel
+from app.shared.models.resource_file import ResourceFile
+from app.shared.models.resource_chunks import ResourceChunk
 from app.core.database import get_db
 from app.components.document_processing.utils.file_operations import (
     save_upload_to_temp, 
@@ -29,59 +30,131 @@ from app.components.document_processing.utils.pdf_analysis import (
     should_use_direct_text_extraction,
 )
 
+logger = logging.getLogger(__name__)
+
+# Utility function
+def extract_and_clean_text_from_file(file_path: str) -> tuple[str, int]:
+    """
+    Extract text from a file (PDF or image) and return cleaned text with page count.
+    
+    Args:
+        file_path: Full path to the file
+        
+    Returns:
+        Tuple of (cleaned_text, page_count)
+        
+    Raises:
+        ValueError: If file cannot be processed
+    """
+    try:
+        # Get file extension
+        ext = file_path.split(".")[-1].lower() if "." in file_path else ""
+        
+        extracted_text = None
+        page_count = 0
+        
+        # Try direct PDF text extraction if applicable
+        if ext == "pdf":
+            try:
+                extracted_text, page_count = extract_text_from_pdf(file_path)
+                logger.info(f"Extracted text directly from PDF: {page_count} pages")
+                # check if text is sufficient for page count
+                if len(extracted_text.strip()) < 100 * page_count:
+                    logger.info("Extracted text seems insufficient, falling back to OCR.")
+                    extracted_text = None  # trigger OCR fallback
+            except Exception as e:
+                logger.warning(f"Direct PDF extraction failed, falling back to OCR: {e}")
+                extracted_text = None
+        
+        # Fall back to OCR if needed
+        if extracted_text is None:
+            logger.info(f"Starting OCR for file: {file_path}")
+            images = convert_file_to_images(file_path, ext)
+            extracted_text, page_count = process_ocr_for_images(images)
+            logger.info(f"OCR extracted text: {page_count} pages, {len(extracted_text)} characters")
+        
+        # Clean the extracted text
+        cleaned_text = basic_clean(extracted_text)
+        logger.info(f"Text cleaned: {len(cleaned_text)} characters after cleaning")
+        
+        return cleaned_text, page_count
+        
+    except Exception as e:
+        logger.error(f"Error extracting text from file {file_path}: {e}", exc_info=True)
+        raise ValueError(f"Failed to extract text from file: {e}")
+
 # helper functions
-async def save_ocr_document_to_db(file: UploadFile, cleaned_text: str, page_count: int, doc_type: str, db: Session) -> OCRDocument:
-    """
-    Save the OCR document details to the database.
-    """
-    doc = OCRDocument(
-        filename=file.filename,
-        full_text=cleaned_text,
-        pages=page_count,
-        doc_type=doc_type,
+async def save_ocr_document_to_db(
+    file: UploadFile,
+    cleaned_text: str,
+    page_count: int,
+    doc_type: str,
+    db: Session,
+    storage_path: Optional[str] = None,
+    source_type: str = "user_upload",
+) -> ResourceFile:
+    """Persist the uploaded document as a ResourceFile entry."""
+    doc = ResourceFile(
+        original_filename=file.filename,
+        storage_path=storage_path,
+        mime_type=getattr(file, "content_type", None),
+        size_bytes=None,
+        source_type=source_type,
+        language=None,
+        user_id=None,
     )
     db.add(doc)
-    db.flush()  # flush to assign db-generated/default PK (UUID)
+    db.flush()  # assign UUID
     db.commit()
     db.refresh(doc)
-
     return doc
 
 
-async def save_chunks_to_db(embedded_chunks: list, doc_id: str, db: Session):
-    """
-    Save the chunk data into the database.
-    """
+async def save_chunks_to_db(embedded_chunks: list, resource_id: str, db: Session):
+    """Persist chunk data into resource_chunks aligned with current schema."""
     for c in embedded_chunks:
-        chunk = ChunkModel(
-            ocr_document_id=doc_id,
-            chunk_id=c.get("chunk_id"),
-            global_id=c.get("global_id"),
-            text=c.get("text"),
-            numbering=c.get("numbering"),
+        content = c.get("text")
+        chunk = ResourceChunk(
+            resource_id=resource_id,
+            chunk_index=c.get("chunk_id"),
+            content=content,
+            content_length=len(content) if content else None,
+            token_count=None,
             embedding=c.get("embedding"),
+            embedding_model=c.get("embedding_model"),
+            start_char=c.get("start_char"),
+            end_char=c.get("end_char"),
         )
         db.add(chunk)
 
     db.commit()
 
-async def save_processed_data_to_db(file: UploadFile, db: Session, doc_type: str, page_count: int, extracted_text: str, contains_images: bool, contains_tables: bool):
-    """
-    Save the processed data (text, images, tables metadata) into the database.
-    """
-    processed_doc = OCRDocument(
-        filename=file.filename,
-        doc_type=doc_type,
-        pages=page_count,
-        full_text=extracted_text,
-        contains_images=contains_images,
-        contains_tables=contains_tables,
+async def save_processed_data_to_db(
+    file: UploadFile,
+    db: Session,
+    doc_type: str,
+    page_count: int,
+    extracted_text: str,
+    contains_images: bool,
+    contains_tables: bool,
+    storage_path: Optional[str] = None,
+) -> ResourceFile:
+    """Save processed document metadata into resource_files (single row)."""
+    processed_doc = ResourceFile(
+        original_filename=file.filename,
+        storage_path=storage_path,
+        mime_type=getattr(file, "content_type", None),
+        size_bytes=None,
+        source_type="user_upload",
+        language=None,
+        user_id=None,
     )
     db.add(processed_doc)
     db.commit()
     db.refresh(processed_doc)
 
     logger.info("Document %s saved successfully.", processed_doc.id)
+    return processed_doc
 
 # Main processing function
 async def process_question_papers(file: UploadFile, db: Session = Depends(get_db)) -> dict:
@@ -142,7 +215,16 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
     logger.debug("Contains Tables: %s", contains_tables)
 
     # Call save_processed_data_to_db to insert data into the database
-    await save_processed_data_to_db(file, db, doc_type, page_count, cleaned_text, contains_images, contains_tables)
+    resource = await save_processed_data_to_db(
+        file=file,
+        db=db,
+        doc_type=doc_type,
+        page_count=page_count,
+        extracted_text=cleaned_text,
+        contains_images=contains_images,
+        contains_tables=contains_tables,
+        storage_path=saved_file_path,
+    )
 
     return {
         "status": "success",
@@ -153,6 +235,7 @@ async def process_question_papers(file: UploadFile, db: Session = Depends(get_db
         "paper_metadata": paper_metadata,
         "instructions": instructions,
         "paper_structure": paper_structure,
+        "resource_id": str(resource.id),
     }
 
 
@@ -195,7 +278,14 @@ async def process_ocr_file(file: UploadFile, db: Session = Depends(get_db)) -> d
     # -----------------------------
     # 7. Create DB document row first so we have a document id for chunk global_ids
     # -----------------------------
-    doc = await save_ocr_document_to_db(file, cleaned_text, page_count, doc_type, db)
+    doc = await save_ocr_document_to_db(
+        file=file,
+        cleaned_text=cleaned_text,
+        page_count=page_count,
+        doc_type=doc_type,
+        db=db,
+        storage_path=temp_path,
+    )
 
     # -----------------------------
     # 8. Chunk-level embeddings (now pass the doc id so global_id can include it)
@@ -260,7 +350,14 @@ async def process_syllabus_files(file: UploadFile, db: Session = Depends(get_db)
     # -----------------------------
     # 7. Create DB document row first so we have a document id for chunk global_ids
     # -----------------------------
-    doc = await save_ocr_document_to_db(file, cleaned_text, page_count, doc_type, db)
+    doc = await save_ocr_document_to_db(
+        file=file,
+        cleaned_text=cleaned_text,
+        page_count=page_count,
+        doc_type=doc_type,
+        db=db,
+        storage_path=temp_path,
+    )
 
     # -----------------------------
     # 8. Chunk-level embeddings (now pass the doc id so global_id can include it)
@@ -354,7 +451,8 @@ async def process_textbooks(file: UploadFile, db: Session = Depends(get_db)) -> 
         cleaned_text=cleaned_text,
         page_count=page_count,
         doc_type=doc_type,
-        db=db
+        db=db,
+        storage_path=temp_path,
     )
 
     # -----------------------------
@@ -367,8 +465,8 @@ async def process_textbooks(file: UploadFile, db: Session = Depends(get_db)) -> 
 
     await save_chunks_to_db(
         embedded_chunks=embedded_chunks,
-        doc_id=doc.id,
-        db=db
+        resource_id=doc.id,
+        db=db,
     )
 
     # -----------------------------
@@ -379,7 +477,7 @@ async def process_textbooks(file: UploadFile, db: Session = Depends(get_db)) -> 
     # -----------------------------
     # 8. Cleanup
     # -----------------------------
-    remove_temp_file(temp_path)
+    await remove_temp_file(temp_path)
 
     # -----------------------------
     # 9. Return response

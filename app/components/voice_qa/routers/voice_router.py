@@ -1,11 +1,25 @@
 # app/components/voice_qa/routers/voice_router.py
 
 from fastapi import APIRouter, UploadFile, File, Form
+from uuid import UUID
 
-from app.components.voice_qa.services.whisper_service import VoiceService, VoiceQAService
+from typing import Optional
+from fastapi import Depends
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+
+
+from app.components.voice_qa.services.hybrid_retrieval import retrieve_top_k
+from app.components.voice_qa.services.whisper_service import (
+    VoiceService,
+    VoiceQAService,
+)
 from app.services.audio_storage import upload_audio_to_firebase
 from app.services.chat_service import save_chat_message
-from uuid import UUID
+from app.components.voice_qa.services.context_service import get_allowed_resource_ids
+from app.components.voice_qa.services.context_service import attach_resource_to_message
+from app.core.database import get_db
+
 
 router = APIRouter()
 
@@ -38,60 +52,76 @@ async def transcribe(audio: UploadFile = File(...)):
 
 
 @router.post("/qa")
-async def qa_from_voice(audio: UploadFile = File(...), session_id: str = Form(...), top_k: int = 3):
-    """
-    Full voice → QA pipeline.
+async def qa_from_voice(
+    audio: UploadFile = File(...),
+    session_id: str = Form(...),
+    resource_ids: Optional[str] = Form(None),  # comma-separated UUIDs
+    top_k: int = 3,
+    db: Session = Depends(get_db), 
+):
 
-    Steps:
-      - save incoming audio
-      - transcribe (whisper)
-      - generate embedding for the question
-      - retrieve top-k chunks from pgvector
-      - build prompt and call LLM
-      - return question, retrieved chunks, and answer
-    """
-
+    # Save audio temporarily
     temp_path = "temp.wav"
     with open(temp_path, "wb") as f:
         f.write(await audio.read())
 
-    # Note: this endpoint intentionally keeps the upload/transcription + storage
-    # flow explicit so we can persist the audio URL and chat history.
+    # Upload to Firebase
+    audio_url = upload_audio_to_firebase(temp_path)
 
-    # 1) Upload to Firebase Storage
-    audio_url = None
-    try:
-        audio_url = upload_audio_to_firebase(temp_path, session_id)
-    except Exception as e:
-        print(f"[voice_router] upload to firebase failed: {e}")
-
-    # 2) Transcribe and standardize
+    # Transcribe
     raw_text = VoiceService.transcribe_audio(temp_path)
     normalized, standard = VoiceService.standardize_southern_sinhala(raw_text)
     question_text = standard or normalized or raw_text
 
-    # 3) Save user message to chat_messages
-    try:
-        save_chat_message(session_id=UUID(session_id), sender="user", message=question_text, tokens_used=0, audio_url=audio_url)
-    except Exception as e:
-        print(f"[voice_router] failed to save user chat message: {e}")
+    # Save USER message (get message_id)
+    user_message_id = save_chat_message(
+    session_id=UUID(session_id),
+    role="user",
+    modality="voice",
+    content=question_text,      # standardized text
+    transcript=raw_text,        # raw whisper output
+    audio_url=audio_url,
+    )
+    
+    if resource_ids:
+        ids = [UUID(rid) for rid in resource_ids.split(",")]
 
-    # 4) Run RAG + LLM
-    # use helpers from VoiceQAService but avoid re-transcribing (we already have text)
-    question_embedding = VoiceQAService.generate_text_embedding(question_text)
-    top_chunks = VoiceQAService.find_similar_chunks(question_embedding, top_k=top_k)
+    for rid in ids:
+        attach_resource_to_message(
+            db=db,
+            message_id=user_message_id,
+            resource_id=rid,
+            attachment_type="resource",
+        )
+
+
+    # Resolve allowed resources
+    db = next(get_db())
+    allowed_resource_ids = get_allowed_resource_ids(
+        db=db,
+        session_id=UUID(session_id),
+        message_id=user_message_id,
+    )
+
+    # RAG
+    top_chunks = retrieve_top_k(
+    query=question_text,
+    resource_ids=allowed_resource_ids,
+    top_k=top_k,
+    )
+
     prompt = VoiceQAService.build_prompt(question_text, top_chunks)
     answer = VoiceQAService.llm_generate(prompt)
 
-    # 5) Save assistant message
-    tokens_used = 0
-    # TODO: extract actual token usage from LLM response if available
-    try:
-        save_chat_message(session_id=UUID(session_id), sender="assistant", message=answer, tokens_used=tokens_used)
-    except Exception as e:
-        print(f"[voice_router] failed to save assistant chat message: {e}")
+    # Save ASSISTANT message
+    save_chat_message(
+    session_id=UUID(session_id),
+    role="assistant",
+    modality="text",
+    content=answer,
+    )
 
-    # Step 6 — return
+
     return {
         "question": question_text,
         "retrieved_chunks": top_chunks,

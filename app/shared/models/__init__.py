@@ -8,6 +8,11 @@ from app.shared.models.question_papers import QuestionPaper, Question, SubQuesti
 from app.shared.models.evaluation_session import EvaluationSession, EvaluationResource, PaperConfig
 from app.shared.models.answer_evaluation import AnswerDocument, EvaluationResult, QuestionScore
 from app.shared.models.rubrics import Rubric, RubricCriterion
+from app.shared.models.resource_chunks import ResourceChunk
+from app.shared.models.message_relations import MessageContextChunk, MessageAttachment, MessageSafetyReport
+from app.shared.models.session_resources import SessionResource
+from app.shared.models.password_reset_token import PasswordResetToken
+from app.shared.models.refresh_token import RefreshToken
 
 __all__ = [
     "User",
@@ -25,4 +30,11 @@ __all__ = [
     "QuestionScore",
     "Rubric",
     "RubricCriterion",
+    "ResourceChunk",
+    "MessageContextChunk",
+    "MessageAttachment",
+    "MessageSafetyReport",
+    "SessionResource",
+    "PasswordResetToken",
+    "RefreshToken",
 ]

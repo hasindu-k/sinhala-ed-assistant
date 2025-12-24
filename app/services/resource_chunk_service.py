@@ -1,0 +1,32 @@
+#app/services/resource_chunk_service.py
+from typing import List, Dict
+from uuid import UUID
+from sqlalchemy.orm import Session
+from numpy import dot
+from numpy.linalg import norm
+
+from app.repositories.resource_chunk_repository import ResourceChunkRepository
+
+
+class ResourceChunkService:
+    """Business logic for resource chunks and search."""
+
+    def __init__(self, db: Session):
+        self.repository = ResourceChunkRepository(db)
+
+    def create_chunks(self, resource_id: UUID, chunks: List[Dict]):
+        """Persist precomputed chunks (content + optional embeddings)."""
+        return self.repository.create_chunks(resource_id, chunks)
+
+    def get_chunks_by_resource(self, resource_ids: List[UUID]):
+        return self.repository.get_chunks_by_resource(resource_ids)
+
+    def get_chunks_for_resource(self, resource_id: UUID):
+        """Get all chunks for a single resource."""
+        return self.get_chunks_by_resource([resource_id])
+
+    def vector_search(self, resource_ids: List[UUID], query_embedding: List[float], top_k: int = 10):
+        return self.repository.vector_search(resource_ids, query_embedding, top_k)
+    
+    def cosine_similarity(self, vec1, vec2):
+        return dot(vec1, vec2) / (norm(vec1) * norm(vec2))
