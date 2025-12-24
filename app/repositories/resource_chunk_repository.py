@@ -57,23 +57,32 @@ class ResourceChunkRepository:
         )
 
     def vector_search(self, resource_ids: List[UUID], query_embedding: List[float], top_k: int = 10) -> List[dict]:
-        """Perform ANN search using pgvector distance ordering."""
+        """Perform ANN search using pgvector distance ordering and return similarity."""
         if not resource_ids:
             return []
+
         placeholders = ", ".join([f":id{i}" for i in range(len(resource_ids))])
         sql = text(
             f"""
-            SELECT id, resource_id, chunk_index, content, embedding_model
+            SELECT 
+                id, 
+                resource_id, 
+                chunk_index, 
+                content, 
+                embedding_model,
+                1 / (1 + (embedding <=> (:query_embedding)::vector)) AS similarity
             FROM resource_chunks
             WHERE resource_id IN ({placeholders})
             ORDER BY embedding <=> (:query_embedding)::vector
             LIMIT :top_k
             """
         )
+
         params = {f"id{i}": str(rid) for i, rid in enumerate(resource_ids)}
         params["query_embedding"] = query_embedding
         params["top_k"] = top_k
-        
+
         result = self.db.execute(sql, params).mappings()
         return list(result)
+
 

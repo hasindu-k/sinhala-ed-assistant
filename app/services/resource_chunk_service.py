@@ -2,6 +2,8 @@
 from typing import List, Dict
 from uuid import UUID
 from sqlalchemy.orm import Session
+from numpy import dot
+from numpy.linalg import norm
 
 from app.repositories.resource_chunk_repository import ResourceChunkRepository
 
@@ -25,3 +27,6 @@ class ResourceChunkService:
 
     def vector_search(self, resource_ids: List[UUID], query_embedding: List[float], top_k: int = 10):
         return self.repository.vector_search(resource_ids, query_embedding, top_k)
+    
+    def cosine_similarity(self, vec1, vec2):
+        return dot(vec1, vec2) / (norm(vec1) * norm(vec2))

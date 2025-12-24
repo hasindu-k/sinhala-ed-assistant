@@ -118,18 +118,17 @@ class HybridRetrievalService:
         if not dense_hits:
             top_chunks = self.chunk_service.get_chunks_by_resource(top_resource_ids)
 
-            dense_hits = [
-                {
+            for i, ch in enumerate(top_chunks[:final_k]):
+                sim = self.chunk_service.cosine_similarity(query_embedding, ch.embedding) if ch.embedding else None
+                dense_hits.append({
                     "id": ch.id,
                     "resource_id": ch.resource_id,
                     "chunk_index": ch.chunk_index,
                     "content": ch.content,
                     "embedding_model": ch.embedding_model,
-                    "similarity": None,
-                    "rank": i + 1,
-                }
-                for i, ch in enumerate(top_chunks[:final_k])
-            ]
+                    "similarity": sim,
+                    "rank": i+1,
+                })
         else:
             # attach rank for logging
             dense_hits = [{**h, "rank": i + 1} for i, h in enumerate(dense_hits)]
