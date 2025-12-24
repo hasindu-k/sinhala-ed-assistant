@@ -1,6 +1,10 @@
+import logging
 from typing import Optional
  
- 
+
+logger = logging.getLogger(__name__)
+
+
 def _get_summary_rules(grade_level: str) -> dict:
     """
     Internal helper: maps grade_level enum to linguistic constraints
@@ -54,7 +58,13 @@ def _get_summary_rules(grade_level: str) -> dict:
         "max_sentences": 7,
     }
  
- 
+GRADE_LABEL_MAP = {
+    "grade_6_8": "6 - 8",
+    "grade_9_11": "9 - 11",
+    "grade_12_13": "12 - 13",
+    "university": "university",
+}
+
 def build_summary_prompt(
     context: str,
     grade_level: str,
@@ -63,8 +73,9 @@ def build_summary_prompt(
     """
     Builds a grade-adaptive, zero-hallucination Sinhala summary prompt
     """
- 
-    rules = _get_summary_rules(grade_level)
+    normalized_level = grade_level.value if hasattr(grade_level, "value") else grade_level
+    key = GRADE_LABEL_MAP.get(normalized_level)
+    rules = _get_summary_rules(key)
     query_part = f"ප්‍රශ්නය / ඉල්ලීම: {query}\n\n" if query else ""
  
     return f"""
