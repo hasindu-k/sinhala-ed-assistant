@@ -60,11 +60,13 @@ class MessageRepository:
         session_id: UUID,
         content: Optional[str],
         model_info: Optional[Dict] = None,
+        grade_level: Optional[str] = None,
     ) -> Message:
         msg = Message(
             session_id=session_id,
             role="assistant",
             modality="text",
+            grade_level=grade_level,
             content=content,
             model_name=(model_info or {}).get("model_name"),
             prompt_tokens=(model_info or {}).get("prompt_tokens"),

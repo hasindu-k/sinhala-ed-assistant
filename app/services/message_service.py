@@ -112,11 +112,13 @@ class MessageService:
         session_id: UUID,
         content: Optional[str],
         model_info: Optional[Dict] = None,
+        grade_level: Optional[str] = None,
     ):
         return self.repository.create_assistant_message(
             session_id=session_id,
             content=content,
             model_info=model_info,
+            grade_level=grade_level,
         )
 
     def list_session_messages(self, session_id: UUID) -> List:

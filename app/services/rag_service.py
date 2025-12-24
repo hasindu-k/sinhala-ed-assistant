@@ -100,17 +100,23 @@ class RAGService:
         # -----------------------------
         if "සාරාංශ" in user_query:
             logger.info("Building summary prompt for query: %s", user_query)
-            prompt = build_summary_prompt(context=context, grade_level="9 - 11", query=user_query)
+            prompt = build_summary_prompt(context=context, grade_level=grade_level, query=user_query)
+            message_grade_level = grade_level
         else:
             logger.info("Building QA prompt for query: %s", user_query)
             prompt = build_qa_prompt(context=context, count=5, query=user_query)
+            message_grade_level = None
 
         logger.info("Built prompt of length %d", len(prompt))
 
         # -----------------------------
         # 5. Generate response with Gemini
         # -----------------------------
-        generated = GeminiClient.generate_content(prompt)
+        generated_result  = GeminiClient.generate_content(prompt)
+        generated = generated_result["text"]
+        prompt_tokens = generated_result["prompt_tokens"]
+        completion_tokens = generated_result["completion_tokens"]
+        total_tokens = generated_result["total_tokens"]
 
         logger.info("Generated response of length %d", len(generated))
 
@@ -121,7 +127,7 @@ class RAGService:
         missing = result["missing_concepts"]
         extra = result["extra_concepts"]
         is_valid = len(missing) == 0 and len(extra) == 0
-        
+
         flagged = detect_misconceptions(generated, context)
 
         logger.info("Safety check - is_valid: %s, missing: %d, extra: %d, flagged: %d",
@@ -134,7 +140,13 @@ class RAGService:
         assistant_msg = self.message_service.create_assistant_message(
             session_id=session_id,
             content=generated,
-            model_info={"model_name": "gemini-2.5-flash"},
+            model_info={
+                "model_name": "gemini-2.5-flash", 
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens
+                },
+            grade_level=message_grade_level
         )
 
         # -----------------------------
