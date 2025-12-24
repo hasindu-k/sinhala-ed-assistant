@@ -37,18 +37,11 @@ class ResourceProcessorService:
         Returns:
             (extracted_text, page_count)
         """
-        # Import OCR utilities directly
-        from app.components.document_processing.utils.file_operations import convert_file_to_images
-        from app.components.document_processing.services.text_extraction import process_ocr_for_images
-        from app.components.document_processing.utils.text_cleaner import basic_clean
-        
-        file_ext = Path(file_path).suffix.lower()
+
+        from app.components.document_processing.services.ocr_service import extract_and_clean_text_from_file
         
         try:
-            # Convert to images for OCR processing
-            images = convert_file_to_images(file_path, file_ext.lstrip('.'))
-            extracted_text, page_count = process_ocr_for_images(images)
-            cleaned_text = basic_clean(extracted_text)
+            cleaned_text, page_count = extract_and_clean_text_from_file(file_path)
             
             return cleaned_text, page_count
         except Exception as e:
