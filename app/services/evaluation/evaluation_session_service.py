@@ -92,7 +92,6 @@ class EvaluationSessionService:
         paper_part: Optional[str] = None,
         subject_name: Optional[str] = None,
         medium: Optional[str] = None,
-        total_marks: Optional[int] = None,
         weightage: Optional[float] = None,
         total_main_questions: Optional[int] = None,
         selection_rules: Optional[dict] = None,
@@ -104,16 +103,15 @@ class EvaluationSessionService:
             paper_part=paper_part,
             subject_name=subject_name,
             medium=medium,
-            total_marks=total_marks,
             weightage=weightage,
             total_main_questions=total_main_questions,
             selection_rules=selection_rules,
             is_confirmed=is_confirmed,
         )
     
-    def get_paper_config(self, evaluation_session_id: UUID):
+    def get_paper_config(self, evaluation_session_id: UUID, paper_part: Optional[str] = None):
         """Get paper configuration for an evaluation session."""
-        return self.repository.get_paper_config(evaluation_session_id)
+        return self.repository.get_paper_config(evaluation_session_id, paper_part)
     
     def update_paper_config(
         self,
@@ -121,7 +119,6 @@ class EvaluationSessionService:
         paper_part: Optional[str] = None,
         subject_name: Optional[str] = None,
         medium: Optional[str] = None,
-        total_marks: Optional[int] = None,
         weightage: Optional[float] = None,
         total_main_questions: Optional[int] = None,
         selection_rules: Optional[dict] = None,
@@ -133,7 +130,6 @@ class EvaluationSessionService:
             paper_part=paper_part,
             subject_name=subject_name,
             medium=medium,
-            total_marks=total_marks,
             weightage=weightage,
             total_main_questions=total_main_questions,
             selection_rules=selection_rules,

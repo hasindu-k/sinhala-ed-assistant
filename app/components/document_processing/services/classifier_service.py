@@ -262,91 +262,6 @@ def fix_sinhala_ocr(text: str) -> str:
         print("Error in Sinhala OCR correction:", e)
         return text
 
-PAPER_CONFIG_PROMPT = """
-You are an expert Exam Configuration AI.
-Your task is to analyze the provided exam paper text (Sinhala/English) and extract the **grading configuration** required to set up an evaluation system.
-
-========================
-ANALYSIS GOALS
-========================
-1. **Identify Papers:** Detect if the text contains Paper I, Paper II, or both.
-2. **Extract Scoring Logic:** Find total marks and specific selection rules (e.g., "Answer 4 questions from Part II").
-3. **Calculate Counts:** Count the total available questions for each paper.
-
-========================
-EXTRACTION RULES
-========================
-
-**1. Paper Identification (`paper_part`)**
-   - Look for headers: "Paper I", "I කොටස" (Part I), "Paper II", "II කොටස" (Part II).
-   - If the paper is purely Multiple Choice (1-40), it is usually "Paper_I".
-   - If the paper is Structured/Essay, it is usually "Paper_II".
-
-**2. Selection Rules (`selection_rules`)**
-   - Read the "Instructions" (උපදෙස්) section carefully.
-   - **Scenario A: Answer All**
-     - If instructions say "Answer all questions", return: `{{{{"mode": "all"}}}}`
-   
-   - **Scenario B: Specific Counts per Section (The most common for Paper II)**
-     - If it says "Answer 4 from Part II and 1 from Part III", return exactly:
-       `{{{{"Part_II": 4, "Part_III": 1}}}}`
-     - If it says "Answer 2 questions from Section A and 3 from Section B", return:
-       `{{{{"Section_A": 2, "Section_B": 3}}}}`
-
-   - **Scenario C: Compulsory + Choice**
-     - If it says "Question 1 is compulsory, select 4 others", return:
-       `{{{{"compulsory": [1], "choose_any": 4}}}}`
-
-**3. Total Marks (`total_marks`)**
-   - **Paper I:** Usually 1 mark per question (e.g., 40 questions = 40 marks).
-   - **Paper II:** Look for "Total Marks" or sum the marks of the *required* number of questions.
-   - If unable to find explicit marks, estimate based on standard Sri Lankan Ordinary Level standards (Paper I: 40, Paper II: 100).
-
-**4. Weightage (`suggested_weightage`)**
-   - This is rarely in the text. Suggest a standard value:
-   - Paper I default: 40% (0.4)
-   - Paper II default: 60% (0.6)
-
-========================
-OUTPUT FORMAT (Strict JSON)
-========================
-Return a JSON object containing a list of configurations found.
-
-{{
-  "configs": [
-    {{
-      "paper_part": "Paper_I",       // e.g. "Paper_I", "Paper_II"
-      "subject_detected": "History", // For UI verification only
-      "medium": "Sinhala",           // "Sinhala" or "English"
-      "total_marks": 40,             // Integer
-      "total_questions_available": 40, // How many distinct questions exist in text
-      "suggested_weightage": 40,     // Percentage (integer)
-      "selection_rules": {{           // The logic for valid submission
-         "mode": "all"               
-      }}
-    }},
-    {{
-      "paper_part": "Paper_II",
-      "subject_detected": "History",
-      "medium": "Sinhala",
-      "total_marks": 100,
-      "total_questions_available": 9,
-      "suggested_weightage": 60,
-      "selection_rules": {{           // Example for "Answer 4 from Part II and 1 from Part III"
-         "Part_II": 4,
-         "Part_III": 1,
-         "compulsory": [1]           // Include only if specific questions are mandatory
-      }}
-    }}
-  ]
-}}
-
-========================
-TEXT TO PROCESS
-========================
-{content}
-"""
-
 COMBINED_EXAM_PROMPT = """
 You are an expert AI for analyzing Sri Lankan exam papers (Sinhala and English medium).
 Your task is to extract BOTH the **grading configuration** and the **question structure** into a single strict JSON format.
@@ -419,7 +334,7 @@ If a paper is missing, set it to null.
           "options": ["Op1", "Op2", "Op3", "Op4"],
           "marks": 1
       }},
-      "4": {{{{ ... }}}}
+      "4": {{ ... }}
     }}
   }},
   "Paper_II": {{
@@ -477,10 +392,8 @@ def extract_complete_exam_data(text: str):
             }
         )
 
-        logger.debug("Raw model response: %s", response)
         result = json.loads(response.text)
         logger.info("Combined exam extraction completed successfully.")
-        logger.debug("Extracted Exam Data: %s", result)
         
         # 🔒 Defensive Normalization
         # Ensure top-level keys exist even if model returns partially empty JSON
