@@ -1,5 +1,6 @@
 # app/services/hybrid_retrieval_service.py
 
+import logging
 from typing import List, Dict
 from uuid import UUID
 from rank_bm25 import BM25Okapi
@@ -8,6 +9,7 @@ import re
 from app.services.resource_chunk_service import ResourceChunkService
 from app.services.resource_service import ResourceService
 
+logger = logging.getLogger(__name__)
 
 class HybridRetrievalService:
     """
@@ -53,6 +55,9 @@ class HybridRetrievalService:
         resources_with_emb = [r for r in resources if r.document_embedding is not None]
         resources_without_emb = [r for r in resources if r.document_embedding is None]
 
+        logger.info("Resources with embeddings: %d, without embeddings: %d",
+                    len(resources_with_emb), len(resources_without_emb))
+
         top_resource_ids = []
 
         # -----------------------------
@@ -61,7 +66,7 @@ class HybridRetrievalService:
         if resources_with_emb:
             resource_ids_with_emb = [r.id for r in resources_with_emb]
 
-            top_docs = self.search_documents(
+            top_docs = self.resource_service.search_documents(
                 resource_ids=resource_ids_with_emb,
                 query_embedding=query_embedding,
                 top_k=top_doc_k
@@ -85,12 +90,16 @@ class HybridRetrievalService:
         if not top_resource_ids:
             return []
 
+        logger.info("Top resource IDs after hybrid retrieval: %s", top_resource_ids)
+
         # -----------------------------
         # 4. Retrieve all chunks from top documents
         # -----------------------------
         top_chunks = self.chunk_service.get_chunks_by_resource(top_resource_ids)
         if not top_chunks:
             return []
+        
+        logger.info("Retrieved %d chunks from top resources", len(top_chunks))
 
         # -----------------------------
         # 5. Dense re-ranking on chunk embeddings
@@ -100,6 +109,8 @@ class HybridRetrievalService:
             query_embedding=query_embedding,
             top_k=final_k,
         )
+
+        logger.info("Dense search returned %d hits", len(dense_hits))
 
         # -----------------------------
         # 6. Fallback if vector search returns nothing

@@ -263,7 +263,7 @@ class MessageService:
         # query_embedding: Optional[List[float]] = None,
         from app.components.document_processing.services.embedding_service import generate_text_embedding
         query_embedding: list[float] = generate_text_embedding(user_query)
-
+        logging.info("Generated query embedding for message %s", message_id)
         # Generate response using RAG
         from app.services.rag_service import RAGService
         rag_service = RAGService(self.db)

@@ -66,12 +66,14 @@ class ResourceChunkRepository:
             SELECT id, resource_id, chunk_index, content, embedding_model
             FROM resource_chunks
             WHERE resource_id IN ({placeholders})
-            ORDER BY embedding <=> :query_embedding
+            ORDER BY embedding <=> (:query_embedding)::vector
             LIMIT :top_k
             """
         )
         params = {f"id{i}": str(rid) for i, rid in enumerate(resource_ids)}
         params["query_embedding"] = query_embedding
         params["top_k"] = top_k
-        result = self.db.execute(sql, params)
-        return [dict(row) for row in result]
+        
+        result = self.db.execute(sql, params).mappings()
+        return list(result)
+

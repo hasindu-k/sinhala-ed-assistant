@@ -1,4 +1,5 @@
 # app/services/rag_service.py
+import logging
 from typing import List, Dict, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -13,6 +14,8 @@ from app.utils.sinhala_safety_engine import concept_map_check, detect_misconcept
 from app.services.message_safety_service import MessageSafetyService
 from app.core.gemini_client import GeminiClient
 import json
+
+logger = logging.getLogger(__name__)
 
 
 class RAGService:
@@ -68,6 +71,8 @@ class RAGService:
                 "retrieval_metadata": {"bm25_k": bm25_k, "final_k": final_k, "used_chunks": 0},
             }
 
+        logging.info("Hybrid retrieval returned %d hits", len(hits))
+
         # -----------------------------
         # 2. Log used chunks
         # -----------------------------
@@ -88,24 +93,40 @@ class RAGService:
         # -----------------------------
         context = "\n\n".join(h["content"] for h in hits)
 
+        logger.info("Built context of length %d", len(context))
+
         # -----------------------------
         # 4. Select prompt type
         # -----------------------------
         if "සාරාංශ" in user_query:
-            prompt = build_summary_prompt(context=context, grade="9 - 11", query=user_query)
+            logger.info("Building summary prompt for query: %s", user_query)
+            prompt = build_summary_prompt(context=context, grade_level="9 - 11", query=user_query)
         else:
+            logger.info("Building QA prompt for query: %s", user_query)
             prompt = build_qa_prompt(context=context, count=5, query=user_query)
+
+        logger.info("Built prompt of length %d", len(prompt))
 
         # -----------------------------
         # 5. Generate response with Gemini
         # -----------------------------
         generated = GeminiClient.generate_content(prompt)
 
+        logger.info("Generated response of length %d", len(generated))
+
         # -----------------------------
         # 6. Safety & misconception checks
         # -----------------------------
-        is_valid, missing, extra = concept_map_check(generated, context)
+        result = concept_map_check(generated, context)
+        missing = result["missing_concepts"]
+        extra = result["extra_concepts"]
+        is_valid = len(missing) == 0 and len(extra) == 0
+        
         flagged = detect_misconceptions(generated, context)
+
+        logger.info("Safety check - is_valid: %s, missing: %d, extra: %d, flagged: %d",
+                    is_valid, len(missing), len(extra), len(flagged))
+        logger.info("Saving assistant message...")
 
         # -----------------------------
         # 7. Save assistant message
@@ -128,6 +149,8 @@ class RAGService:
                 "reasoning": "Hybrid RAG with Sinhala QA/Summary",
             },
         )
+
+        logger.info("Assistant message and safety report saved.")
 
         # -----------------------------
         # 9. Return full response with metadata
