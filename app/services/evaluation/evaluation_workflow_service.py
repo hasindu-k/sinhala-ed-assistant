@@ -7,6 +7,7 @@ from app.schemas.evaluation import (
     EvaluationSessionUpdate,
     EvaluationResourceAttach,
     PaperConfigCreate,
+    PaperConfigUpdate,
     AnswerDocumentCreate,
 )
 from app.services.evaluation.evaluation_session_service import EvaluationSessionService
@@ -16,6 +17,11 @@ from app.services.evaluation.paper_config_service import PaperConfigService
 from app.services.evaluation.answer_evaluation_service import AnswerEvaluationService
 from app.services.chat_session_service import ChatSessionService
 from app.services.resource_service import ResourceService
+from app.components.document_processing.services.classifier_service import extract_complete_exam_data
+from app.components.document_processing.services.ocr_service import extract_and_clean_text_from_file
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class EvaluationWorkflowService:
@@ -92,12 +98,18 @@ class EvaluationWorkflowService:
         )
 
     def parse_question_paper(self, evaluation_id: UUID, user_id: UUID):
+        """
+        Parse question paper by extracting text and structuring content.
+        Uses OCR if needed and AI-based content separation.
+        """
         self._get_eval_session_with_owner_check(evaluation_id, user_id)
 
+        # Check if already parsed
         question_papers = self.question_papers.get_question_papers_by_evaluation_session(evaluation_id)
         if question_papers:
-            return question_papers[0]
+            return self.question_papers.get_question_paper_with_questions(question_papers[0].id)
 
+        # Get attached question paper resource
         resources = self.resources.get_resources_by_role(
             evaluation_session_id=evaluation_id,
             role="question_paper",
@@ -106,11 +118,94 @@ class EvaluationWorkflowService:
             raise ValueError("No question paper resource attached to this evaluation session")
 
         self._ensure_resource_owner(resources[0].resource_id, user_id)
+        
+        # Get resource file
+        resource = self.resource_files.get_resource_with_ownership_check(
+            resources[0].resource_id, 
+            user_id
+        )
+        
+        if not resource.storage_path:
+            raise ValueError("Resource file not found on disk")
 
-        return self.question_papers.create_question_paper(
+        # Extract and clean text from file
+        try:
+            cleaned_text, page_count = extract_and_clean_text_from_file(resource.storage_path)
+            logger.info("Extracted %s characters from %d pages in question paper", len(cleaned_text), page_count)
+
+        except Exception as e:
+            logger.error(f"Failed to extract text from resource {resource.id}: {e}", exc_info=True)
+            raise ValueError(f"Failed to extract text from question paper: {e}")
+
+        # Parse and structure content using AI
+        try:
+            # extract with paper config and paper structure separation
+            result = extract_complete_exam_data(cleaned_text)
+            
+            logger.info(f"Parsed question paper structure: {len(result)} papers found")
+            logger.debug(f"Parsed structure details: {result}")
+        except Exception as e:
+            logger.error(f"Failed to parse paper structure: {e}", exc_info=True)
+            raise ValueError(f"Failed to parse question paper structure: {e}")
+        
+        # Create question paper entry
+        question_paper = self.question_papers.create_question_paper(
             evaluation_session_id=evaluation_id,
             resource_id=resources[0].resource_id,
+            extracted_text=cleaned_text,
         )
+
+        # Create structured questions from parsed data
+        try:
+            # Process each paper (Paper_I, Paper_II, etc.)
+            for paper_key, paper_data in result.items():
+                if not paper_data:
+                    continue  # Skip null papers
+
+                config = paper_data.get("config", {}) or {}
+
+                # 1️⃣ Create PaperConfig for this paper
+                self.paper_configs.save_config(
+                    evaluation_session_id=evaluation_id,
+                    paper_part=paper_key,
+                    subject_name=config.get("subject_detected"),
+                    medium=config.get("medium"),
+                    weightage=float(config.get("suggested_weightage")) if config.get("suggested_weightage") is not None else None,
+                    total_main_questions=config.get("total_questions_available"),
+                    selection_rules=config.get("selection_rules"),
+                )
+
+                # 2️⃣ Create Questions
+                questions_dict = paper_data.get("questions", {}) or {}
+                for q_num, q_data in questions_dict.items():
+                    question = self.question_papers.create_question(
+                        question_paper_id=question_paper.id,
+                        question_number=q_num,
+                        question_text=q_data.get("text"),
+                        max_marks=q_data.get("marks"),
+                        shared_stem=q_data.get("shared_stem"),
+                        inherits_shared_stem_from=q_data.get("inherits_shared_stem_from")
+                    )
+
+                    # 3️⃣ Create SubQuestions if any
+                    sub_questions = q_data.get("sub_questions", {}) or {}
+                    for sq_label, sq_data in sub_questions.items():
+                        self.question_papers.create_sub_question(
+                            question_id=question.id,
+                            label=sq_label,
+                            sub_question_text=sq_data.get("text"),
+                            max_marks=sq_data.get("marks")
+                        )
+
+                logger.info(f"Created {len(questions_dict)} questions for {paper_key}")
+
+        except Exception as e:
+            logger.error(f"Failed to create structured questions: {e}", exc_info=True)
+            # Don't fail the entire operation if question creation fails
+            # The paper is still parsed and text is saved
+
+        # Return complete question paper with questions
+        return self.question_papers.get_question_paper_with_questions(question_paper.id)
 
     def get_parsed_questions(self, evaluation_id: UUID, user_id: UUID):
         self._get_eval_session_with_owner_check(evaluation_id, user_id)
@@ -124,14 +219,30 @@ class EvaluationWorkflowService:
         self._get_eval_session_with_owner_check(evaluation_id, user_id)
         return self.paper_configs.save_config(
             evaluation_session_id=evaluation_id,
-            total_marks=payload.total_marks,
+            paper_part=payload.paper_part,
+            subject_name=payload.subject_name,
+            medium=payload.medium,
+            weightage=float(payload.weightage) if payload.weightage is not None else None,
             total_main_questions=payload.total_main_questions,
-            required_questions=payload.required_questions,
+            selection_rules=payload.selection_rules,
         )
 
     def get_paper_config(self, evaluation_id: UUID, user_id: UUID):
         self._get_eval_session_with_owner_check(evaluation_id, user_id)
         return self.paper_configs.get_config(evaluation_id)
+
+    def confirm_paper_config(self, evaluation_id: UUID, payload: PaperConfigUpdate, user_id: UUID):
+        """Update provided fields and confirm the paper configuration for an evaluation session."""
+        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+        return self.paper_configs.confirm_config(
+            evaluation_session_id=evaluation_id,
+            paper_part=payload.paper_part,
+            subject_name=payload.subject_name,
+            medium=payload.medium,
+            weightage=float(payload.weightage) if payload.weightage is not None else None,
+            total_main_questions=payload.total_main_questions,
+            selection_rules=payload.selection_rules,
+        )
 
     def register_answer_document(self, evaluation_id: UUID, payload: AnswerDocumentCreate, user_id: UUID):
         self._get_eval_session_with_owner_check(evaluation_id, user_id)

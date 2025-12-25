@@ -26,3 +26,12 @@ class SessionResourceRepository:
             .filter(SessionResource.session_id == session_id)
             .all()
         )
+
+    def delete_resources_for_session(self, session_id: UUID) -> int:
+        rows = (
+            self.db.query(SessionResource)
+            .filter(SessionResource.session_id == session_id)
+            .delete()
+        )
+        self.db.commit()
+        return rows

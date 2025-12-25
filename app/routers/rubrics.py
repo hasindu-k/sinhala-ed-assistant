@@ -39,10 +39,37 @@ def create_rubric(payload: RubricCreate, current_user: User = Depends(get_curren
     """
     service = RubricService(db)
     try:
-        return service.create_rubric(current_user.id, payload.name, payload.description)
+        return service.create_rubric(
+            current_user.id,
+            payload.name,
+            payload.description,
+            payload.rubric_type,
+            payload.criteria,
+        )
     except Exception as exc:
         logger.error(f"Failed to create rubric for user {current_user.id}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create rubric")
+
+
+@router.post("/system", response_model=RubricResponse)
+def create_system_rubric(payload: RubricCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Create a system rubric (admin-only): created_by=NULL, rubric_type='system'.
+    """
+    service = RubricService(db)
+    # Basic admin check; adjust to your auth/roles model
+    is_admin = bool(getattr(current_user, "is_admin", True) or getattr(current_user, "role", None) == "admin")
+    if not is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    try:
+        return service.create_system_rubric(
+            name=payload.name,
+            description=payload.description,
+            criteria=payload.criteria,
+        )
+    except Exception as exc:
+        logger.error(f"Failed to create system rubric: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create system rubric")
 
 
 @router.get("/{rubric_id}", response_model=RubricDetail)
@@ -69,7 +96,13 @@ def update_rubric(rubric_id: UUID, payload: RubricUpdate, current_user: User = D
     """
     service = RubricService(db)
     try:
-        updated = service.update_rubric(rubric_id, current_user.id, payload.name, payload.description)
+        updated = service.update_rubric(
+            rubric_id,
+            current_user.id,
+            payload.name,
+            payload.description,
+            payload.rubric_type,
+        )
         if not updated:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rubric not found")
         return updated
@@ -106,9 +139,8 @@ def add_criterion(rubric_id: UUID, payload: RubricCriterionCreate, current_user:
         return service.create_rubric_criterion(
             rubric_id=rubric_id,
             user_id=current_user.id,
-            criterion_name=payload.criterion_name,
-            description=payload.description,
-            weight=payload.weight,
+            criterion=payload.criterion,
+            weight_percentage=payload.weight_percentage,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
@@ -127,9 +159,8 @@ def update_criterion(rubric_id: UUID, criterion_id: UUID, payload: RubricCriteri
             rubric_id=rubric_id,
             criterion_id=criterion_id,
             user_id=current_user.id,
-            criterion_name=payload.criterion_name,
-            description=payload.description,
-            weight=payload.weight,
+            criterion=payload.criterion,
+            weight_percentage=payload.weight_percentage,
         )
         if not updated:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Criterion not found")
