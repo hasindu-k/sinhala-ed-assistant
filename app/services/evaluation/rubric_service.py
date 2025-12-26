@@ -39,21 +39,36 @@ class RubricService:
         name: str,
         description: Optional[str] = None,
         rubric_type: Optional[str] = None,
-        criteria: Optional[List[dict]] = None,
+        criteria: Optional[List[RubricCriterionCreate]] = None,
     ):
-        """Create a new rubric; optionally add criteria."""
+        """Create a new rubric with exactly 3 criteria: semantic, coverage, relevance."""
+        # Validate criteria
+        if not criteria or len(criteria) != 3:
+            raise ValueError("Exactly 3 criteria must be provided")
+        
+        criterion_names = [c.criterion.lower() for c in criteria]
+        required_criteria = ['semantic', 'coverage', 'relevance']
+        
+        if not all(name in criterion_names for name in required_criteria):
+            raise ValueError("Criteria must include: semantic, coverage, relevance")
+        
+        # Check weights sum to 1.0
+        total_weight = sum(c.weight_percentage for c in criteria)
+        if abs(total_weight - 1.0) > 0.001:  # Allow small floating point tolerance
+            raise ValueError("Criteria weights must sum to 1.0")
+        
         rubric = self.repository.create_rubric(
             created_by=user_id,
             name=name,
             description=description,
-            rubric_type=rubric_type,
+            rubric_type=rubric_type or "evaluation",
         )
         if criteria:
             for criterion_data in criteria:
                 self.repository.create_rubric_criterion(
                     rubric_id=rubric.id,
-                    criterion=criterion_data.get("criterion"),
-                    weight_percentage=criterion_data.get("weight_percentage"),
+                    criterion=criterion_data.criterion,
+                    weight_percentage=criterion_data.weight_percentage,
                 )
         return rubric
 
@@ -63,7 +78,22 @@ class RubricService:
         description: Optional[str] = None,
         criteria: Optional[List[RubricCriterionCreate]] = None,
     ):
-        """Create a system rubric (created_by=None, rubric_type='system')."""
+        """Create a system rubric with exactly 3 criteria: semantic, coverage, relevance."""
+        # Validate criteria
+        if not criteria or len(criteria) != 3:
+            raise ValueError("Exactly 3 criteria must be provided")
+        
+        criterion_names = [c.criterion.lower() for c in criteria]
+        required_criteria = ['semantic', 'coverage', 'relevance']
+        
+        if not all(name in criterion_names for name in required_criteria):
+            raise ValueError("Criteria must include: semantic, coverage, relevance")
+        
+        # Check weights sum to 1.0
+        total_weight = sum(c.weight_percentage for c in criteria)
+        if abs(total_weight - 1.0) > 0.001:  # Allow small floating point tolerance
+            raise ValueError("Criteria weights must sum to 1.0")
+        
         rubric = self.repository.create_rubric(
             created_by=None,
             name=name,
@@ -175,8 +205,8 @@ class RubricService:
         for criterion_data in criteria:
             self.repository.create_rubric_criterion(
                 rubric_id=rubric.id,
-                criterion=criterion_data.get("criterion"),
-                weight_percentage=criterion_data.get("weight_percentage"),
+                criterion=criterion_data.get("criterion") if isinstance(criterion_data, dict) else criterion_data.criterion,
+                weight_percentage=criterion_data.get("weight_percentage") if isinstance(criterion_data, dict) else criterion_data.weight_percentage,
             )
         return rubric
     
@@ -190,16 +220,16 @@ class RubricService:
         user_id: UUID,
         name: str
     ):
-        """Create a standard evaluation rubric with semantic, coverage, and BM25 criteria."""
+        """Create a standard evaluation rubric with semantic, coverage, and relevance criteria."""
         criteria = [
-            {"criterion": "Semantic Similarity", "weight_percentage": 40},
-            {"criterion": "Coverage", "weight_percentage": 35},
-            {"criterion": "BM25 Relevance", "weight_percentage": 25},
+            {"criterion": "semantic", "weight_percentage": 0.6},
+            {"criterion": "coverage", "weight_percentage": 0.2},
+            {"criterion": "relevance", "weight_percentage": 0.2},
         ]
         return self.create_rubric_with_criteria(
             user_id=user_id,
             name=name,
             criteria=criteria,
-            description="Standard evaluation rubric with semantic, coverage, and BM25 criteria",
-            rubric_type="custom",
+            description="Standard evaluation rubric with semantic (0.6), coverage (0.2), and relevance (0.2) criteria",
+            rubric_type="evaluation",
         )

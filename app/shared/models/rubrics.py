@@ -1,7 +1,7 @@
 # app/shared/models/rubrics.py
 
 import uuid
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Float
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 
@@ -24,6 +24,6 @@ class RubricCriterion(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     rubric_id = Column(UUID(as_uuid=True), ForeignKey("rubrics.id"), nullable=False, index=True)
-    criterion = Column(String, nullable=True) # Semantic | Coverage | Relevance
-    weight_percentage = Column(Integer, nullable=True)
+    criterion = Column(String, nullable=True) # semantic | coverage | relevance
+    weight_percentage = Column(Float, nullable=True)  # Changed to Float for decimal weights
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -41,7 +41,7 @@ class ChatSessionResponse(BaseModel):
     description: Optional[str] = None
     grade: Optional[int] = None
     subject: Optional[str] = None
-    created_at: datetime
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
     class Config:
