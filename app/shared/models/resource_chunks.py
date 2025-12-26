@@ -2,9 +2,9 @@
 
 import uuid
 from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, Numeric
-from sqlalchemy.dialects.postgresql import UUID, JSON
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
-# from pgvector.sqlalchemy import Vector  # Temporarily disabled for development
+from pgvector.sqlalchemy import Vector
 
 from app.core.database import Base
 
@@ -18,7 +18,7 @@ class ResourceChunk(Base):
     content = Column(Text, nullable=True)
     content_length = Column(Integer, nullable=True)
     token_count = Column(Integer, nullable=True)
-    embedding = Column(JSON, nullable=True)  # Temporarily JSON instead of Vector
+    embedding = Column(Vector(768), nullable=True)  # Vector for embeddings
     embedding_model = Column(String, nullable=True)
     start_char = Column(Integer, nullable=True)
     end_char = Column(Integer, nullable=True)
