@@ -187,15 +187,24 @@ class EvaluationWorkflowService:
                         inherits_shared_stem_from=q_data.get("inherits_shared_stem_from")
                     )
 
-                    # 3️⃣ Create SubQuestions if any
+                    # 3️⃣ Create SubQuestions (Recursive)
+                    def create_sub_tree(parent_q_id, sub_data, parent_sq_id=None):
+                        if not sub_data:
+                            return
+                        for label, data in sub_data.items():
+                            sq = self.question_papers.create_sub_question(
+                                question_id=parent_q_id,
+                                label=label,
+                                sub_question_text=data.get("text"),
+                                max_marks=data.get("marks"),
+                                parent_sub_question_id=parent_sq_id
+                            )
+                            # Recurse for children
+                            if "sub_questions" in data:
+                                create_sub_tree(parent_q_id, data["sub_questions"], sq.id)
+
                     sub_questions = q_data.get("sub_questions", {}) or {}
-                    for sq_label, sq_data in sub_questions.items():
-                        self.question_papers.create_sub_question(
-                            question_id=question.id,
-                            label=sq_label,
-                            sub_question_text=sq_data.get("text"),
-                            max_marks=sq_data.get("marks")
-                        )
+                    create_sub_tree(question.id, sub_questions)
 
                 logger.info(f"Created {len(questions_dict)} questions for {paper_key}")
 

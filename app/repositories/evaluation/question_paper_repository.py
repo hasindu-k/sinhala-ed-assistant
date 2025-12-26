@@ -80,13 +80,15 @@ class QuestionPaperRepository:
         label: str,
         sub_question_text: str,
         max_marks: Optional[int] = None,
+        parent_sub_question_id: Optional[UUID] = None,
     ) -> SubQuestion:
         """Create a sub-question."""
         sub_question = SubQuestion(
             question_id=question_id,
             label=label,
             sub_question_text=sub_question_text,
-            max_marks=max_marks
+            max_marks=max_marks,
+            parent_sub_question_id=parent_sub_question_id
         )
         self.db.add(sub_question)
         self.db.commit()
