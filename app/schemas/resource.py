@@ -47,6 +47,10 @@ class ResourceUploadResponse(BaseModel):
     mime_type: str
 
 
+class ResourceBulkUploadResponse(BaseModel):
+    uploads: list[ResourceUploadResponse]
+
+
 class ResourceProcessRequest(BaseModel):
     resource_id: UUID
 

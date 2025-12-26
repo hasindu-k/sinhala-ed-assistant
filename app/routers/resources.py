@@ -7,6 +7,7 @@ from app.schemas.resource import (
     ResourceFileCreate,
     ResourceFileUpdate,
     ResourceUploadResponse,
+    ResourceBulkUploadResponse,
     ResourceProcessResponse
 )
 from app.schemas.resource_chunk import ResourceChunkResponse
@@ -21,61 +22,68 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/upload", response_model=ResourceUploadResponse)
+@router.post("/upload", response_model=ResourceBulkUploadResponse)
 async def upload_resource(
-    file: UploadFile = File(...),
+    files: List[UploadFile] = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Upload a resource file (PDF, image, audio).
+    Upload one or more resource files (PDF, image, audio).
     
     Args:
-        file: Uploaded file
+        files: List of uploaded files
         current_user: Authenticated user
         db: Database session
         
     Returns:
-        ResourceUploadResponse with upload details
+        ResourceBulkUploadResponse with list of upload details
         
     Raises:
         HTTPException 400: Invalid file type or empty file
         HTTPException 500: File storage or database error
     """
-    try:
-        # Read file content
-        content = await file.read()
-        
-        # Upload via service
-        resource_service = ResourceService(db)
-        resource = resource_service.upload_resource_from_file(
-            user_id=current_user.id,
-            filename=file.filename,
-            content_type=file.content_type,
-            content=content,
-        )
-        
-        logger.info(f"Resource uploaded: {resource.id} ({file.filename}) by user {current_user.id}")
-        
-        return ResourceUploadResponse(
-            resource_id=resource.id,
-            filename=file.filename,
-            size_bytes=len(content),
-            mime_type=file.content_type,
-        )
-        
-    except ValueError as e:
-        logger.warning(f"Validation error uploading resource: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Error uploading resource for user {current_user.id}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upload resource"
-        )
+    user_id = current_user.id  # Load user_id early to avoid lazy loading issues
+    upload_results = []
+    
+    for file in files:
+        try:
+            # Read file content
+            content = await file.read()
+            
+            # Upload via service
+            resource_service = ResourceService(db)
+            resource = resource_service.upload_resource_from_file(
+                user_id=user_id,
+                filename=file.filename,
+                content_type=file.content_type,
+                content=content,
+            )
+            
+            upload_results.append(ResourceUploadResponse(
+                resource_id=resource.id,
+                filename=file.filename,
+                size_bytes=len(content),
+                mime_type=file.content_type,
+            ))
+            
+        except ValueError as e:
+            logger.warning(f"Validation error uploading resource {file.filename}: {e}")
+            # For multiple files, we might want to continue with others or fail all
+            # For now, fail all if any fails
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Validation error for {file.filename}: {str(e)}"
+            )
+        except Exception as e:
+            logger.error(f"Error uploading resource {file.filename} for user {user_id}: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to upload {file.filename}"
+            )
+    
+    logger.info(f"Uploaded {len(upload_results)} resources for user {user_id}")
+    return ResourceBulkUploadResponse(uploads=upload_results)
 
 
 @router.get("/", response_model=List[ResourceFileResponse])
