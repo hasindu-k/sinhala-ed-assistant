@@ -1,4 +1,5 @@
 import uuid
+from sqlalchemy.orm import relationship
 from sqlalchemy import Column, String, Integer, DateTime, Enum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
@@ -19,3 +20,9 @@ class ChatSession(Base):
     subject = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    messages = relationship(
+        "Message", 
+        back_populates="session", 
+        cascade="all, delete-orphan" 
+    )
