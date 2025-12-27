@@ -3,6 +3,9 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.schemas.auth import (
     SignUpRequest,
@@ -189,6 +192,8 @@ def refresh_token(payload: RefreshTokenRequest, db: Session = Depends(get_db)):
     
     # Store new refresh token
     token_repo.create_token(UUID(user_id), new_jti, expires_at)
+
+    logger.info("✓ Refresh token used to issue new access token for user %s", user_id)
 
     return AuthTokensResponse(
         access_token=access_token,
