@@ -45,7 +45,7 @@ def signup(payload: SignUpRequest, db: Session = Depends(get_db)):
     )
     
     # Issue tokens and store refresh token
-    access_token = create_access_token(user.id)
+    access_token, expires_in = create_access_token(user.id)
     refresh_token, jti, expires_at = create_refresh_token(user.id)
     
     token_repo = RefreshTokenRepository(db)
@@ -54,6 +54,7 @@ def signup(payload: SignUpRequest, db: Session = Depends(get_db)):
     return AuthTokensResponse(
         access_token=access_token,
         refresh_token=refresh_token,
+        expires_in=expires_in,
     )
 
 
@@ -74,7 +75,7 @@ def signin(payload: SignInRequest, db: Session = Depends(get_db)):
     db.commit()
 
     # Issue tokens and store refresh token
-    access_token = create_access_token(user.id)
+    access_token, expires_in = create_access_token(user.id)
     refresh_token, jti, expires_at = create_refresh_token(user.id)
     
     token_repo = RefreshTokenRepository(db)
@@ -83,6 +84,7 @@ def signin(payload: SignInRequest, db: Session = Depends(get_db)):
     return AuthTokensResponse(
         access_token=access_token,
         refresh_token=refresh_token,
+        expires_in=expires_in,
     )
 
 
@@ -182,7 +184,7 @@ def refresh_token(payload: RefreshTokenRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked or expired")
 
     # Issue new tokens
-    access_token = create_access_token(UUID(user_id))
+    access_token, expires_in = create_access_token(UUID(user_id))
     refresh_token_str, new_jti, expires_at = create_refresh_token(UUID(user_id))
     
     # Store new refresh token
@@ -191,6 +193,7 @@ def refresh_token(payload: RefreshTokenRequest, db: Session = Depends(get_db)):
     return AuthTokensResponse(
         access_token=access_token,
         refresh_token=refresh_token_str,
+        expires_in=expires_in,
     )
 
 
