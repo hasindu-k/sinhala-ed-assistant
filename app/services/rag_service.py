@@ -14,6 +14,7 @@ from app.utils.sinhala_safety_engine import concept_map_check, detect_misconcept
 from app.services.message_safety_service import MessageSafetyService
 from app.core.gemini_client import GeminiClient
 import json
+from app.services.intent_detection_service import IntentDetectionService
 
 logger = logging.getLogger(__name__)
 
@@ -98,16 +99,42 @@ class RAGService:
         # -----------------------------
         # 4. Select prompt type
         # -----------------------------
-        if "සාරාංශ" in user_query:
-            logger.info("Building summary prompt for query: %s", user_query)
-            prompt = build_summary_prompt(context=context, grade_level=grade_level, query=user_query)
+        intent = IntentDetectionService.detect_intent(user_query)
+
+        logger.info("Detected intent: %s", intent)
+
+        if intent == "summary":
+            prompt = build_summary_prompt(
+                context=context,
+                grade_level=grade_level,
+                query=user_query
+            )
             message_grade_level = grade_level
-        else:
-            logger.info("Building QA prompt for query: %s", user_query)
-            prompt = build_qa_prompt(context=context, count=5, query=user_query)
+
+        elif intent == "qa":
+            prompt = build_qa_prompt(
+                context=context,
+                count=5,
+                query=user_query
+            )
             message_grade_level = None
 
-        logger.info("Built prompt of length %d", len(prompt))
+        elif intent == "explanation":
+            prompt = build_qa_prompt(
+                context=context,
+                count=1,
+                query=user_query
+            )
+            message_grade_level = None
+
+        else:
+            # Safe default: direct answer only
+            prompt = build_qa_prompt(
+                context=context,
+                count=1,
+                query=user_query
+            )
+            message_grade_level = None
 
         # -----------------------------
         # 5. Generate response with Gemini
