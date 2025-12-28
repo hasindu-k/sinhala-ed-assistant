@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Any
+from typing import Optional, Any, List
 from uuid import UUID
 from datetime import datetime
 from decimal import Decimal
@@ -31,6 +31,11 @@ class MessageAttachmentType(str, Enum):
 
 
 # Message Schemas
+class MessageAttachment(BaseModel):
+    resource_id: UUID
+    display_name: Optional[str] = None
+    attachment_type: Optional[str] = "pdf"
+
 class MessageCreate(BaseModel):
     modality: MessageModality
     content: Optional[str] = None
@@ -38,6 +43,7 @@ class MessageCreate(BaseModel):
     transcript: Optional[str] = None
     audio_duration_sec: Optional[Decimal] = None
     grade_level: Optional[GradeLevel] = None
+    attachments: Optional[list[MessageAttachment]] = None
 
 
 class MessageUpdate(BaseModel):
@@ -45,6 +51,11 @@ class MessageUpdate(BaseModel):
     transcript: Optional[str] = None
     audio_duration_sec: Optional[Decimal] = None
 
+class AttachmentResponse(BaseModel):
+    id: UUID
+    url: str
+    name: str
+    mime_type: str
 
 class MessageResponse(BaseModel):
     id: UUID
@@ -56,11 +67,8 @@ class MessageResponse(BaseModel):
     audio_url: Optional[str] = None
     transcript: Optional[str] = None
     audio_duration_sec: Optional[Decimal] = None
-    model_name: Optional[str] = None
-    prompt_tokens: Optional[int] = None
-    completion_tokens: Optional[int] = None
-    total_tokens: Optional[int] = None
     created_at: datetime
+    attachments: list[AttachmentResponse] = []
 
     class Config:
         from_attributes = True
@@ -80,6 +88,40 @@ class MessageAttachmentResponse(BaseModel):
     display_name: Optional[str] = None
     attachment_type: Optional[str] = None
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MessageAttachmentWithResource(BaseModel):
+    id: UUID
+    message_id: UUID
+    resource_id: UUID
+    display_name: Optional[str] = None
+    attachment_type: Optional[str] = None
+    created_at: datetime
+    # Resource details
+    resource_filename: Optional[str] = None
+    resource_mime_type: Optional[str] = None
+    resource_size_bytes: Optional[int] = None
+    resource_storage_path: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class MessageWithAttachmentsResponse(BaseModel):
+    id: UUID
+    session_id: UUID
+    role: MessageRole
+    modality: MessageModality
+    content: Optional[str] = None
+    grade_level: Optional[GradeLevel] = None
+    audio_url: Optional[str] = None
+    transcript: Optional[str] = None
+    audio_duration_sec: Optional[Decimal] = None
+    created_at: datetime
+    attachments: List[MessageAttachmentWithResource] = []
 
     class Config:
         from_attributes = True

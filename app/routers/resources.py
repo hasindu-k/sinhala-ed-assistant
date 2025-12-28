@@ -78,6 +78,69 @@ async def upload_resource(
         )
 
 
+@router.post("/upload/batch", response_model=List[ResourceUploadResponse])
+async def upload_resources(
+    files: List[UploadFile] = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Upload multiple resource files (PDF, image, audio).
+
+    Args:
+        files: Uploaded files
+        current_user: Authenticated user
+        db: Database session
+        
+    Returns:
+        List of ResourceUploadResponse with upload details
+        
+    Raises:
+        HTTPException 400: Invalid file(s) or empty payload
+        HTTPException 500: File storage or database error
+    """
+    try:
+        if not files:
+            raise ValueError("No files uploaded")
+
+        resource_service = ResourceService(db)
+        responses: List[ResourceUploadResponse] = []
+
+        for file in files:
+            content = await file.read()
+            resource = resource_service.upload_resource_from_file(
+                user_id=current_user.id,
+                filename=file.filename,
+                content_type=file.content_type,
+                content=content,
+            )
+
+            responses.append(
+                ResourceUploadResponse(
+                    resource_id=resource.id,
+                    filename=file.filename,
+                    size_bytes=len(content),
+                    mime_type=file.content_type,
+                )
+            )
+
+        logger.info(f"{len(responses)} resources uploaded by user {current_user.id}")
+        return responses
+        
+    except ValueError as e:
+        logger.warning(f"Validation error uploading resources: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error uploading resources for user {current_user.id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upload resources"
+        )
+
+
 @router.get("/", response_model=List[ResourceFileResponse])
 def list_resources(
     current_user: User = Depends(get_current_user),

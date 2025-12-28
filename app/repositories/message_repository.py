@@ -85,3 +85,19 @@ class MessageRepository:
             .order_by(Message.created_at.asc())
             .all()
         )
+
+    def list_session_messages_with_attachments(self, session_id: UUID) -> List[Message]:
+        """List messages with eager-loaded attachments and resource details."""
+        from sqlalchemy.orm import joinedload
+        from app.shared.models.message_relations import MessageAttachment
+        from app.shared.models.resource_file import ResourceFile
+        
+        return (
+            self.db.query(Message)
+            .filter(Message.session_id == session_id)
+            .options(
+                joinedload(Message.attachments).joinedload(MessageAttachment.resource)
+            )
+            .order_by(Message.created_at.asc())
+            .all()
+        )

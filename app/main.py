@@ -6,6 +6,7 @@ setup_logging()
 
 import logging
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
@@ -96,3 +97,5 @@ app.include_router(api_router, prefix="/api/v1")
 @app.get("/")
 def root():
     return {"status": "OK"}
+
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")

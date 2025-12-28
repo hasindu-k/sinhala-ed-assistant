@@ -29,13 +29,19 @@ class MessageAttachment(Base):
     message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=False, index=True)
     resource_id = Column(UUID(as_uuid=True), ForeignKey("resource_files.id"), nullable=False, index=True)
     display_name = Column(String, nullable=True)
-    attachment_type = Column(String, nullable=True)
+    attachment_type = Column(String, nullable=True) # pdf, image, audio, doc
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     message = relationship(
         "Message",
         back_populates="attachments"
     )
+    
+    resource = relationship(
+        "ResourceFile",
+        foreign_keys=[resource_id]
+    )
+
 
 
 class MessageSafetyReport(Base):

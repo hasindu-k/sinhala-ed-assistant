@@ -8,8 +8,10 @@ from app.schemas.message import (
     MessageDetachRequest,
     MessageDetail,
     MessageResponse,
+    MessageWithAttachmentsResponse,
     MessageAttachRequest,
     MessageAttachmentResponse,
+    MessageAttachmentWithResource,
     MessageContextChunkResponse,
     MessageSafetyReportResponse,
     GenerateResponseRequest
@@ -65,6 +67,20 @@ def create_user_message(
             transcript=payload.transcript,
             audio_duration_sec=payload.audio_duration_sec,
         )
+
+        attachments = payload.attachments or []
+        if attachments:
+            attachment_service = MessageAttachmentService(db)
+            for att in attachments:
+                attachment_service.attach_resource(
+                    message_id=message.id,
+                    resource_id=att.resource_id,
+                    display_name=att.display_name,
+                    attachment_type=att.attachment_type,
+                )
+
+            logger.info(f"Attached {len(attachments)} resources to message {message.id}")
+
         logger.info(f"User message created: {message.id} in session {parsed_session_id} by user {current_user.id}")
 
         return message
@@ -430,10 +446,11 @@ def get_message_history(
         session_service.get_session_with_ownership_check(session_id, current_user.id)
         
         message_service = MessageService(db)
-        messages = message_service.list_session_messages(session_id)
+        messages = message_service.list_session_messages_with_attachments(session_id)
+        response_messages = _transform_messages_with_attachments(messages)
         
-        logger.debug(f"Retrieved {len(messages)} messages for session {session_id} by user {current_user.id}")
-        return messages
+        logger.debug(f"Retrieved {len(messages)} messages with attachments for session {session_id} by user {current_user.id}")
+        return response_messages
         
     except ValueError as e:
         logger.warning(f"Session {session_id} not found for message history by user {current_user.id}")
@@ -453,6 +470,164 @@ def get_message_history(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve message history"
         )
+
+
+@router.get("/sessions/{session_id}/with-attachments", response_model=List[MessageWithAttachmentsResponse])
+def get_message_history_with_attachments(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all messages for a session with attachments and resource details.
+    Includes resource file information (filename, mime_type, size, storage_path) for each attachment.
+    
+    Args:
+        session_id: ID of the chat session
+        current_user: Authenticated user
+        db: Database session
+        
+    Returns:
+        List of MessageWithAttachmentsResponse objects with full attachment details
+        
+    Raises:
+        HTTPException 403: User doesn't own the session
+        HTTPException 404: Session not found
+        HTTPException 500: Database error
+    """
+    try:
+        session_service = ChatSessionService(db)
+        session_service.get_session_with_ownership_check(session_id, current_user.id)
+        
+        message_service = MessageService(db)
+        messages = message_service.list_session_messages_with_attachments(session_id)
+        
+        # Transform to response format with full resource details
+        response_messages = _transform_messages_with_full_attachments(messages)
+        
+        logger.debug(f"Retrieved {len(messages)} messages with attachments for session {session_id} by user {current_user.id}")
+        return response_messages
+        
+    except ValueError as e:
+        logger.warning(f"Session {session_id} not found for message history by user {current_user.id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except PermissionError as e:
+        logger.warning(f"User {current_user.id} attempted unauthorized access to message history for session {session_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error retrieving message history with attachments for session {session_id} for user {current_user.id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve message history with attachments"
+        )
+
+
+def _transform_messages_with_attachments(messages):
+    """Transform message models to MessageResponse format with basic attachment details."""
+    response_messages = []
+    for message in messages:
+        message_dict = {
+            "id": message.id,
+            "session_id": message.session_id,
+            "role": message.role,
+            "modality": message.modality,
+            "content": message.content,
+            "grade_level": message.grade_level,
+            "audio_url": message.audio_url,
+            "transcript": message.transcript,
+            "audio_duration_sec": message.audio_duration_sec,
+            "created_at": message.created_at,
+            "attachments": _transform_attachments(message.attachments)
+        }
+        logger.info("message attachments exists %d", len(message.attachments) )
+        response_messages.append(message_dict)
+    return response_messages
+
+
+def _transform_messages_with_full_attachments(messages):
+    """Transform message models to MessageWithAttachmentsResponse format with full resource details."""
+    response_messages = []
+    for message in messages:
+        message_dict = {
+            "id": message.id,
+            "session_id": message.session_id,
+            "role": message.role,
+            "modality": message.modality,
+            "content": message.content,
+            "grade_level": message.grade_level,
+            "audio_url": message.audio_url,
+            "transcript": message.transcript,
+            "audio_duration_sec": message.audio_duration_sec,
+            "created_at": message.created_at,
+            "attachments": _transform_attachments_with_resource_details(message.attachments)
+        }
+        logger.info("message attachments exists %d", len(message.attachments) )
+        response_messages.append(message_dict)
+    return response_messages
+
+
+def _transform_attachments_with_resource_details(attachments):
+    """Transform attachment models to include full resource details for MessageAttachmentWithResource."""
+    return [
+        {
+            "id": attachment.id,
+            "message_id": attachment.message_id,
+            "resource_id": attachment.resource_id,
+            "display_name": attachment.display_name,
+            "attachment_type": attachment.attachment_type,
+            "created_at": attachment.created_at,
+            "resource_filename": getattr(attachment.resource, "original_filename", None) if hasattr(attachment, "resource") else None,
+            "resource_mime_type": getattr(attachment.resource, "mime_type", None) if hasattr(attachment, "resource") else None,
+            "resource_size_bytes": getattr(attachment.resource, "size_bytes", None) if hasattr(attachment, "resource") else None,
+            "resource_storage_path": getattr(attachment.resource, "storage_path", None) if hasattr(attachment, "resource") else None,
+        }
+        for attachment in attachments
+    ]
+
+
+def _transform_attachments(attachments):
+    """Transform attachment models to AttachmentResponse format for MessageResponse."""
+    from app.core.config import settings
+    BASE_FILE_STORAGE_PATH = settings.BASE_FILE_STORAGE_PATH
+
+    results = []
+
+    for attachment in attachments:
+        resource = getattr(attachment, "resource", None)
+
+        storage_path = getattr(resource, "storage_path", None) if resource else None
+
+        if storage_path:
+            # always convert to string
+            storage_path = str(storage_path)
+
+            # normalize Windows → URL format
+            storage_path = storage_path.replace("\\", "/").lstrip("/")
+
+            url = f"{BASE_FILE_STORAGE_PATH}{storage_path}"
+        else:
+            url = ""
+
+        results.append({
+            "id": attachment.id,
+            "url": url,
+            "name": (
+                attachment.display_name
+                or getattr(resource, "original_filename", "attachment")
+                if resource else "attachment"
+            ),
+            "mime_type": getattr(resource, "mime_type", "application/octet-stream")
+                if resource else "application/octet-stream",
+        })
+
+    return results
+    
 
 
 @router.get("/{message_id}/sources", response_model=List[MessageContextChunkResponse])
