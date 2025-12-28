@@ -8,6 +8,7 @@ from app.schemas.message import (
     MessageDetachRequest,
     MessageDetail,
     MessageResponse,
+    MessageCreateResponse,
     MessageWithAttachmentsResponse,
     MessageAttachRequest,
     MessageAttachmentResponse,
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/sessions/{session_id}", response_model=MessageResponse)
+@router.post("/sessions/{session_id}", response_model=MessageCreateResponse)
 def create_user_message(
     session_id: str,
     payload: MessageCreate,

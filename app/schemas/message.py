@@ -73,6 +73,21 @@ class MessageResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class MessageCreateResponse(BaseModel):
+    id: UUID
+    session_id: UUID
+    role: MessageRole
+    modality: MessageModality
+    content: Optional[str] = None
+    grade_level: Optional[GradeLevel] = None
+    audio_url: Optional[str] = None
+    transcript: Optional[str] = None
+    audio_duration_sec: Optional[Decimal] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
 
 # Message Attachment Schemas
 class MessageAttachmentCreate(BaseModel):
