@@ -1,7 +1,7 @@
 # app/api/v1/router.py
-
 from fastapi import APIRouter
 
+from app.components.voice_qa.routers.voice_router import router as voice_router
 from app.routers import (
     chat_sessions,
     messages,
@@ -45,8 +45,5 @@ api_router.include_router(voice_router, prefix="/voice", tags=["Voice Q&A"])
 # # Evaluation
 # api_router.include_router(evaluation_router, prefix="/evaluation", tags=["Evaluation"])
 
-# # Text Q&A + Summary
-# api_router.include_router(qa_router, prefix="/text", tags=["Text Q&A & Summary"])
 
-# # Voice Q&A
-# api_router.include_router(voice_router, prefix="/voice", tags=["Voice Q&A"])
+print("✓ API Router configured with all components")

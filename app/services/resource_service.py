@@ -1,3 +1,4 @@
+#  app/services/resource_service.py
 import os
 from pathlib import Path
 from typing import Optional, List, Iterable, Set
@@ -211,3 +212,7 @@ class ResourceService:
             query_embedding=query_embedding,
             top_k=top_k
         )
+
+    def list_resources_by_ids(self, resource_ids: List[UUID]) -> List:
+        """List resources by their IDs."""
+        return self.repository.list_resources_by_ids(resource_ids)
