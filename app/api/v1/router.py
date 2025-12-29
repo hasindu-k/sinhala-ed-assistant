@@ -35,7 +35,6 @@ api_router.include_router(rubrics.router, prefix="/rubrics", tags=["Rubrics"])
 api_router.include_router(users.router, prefix="/users", tags=["Users"]) 
 api_router.include_router(auth.router, prefix="/auth", tags=["Auth"]) 
 api_router.include_router(voice_router, prefix="/voice", tags=["Voice Q&A"])
-
 # Document Processing
 # api_router.include_router(ocr_router, prefix="/document", tags=["Document Processing"])
 # api_router.include_router(

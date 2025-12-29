@@ -47,6 +47,8 @@ class ResourceService:
         filename: str,
         content_type: str,
         content: bytes,
+        *,
+        commit: bool = True,
     ):
         """Handle complete file upload process with validation."""
         # Validate
@@ -67,6 +69,7 @@ class ResourceService:
                 mime_type=content_type,
                 size_bytes=len(content),
                 source_type="user_upload",
+                commit=commit,
             )
             return resource
         except Exception as e:

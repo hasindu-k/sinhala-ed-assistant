@@ -23,6 +23,8 @@ class ResourceRepository:
         size_bytes: Optional[int],
         source_type: Optional[str] = None,
         language: Optional[str] = None,
+        *,
+        commit: bool = True,
     ) -> ResourceFile:
         res = ResourceFile(
             user_id=user_id,
@@ -34,8 +36,12 @@ class ResourceRepository:
             language=language,
         )
         self.db.add(res)
-        self.db.commit()
-        self.db.refresh(res)
+        if commit:
+            self.db.commit()
+            self.db.refresh(res)
+        else:
+            # Ensure PK is generated within the current transaction
+            self.db.flush()
         return res
 
     def get_resource(self, resource_id: UUID) -> Optional[ResourceFile]:

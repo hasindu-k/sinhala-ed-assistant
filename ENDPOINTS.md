@@ -342,6 +342,26 @@ GET /api/resources/{resource_id}
 
 ---
 
+### View a resource (inline; protected)
+
+```http
+GET /api/v1/resources/{resource_id}/view
+```
+
+Displays the file inline in the browser for supported MIME types (PDF, images, audio). Requires authentication and ownership.
+
+---
+
+### Download a resource (protected)
+
+```http
+GET /api/v1/resources/{resource_id}/download
+```
+
+Downloads the file with the original filename. Requires authentication and ownership.
+
+---
+
 # 5️⃣ UTILITY / EXPLAINABILITY ENDPOINTS
 
 ---

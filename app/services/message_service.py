@@ -124,6 +124,10 @@ class MessageService:
     def list_session_messages(self, session_id: UUID) -> List:
         return self.repository.list_session_messages(session_id)
     
+    def list_session_messages_with_attachments(self, session_id: UUID) -> List:
+        """List messages with attachments and resource details."""
+        return self.repository.list_session_messages_with_attachments(session_id)
+    
     def get_message(self, message_id: UUID) -> Optional[Message]:
         """Get a single message by ID."""
         return self.db.query(Message).filter(Message.id == message_id).first()
