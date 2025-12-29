@@ -1,10 +1,11 @@
 import logging
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
+from fastapi.responses import FileResponse
+import os
 from sqlalchemy.orm import Session
 from uuid import UUID
 from app.schemas.resource import (
     ResourceFileResponse,
-    ResourceFileCreate,
     ResourceFileUpdate,
     ResourceUploadResponse,
     ResourceProcessResponse
@@ -75,6 +76,101 @@ async def upload_resource(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to upload resource"
+        )
+
+from app.utils.file_validation import validate_files
+@router.post("/upload/batch", response_model=List[ResourceUploadResponse])
+async def upload_resources(
+    files: List[UploadFile] = Depends(validate_files),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Upload multiple resource files (PDF, image, audio).
+
+    Args:
+        files: Uploaded files
+        current_user: Authenticated user
+        db: Database session
+        
+    Returns:
+        List of ResourceUploadResponse with upload details
+        
+    Raises:
+        HTTPException 400: Invalid file(s) or empty payload
+        HTTPException 500: File storage or database error
+    """
+    created_paths: List[str] = []
+    try:
+        if not files:
+            raise ValueError("No files uploaded")
+
+        resource_service = ResourceService(db)
+        responses: List[ResourceUploadResponse] = []
+
+        # Insert all records, then commit once at the end
+        for file in files:
+            content = await file.read()
+            resource = resource_service.upload_resource_from_file(
+                user_id=current_user.id,
+                filename=file.filename,
+                content_type=file.content_type,
+                content=content,
+                commit=False,  # defer commit until all succeed
+            )
+
+            # Track file path for cleanup if batch fails later
+            if getattr(resource, "storage_path", None):
+                created_paths.append(resource.storage_path)
+
+            responses.append(
+                ResourceUploadResponse(
+                    resource_id=resource.id,
+                    filename=file.filename,
+                    size_bytes=len(content),
+                    mime_type=file.content_type,
+                )
+            )
+
+        # Commit everything atomically
+        db.commit()
+
+        logger.info(f"{len(responses)} resources uploaded by user {current_user.id}")
+        return responses
+        
+    except ValueError as e:
+        # Roll back any pending DB work, then cleanup files
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        for p in created_paths:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        logger.warning(f"Validation error uploading resources: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        # Roll back any pending DB work, then cleanup files
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        for p in created_paths:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        logger.error(f"Error uploading resources for user {current_user.id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upload resources"
         )
 
 
@@ -360,3 +456,84 @@ def process_resource(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process resource"
         )
+
+
+@router.get("/{resource_id}/download")
+def download_resource(
+    resource_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Download the resource file (protected; owner-only).
+
+    Sets Content-Disposition to attachment with the original filename.
+    """
+    try:
+        resource_service = ResourceService(db)
+        resource = resource_service.get_resource_with_ownership_check(resource_id, current_user.id)
+
+        if not resource.storage_path or not os.path.exists(resource.storage_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="The requested file no longer exists"
+            )
+
+        filename = resource.original_filename or os.path.basename(resource.storage_path)
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+        return FileResponse(
+            path=resource.storage_path,
+            media_type=resource.mime_type or "application/octet-stream",
+            headers=headers,
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to download resource")
+
+
+@router.get("/{resource_id}/view")
+def view_resource(
+    resource_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    View the resource file inline (protected; owner-only).
+
+    Sets Content-Disposition to inline with the original filename to
+    allow browser rendering for supported MIME types (e.g., PDFs, images, audio).
+    """
+    try:
+        resource_service = ResourceService(db)
+        resource = resource_service.get_resource_with_ownership_check(resource_id, current_user.id)
+
+        if not resource.storage_path or not os.path.exists(resource.storage_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="The requested file no longer exists"
+            )
+
+        filename = resource.original_filename or os.path.basename(resource.storage_path)
+        headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+
+        return FileResponse(
+            path=resource.storage_path,
+            media_type=resource.mime_type or "application/octet-stream",
+            headers=headers,
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to view resource")
