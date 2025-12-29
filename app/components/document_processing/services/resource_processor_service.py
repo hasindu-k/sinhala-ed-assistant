@@ -71,6 +71,16 @@ class ResourceProcessorService:
             logger.error(f"Failed to create chunks for resource {resource_id}: {e}")
             raise ValueError(f"Chunking failed: {e}")
 
+    def _generate_pseudo_questions_for_chunk(self, text: str) -> str:
+        sentences = [s.strip() for s in text.split(".") if len(s.strip()) > 20]
+        questions = []
+
+        for s in sentences[:3]:
+            questions.append(f"{s} යනු කුමක්ද?")
+            questions.append(f"{s} ගැන පැහැදිලි කරන්න.")
+
+        return "\n".join(questions[:5])
+
     def _save_chunks_to_db(self, chunks: List[Dict[str, Any]], resource_id: str):
         """Persist chunks with embeddings to database."""
         for chunk_data in chunks:
@@ -85,7 +95,12 @@ class ResourceProcessorService:
                 embedding_model=chunk_data.get("embedding_model"),
                 start_char=chunk_data.get("start_char"),
                 end_char=chunk_data.get("end_char"),
+                pseudo_questions=(
+                    self._generate_pseudo_questions_for_chunk(content)
+                    if content else None
+                ),
             )
+
             self.db.add(chunk)
         
         self.db.commit()

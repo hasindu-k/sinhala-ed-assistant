@@ -28,6 +28,12 @@ class HybridRetrievalService:
         """Simple Sinhala-friendly tokenizer: keeps words, removes punctuation."""
         return re.findall(r"[අ-෴]+", text)
 
+    def _bm25_text(self, chunk) -> list[str]:
+        text = chunk.content or ""
+        if chunk.pseudo_questions:
+            text = text + "\n" + chunk.pseudo_questions
+        return self._tokenize_sinhala(text)
+
     def retrieve(
         self,
         resource_ids: List[UUID],
@@ -80,27 +86,30 @@ class HybridRetrievalService:
         # 3. BM25 fallback using chunk content
         # -----------------------------
         if not top_resource_ids and resources_without_emb:
-            # Get all chunks belonging to resources without embeddings
             resource_ids_wo_emb = [r.id for r in resources_without_emb]
             chunks = self.chunk_service.get_chunks_by_resource(resource_ids_wo_emb)
 
             if chunks:
-                corpus = [self._tokenize_sinhala(ch.content) for ch in chunks]
+                corpus = [self._bm25_text(ch) for ch in chunks]
                 bm25 = BM25Okapi(corpus)
 
                 query_tokens = self._tokenize_sinhala(query)
                 scores = bm25.get_scores(query_tokens)
 
-                # Rank chunks by BM25 score
                 ranked_chunks = sorted(
                     zip(chunks, scores),
                     key=lambda x: x[1],
                     reverse=True
                 )[:bm25_k]
 
-                # Collect unique resource IDs from top-ranked chunks
                 top_resource_ids.extend(
                     list({ch.resource_id for ch, _ in ranked_chunks})
+                )
+
+                # Debug log (safe)
+                logger.info(
+                    "BM25 TEXT SAMPLE:\n%s",
+                    " ".join(self._bm25_text(chunks[0]))
                 )
 
         if not top_resource_ids:
@@ -116,7 +125,7 @@ class HybridRetrievalService:
             return []
         
         logger.info("Retrieved %d chunks from top resources", len(top_chunks))
-
+ 
         # -----------------------------
         # 5. Dense re-ranking on chunk embeddings
         # -----------------------------
