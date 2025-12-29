@@ -77,15 +77,31 @@ class HybridRetrievalService:
             )
 
         # -----------------------------
-        # 3. BM25 fallback for documents without embeddings
+        # 3. BM25 fallback using chunk content
         # -----------------------------
         if not top_resource_ids and resources_without_emb:
-            corpus = [self._tokenize_sinhala(r.original_filename or "") for r in resources_without_emb]
-            bm25 = BM25Okapi(corpus)
-            query_tokens = self._tokenize_sinhala(query)
-            scores = bm25.get_scores(query_tokens)
-            top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:bm25_k]
-            top_resource_ids.extend([resources_without_emb[i].id for i in top_indices])
+            # Get all chunks belonging to resources without embeddings
+            resource_ids_wo_emb = [r.id for r in resources_without_emb]
+            chunks = self.chunk_service.get_chunks_by_resource(resource_ids_wo_emb)
+
+            if chunks:
+                corpus = [self._tokenize_sinhala(ch.content) for ch in chunks]
+                bm25 = BM25Okapi(corpus)
+
+                query_tokens = self._tokenize_sinhala(query)
+                scores = bm25.get_scores(query_tokens)
+
+                # Rank chunks by BM25 score
+                ranked_chunks = sorted(
+                    zip(chunks, scores),
+                    key=lambda x: x[1],
+                    reverse=True
+                )[:bm25_k]
+
+                # Collect unique resource IDs from top-ranked chunks
+                top_resource_ids.extend(
+                    list({ch.resource_id for ch, _ in ranked_chunks})
+                )
 
         if not top_resource_ids:
             return []
