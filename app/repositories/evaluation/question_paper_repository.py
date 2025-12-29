@@ -102,38 +102,67 @@ class QuestionPaperRepository:
         ).order_by(SubQuestion.label).all()
     
 
-def create_structured_questions(self, question_paper_id: UUID, structured_data: Dict):
+    def create_structured_questions(
+        self,
+        question_paper_id: UUID,
+        structured_data: Dict
+    ) -> List[Question]:
+        """
+        Create questions and sub-questions from structured data.
+        """
+        created_questions = []
+        
+        for q_num, q_data in structured_data.items():
+            # Handle options for MCQs by appending to text if present
+            q_text = q_data.get("text", "")
+            if "options" in q_data and isinstance(q_data["options"], list):
+                options_text = "\n".join(q_data["options"])
+                q_text = f"{q_text}\n\nOptions:\n{options_text}"
+            
+            # Create main question
+            question = self.create_question(
+                question_paper_id=question_paper_id,
+                question_number=str(q_num),
+                question_text=q_text,
+                max_marks=q_data.get("marks"),
+                shared_stem=q_data.get("shared_stem"),
+                inherits_shared_stem_from=str(q_data.get("inherits_shared_stem_from")) if q_data.get("inherits_shared_stem_from") else None
+            )
+            created_questions.append(question)
+            
+            # Handle sub-questions
+            if "sub_questions" in q_data and isinstance(q_data["sub_questions"], dict):
+                self._create_recursive_sub_questions(
+                    question.id, 
+                    q_data["sub_questions"]
+                )
+                
+        return created_questions
 
-    def create_sub_tree(question_id, node, parent_id=None):
-        sub = SubQuestion(
-            question_id=question_id,
-            parent_sub_question_id=parent_id,
-            label=node.get("label"),
-            sub_question_text=node.get("text"),
-            max_marks=node.get("marks"),
-        )
-        self.db.add(sub)
-        self.db.flush()
+    def _create_recursive_sub_questions(
+        self, 
+        question_id: UUID, 
+        sub_questions_data: Dict, 
+        parent_sub_question_id: Optional[UUID] = None
+    ):
+        for label, sub_data in sub_questions_data.items():
+            # Create sub-question
+            sub_q = self.create_sub_question(
+                question_id=question_id,
+                label=str(label),
+                sub_question_text=sub_data.get("text", ""),
+                max_marks=sub_data.get("marks"),
+                parent_sub_question_id=parent_sub_question_id
+            )
+            
+            # Check for nested sub-questions (if any)
+            if "sub_questions" in sub_data and isinstance(sub_data["sub_questions"], dict):
+                 self._create_recursive_sub_questions(
+                    question_id,
+                    sub_data["sub_questions"],
+                    parent_sub_question_id=sub_q.id
+                )
 
-        for child in node.get("children", {}).values():
-            create_sub_tree(question_id, child, sub.id)
-
-    for q_num, q_data in structured_data.items():
-        question = Question(
-            question_paper_id=question_paper_id,
-            question_number=q_num,
-            question_text=q_data.get("text"),
-            max_marks=q_data.get("marks"),
-        )
-        self.db.add(question)
-        self.db.flush()
-
-        for child in q_data.get("children", {}).values():
-            create_sub_tree(question.id, child)
-
-    self.db.commit()
-
-    
     def get_question_paper_with_questions(
         self,
         question_paper_id: UUID

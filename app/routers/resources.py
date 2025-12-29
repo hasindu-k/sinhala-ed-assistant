@@ -1,7 +1,8 @@
 # app/routers/resources.py
 
 import logging
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
+from typing import List, Optional
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from uuid import UUID
 from app.schemas.resource import (
@@ -15,10 +16,10 @@ from app.schemas.resource import (
 from app.schemas.resource_chunk import ResourceChunkResponse
 from app.services.resource_service import ResourceService
 from app.services.resource_chunk_service import ResourceChunkService
+from app.services.evaluation.user_context_service import UserContextService
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
-from typing import List
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,6 +28,7 @@ router = APIRouter()
 @router.post("/upload", response_model=ResourceBulkUploadResponse)
 async def upload_resource(
     files: List[UploadFile] = File(...),
+    resource_type: Optional[str] = Query(None, enum=["syllabus", "question_paper"]),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -35,6 +37,7 @@ async def upload_resource(
     
     Args:
         files: List of uploaded files
+        resource_type: Optional type of resource to set as active context (syllabus, question_paper)
         current_user: Authenticated user
         db: Database session
         
@@ -61,6 +64,14 @@ async def upload_resource(
                 content_type=file.content_type,
                 content=content,
             )
+            
+            # Update user context if resource_type is provided
+            if resource_type:
+                context_service = UserContextService(db)
+                if resource_type == "syllabus":
+                    context_service.update_syllabus(user_id, resource.id)
+                elif resource_type == "question_paper":
+                    context_service.update_question_paper(user_id, resource.id)
             
             upload_results.append(ResourceUploadResponse(
                 resource_id=resource.id,

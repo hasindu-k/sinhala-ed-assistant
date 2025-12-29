@@ -20,14 +20,67 @@ from app.schemas.evaluation import (
     AnswerDocumentResponse,
     QuestionResponse,
     EvaluationResultDetail,
+    UserEvaluationContextResponse,
+    StartEvaluationRequest,
 )
 from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
+from app.services.evaluation.user_context_service import UserContextService
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.post("/context/paper-config", response_model=UserEvaluationContextResponse)
+def update_active_paper_config(
+    config_data: List[dict],
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update the active paper configuration for the user.
+    """
+    service = UserContextService(db)
+    service.update_paper_config(current_user.id, config_data)
+    return service.get_context_details(current_user.id)
+
+
+@router.post("/start", response_model=EvaluationSessionResponse)
+def start_evaluation(
+    payload: StartEvaluationRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Start a new evaluation session using the active context and provided answer scripts.
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        return service.start_evaluation_session(
+            chat_session_id=payload.chat_session_id,
+            answer_resource_ids=payload.answer_resource_ids,
+            user_id=current_user.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to start evaluation: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start evaluation")
+
+
+@router.get("/context", response_model=UserEvaluationContextResponse)
+def get_user_evaluation_context(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the current active evaluation context (Syllabus, Question Paper, Rubric) for the user.
+    """
+    service = UserContextService(db)
+    return service.get_context_details(current_user.id)
+
 
 
 @router.post("/sessions", response_model=EvaluationSessionResponse)
@@ -323,3 +376,25 @@ def get_evaluation_result(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.post("/sessions/{session_id}/parse-question-paper")
+def parse_question_paper(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Parse the question paper for the given session and save the structure.
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        qp = service.parse_question_paper(session_id, current_user.id)
+        return {"message": "Question paper parsed successfully", "question_paper_id": qp.id}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to parse question paper: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to parse question paper")

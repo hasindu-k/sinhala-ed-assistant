@@ -1,7 +1,7 @@
 # app/schemas/evaluation.py
 
 from pydantic import BaseModel, Field
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from uuid import UUID
 from datetime import datetime
 from decimal import Decimal
@@ -47,6 +47,23 @@ class EvaluationSessionResponse(BaseModel):
 class EvaluationResourceAttach(BaseModel):
     resource_id: UUID
     role: EvaluationResourceRole
+
+
+from app.schemas.resource import ResourceFileResponse
+from app.schemas.rubric import RubricResponse
+
+class UserEvaluationContextResponse(BaseModel):
+    syllabus: Optional[ResourceFileResponse] = None
+    question_paper: Optional[ResourceFileResponse] = None
+    rubric: Optional[RubricResponse] = None
+    paper_config: Optional[List[Dict]] = None
+
+
+class StartEvaluationRequest(BaseModel):
+    chat_session_id: UUID
+    answer_resource_ids: List[UUID]
+
+
 
 
 class EvaluationResourceResponse(BaseModel):

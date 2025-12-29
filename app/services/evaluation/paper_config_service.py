@@ -13,6 +13,19 @@ class PaperConfigService:
     def __init__(self, db: Session):
         self.repository = EvaluationSessionRepository(db)
 
+    def create_config(self, evaluation_session_id: UUID, payload):
+        """Wrapper for save_config using Pydantic model."""
+        return self.save_config(
+            evaluation_session_id=evaluation_session_id,
+            paper_part=payload.paper_part,
+            subject_name=payload.subject_name,
+            medium=payload.medium,
+            weightage=payload.weightage,
+            total_main_questions=payload.total_main_questions,
+            selection_rules=payload.selection_rules,
+            is_confirmed=True # Auto-confirm when applying from active context
+        )
+
     def save_config(
         self,
         evaluation_session_id: UUID,

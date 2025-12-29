@@ -30,6 +30,7 @@ class EvaluationWorkflowService:
     """Orchestrates evaluation-related operations while keeping routers thin."""
 
     def __init__(self, db: Session):
+        self.db = db
         self.sessions = EvaluationSessionService(db)
         self.resources = EvaluationResourceService(db)
         self.question_papers = QuestionPaperService(db)
@@ -65,10 +66,77 @@ class EvaluationWorkflowService:
 
     def create_session(self, payload: EvaluationSessionCreate, user_id: UUID):
         self._ensure_chat_session_owner(payload.session_id, user_id)
-        return self.sessions.create_evaluation_session(
+        
+        # Get active context
+        from app.services.evaluation.user_context_service import UserContextService
+        context_service = UserContextService(self.db)
+        context = context_service.get_or_create_context(user_id)
+        
+        rubric_id = payload.rubric_id or context.active_rubric_id
+        
+        session = self.sessions.create_evaluation_session(
             session_id=payload.session_id,
-            rubric_id=payload.rubric_id,
+            rubric_id=rubric_id,
         )
+        
+        # Attach active syllabus and QP if available
+        if context.active_syllabus_id:
+            self.resources.attach_resource(
+                evaluation_session_id=session.id,
+                resource_id=context.active_syllabus_id,
+                role="syllabus"
+            )
+            
+        if context.active_question_paper_id:
+            self.resources.attach_resource(
+                evaluation_session_id=session.id,
+                resource_id=context.active_question_paper_id,
+                role="question_paper"
+            )
+            
+        return session
+
+    def start_evaluation_session(self, chat_session_id: UUID, answer_resource_ids: List[UUID], user_id: UUID):
+        """
+        Creates a session, attaches active context + answers, and starts processing.
+        """
+        # 1. Create Session (reuses logic to attach Rubric, Syllabus, QP)
+        payload = EvaluationSessionCreate(session_id=chat_session_id)
+        session = self.create_session(payload, user_id)
+        
+        # 2. Get Active Context for Paper Config
+        from app.services.evaluation.user_context_service import UserContextService
+        context_service = UserContextService(self.db)
+        context = context_service.get_or_create_context(user_id)
+        
+        # 3. Apply Paper Config if exists
+        if context.active_paper_config:
+            for config_item in context.active_paper_config:
+                # Convert dict to Create schema
+                # Assuming config_item matches PaperConfigCreate fields
+                try:
+                    config_create = PaperConfigCreate(**config_item)
+                    self.paper_configs.create_config(session.id, config_create)
+                except Exception as e:
+                    logger.error(f"Failed to apply paper config item: {e}")
+                    # Continue or raise? For now continue but log
+        
+        # 4. Attach Answer Scripts
+        for resource_id in answer_resource_ids:
+            self._ensure_resource_owner(resource_id, user_id)
+            self.resources.attach_resource(
+                evaluation_session_id=session.id,
+                resource_id=resource_id,
+                role="answer_script"
+            )
+            
+        # 5. Update Status to Processing
+        self.sessions.update_evaluation_session(session.id, status="processing")
+        
+        # 6. Trigger Async Processing (Placeholder for now)
+        # TODO: Enqueue background task for OCR and Evaluation
+        
+        return session
 
     def list_sessions(self, user_id: UUID, session_id: Optional[UUID] = None) -> List:
         if session_id:
@@ -340,6 +408,64 @@ class EvaluationWorkflowService:
             answer_document_id=answer_id,
             parsed_answers=leaf_answers  # This would need to be added to the service
         )
+
+    def parse_question_paper(self, session_id: UUID, user_id: UUID):
+        """
+        Parse the question paper for the given session and save the structure.
+        """
+        # Verify ownership and get session
+        eval_session = self._get_eval_session_with_owner_check(session_id, user_id)
+        
+        # Find the question paper resource
+        resources = self.resources.get_resources_by_role(eval_session.id, "question_paper")
+        if not resources:
+            raise ValueError("No question paper attached to this session")
+        
+        # Use the first one found
+        qp_resource = resources[0]
+            
+        # Get the resource file
+        resource = self.resource_files.get_resource(qp_resource.resource_id)
+        if not resource:
+            raise ValueError("Question paper resource file not found")
+            
+        # Get text
+        text = resource.extracted_text
+        if not text:
+            # Trigger processing if text is missing
+            self.resource_files.process_resource(resource.id, user_id)
+            # Refresh resource
+            self.db.refresh(resource)
+            text = resource.extracted_text
+            
+        if not text:
+             raise ValueError("Failed to extract text from question paper")
+
+        # Parse text
+        structured_data = extract_complete_exam_data(text)
+        
+        # Create QuestionPaper entry
+        qp = self.question_papers.create_question_paper(
+            evaluation_session_id=eval_session.id,
+            resource_id=resource.id,
+            extracted_text=text
+        )
+        
+        # Prepare questions data with prefixes to avoid collision
+        questions_data = {}
+        
+        if structured_data.get("Paper_I") and structured_data["Paper_I"].get("questions"):
+            for q_num, q_data in structured_data["Paper_I"]["questions"].items():
+                questions_data[f"I-{q_num}"] = q_data
+                
+        if structured_data.get("Paper_II") and structured_data["Paper_II"].get("questions"):
+            for q_num, q_data in structured_data["Paper_II"]["questions"].items():
+                questions_data[f"II-{q_num}"] = q_data
+                
+        # Save questions
+        self.question_papers.create_structured_questions(qp.id, questions_data)
+        
+        return qp
 
     def get_evaluation_result(self, answer_id: UUID, user_id: UUID):
         self._ensure_answer_owner(answer_id, user_id)

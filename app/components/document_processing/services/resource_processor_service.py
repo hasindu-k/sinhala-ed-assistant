@@ -156,7 +156,10 @@ class ResourceProcessorService:
         if document_embedding:
             resource.document_embedding = document_embedding
             resource.embedding_model = EMBED_MODEL
-            self.db.commit()
+        
+        # Save extracted text
+        resource.extracted_text = extracted_text
+        self.db.commit()
 
         # Create chunks with embeddings (for detailed retrieval)
         chunks = self._create_chunks(extracted_text, str(resource.id))
