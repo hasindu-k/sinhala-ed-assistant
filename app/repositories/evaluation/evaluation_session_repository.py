@@ -111,7 +111,8 @@ class EvaluationSessionRepository:
     
     def create_paper_config(
         self,
-        evaluation_session_id: UUID,
+        chat_session_id: Optional[UUID] = None,
+        evaluation_session_id: Optional[UUID] = None,
         paper_part: Optional[str] = None,
         subject_name: Optional[str] = None,
         medium: Optional[str] = None,
@@ -120,8 +121,9 @@ class EvaluationSessionRepository:
         selection_rules: Optional[dict] = None,
         is_confirmed: Optional[bool] = False,
     ) -> PaperConfig:
-        """Create paper configuration for an evaluation session."""
+        """Create paper configuration for an evaluation session or chat session."""
         paper_config = PaperConfig(
+            chat_session_id=chat_session_id,
             evaluation_session_id=evaluation_session_id,
             paper_part=paper_part,
             subject_name=subject_name,
@@ -138,13 +140,20 @@ class EvaluationSessionRepository:
     
     def get_paper_config(
         self,
-        evaluation_session_id: UUID,
+        evaluation_session_id: Optional[UUID] = None,
+        chat_session_id: Optional[UUID] = None,
         paper_part: Optional[str] = None,
     ) -> Optional[PaperConfig]:
-        """Get paper configuration for an evaluation session (optionally by paper)."""
-        query = self.db.query(PaperConfig).filter(
-            PaperConfig.evaluation_session_id == evaluation_session_id
-        )
+        """Get paper configuration for an evaluation session or chat session (optionally by paper)."""
+        query = self.db.query(PaperConfig)
+        
+        if evaluation_session_id:
+            query = query.filter(PaperConfig.evaluation_session_id == evaluation_session_id)
+        elif chat_session_id:
+            query = query.filter(PaperConfig.chat_session_id == chat_session_id)
+        else:
+            return None
+            
         if paper_part is not None:
             query = query.filter(PaperConfig.paper_part == paper_part)
         return query.first()
@@ -178,7 +187,8 @@ class EvaluationSessionRepository:
 
     def update_paper_config(
         self,
-        evaluation_session_id: UUID,
+        evaluation_session_id: Optional[UUID] = None,
+        chat_session_id: Optional[UUID] = None,
         paper_part: Optional[str] = None,
         subject_name: Optional[str] = None,
         medium: Optional[str] = None,
@@ -188,7 +198,7 @@ class EvaluationSessionRepository:
         is_confirmed: Optional[bool] = None,
     ) -> Optional[PaperConfig]:
         """Update paper configuration."""
-        config = self.get_paper_config(evaluation_session_id, paper_part)
+        config = self.get_paper_config(evaluation_session_id, chat_session_id, paper_part)
         if config:
             self._apply_paper_config_updates(
                 config,

@@ -1,3 +1,5 @@
+# app/shared/models/answer_evaluation.py
+
 import uuid
 from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, Numeric
 from sqlalchemy.dialects.postgresql import UUID

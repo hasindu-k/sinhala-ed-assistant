@@ -1,3 +1,5 @@
+# app/schemas/resource.py
+
 from pydantic import BaseModel, Field
 from typing import Optional
 from uuid import UUID
@@ -45,6 +47,14 @@ class ResourceUploadResponse(BaseModel):
     filename: str
     size_bytes: int
     mime_type: str
+
+
+class ResourceBulkUploadResponse(BaseModel):
+    uploads: list[ResourceUploadResponse]
+
+
+class ResourceProcessRequest(BaseModel):
+    resource_id: UUID
 
 
 class ResourceProcessResponse(BaseModel):

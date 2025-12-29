@@ -37,20 +37,35 @@ class ResourceProcessorService:
         Returns:
             (extracted_text, page_count)
         """
-        # Import OCR utilities directly
+        # Import utilities
         from app.components.document_processing.utils.file_operations import convert_file_to_images
-        from app.components.document_processing.services.text_extraction import process_ocr_for_images
+        from app.components.document_processing.services.text_extraction import extract_text_from_pdf, process_ocr_for_images
         from app.components.document_processing.utils.text_cleaner import basic_clean
         
         file_ext = Path(file_path).suffix.lower()
         
         try:
-            # Convert to images for OCR processing
-            images = convert_file_to_images(file_path, file_ext.lstrip('.'))
-            extracted_text, page_count = process_ocr_for_images(images)
-            cleaned_text = basic_clean(extracted_text)
-            
-            return cleaned_text, page_count
+            if file_ext == '.pdf':
+                # Try direct text extraction first
+                try:
+                    extracted_text, page_count = extract_text_from_pdf(file_path)
+                    if extracted_text.strip():  # If we got meaningful text
+                        cleaned_text = basic_clean(extracted_text)
+                        return cleaned_text, page_count
+                except Exception as e:
+                    logger.warning(f"Direct PDF text extraction failed, falling back to OCR: {e}")
+                
+                # Fallback to OCR
+                images = convert_file_to_images(file_path, 'pdf')
+                extracted_text, page_count = process_ocr_for_images(images)
+                cleaned_text = basic_clean(extracted_text)
+                return cleaned_text, page_count
+            else:
+                # For images, use OCR
+                images = convert_file_to_images(file_path, file_ext.lstrip('.'))
+                extracted_text, page_count = process_ocr_for_images(images)
+                cleaned_text = basic_clean(extracted_text)
+                return cleaned_text, page_count
         except Exception as e:
             logger.error(f"Failed to extract text from {file_path}: {e}")
             raise ValueError(f"Text extraction failed: {e}")
@@ -141,7 +156,10 @@ class ResourceProcessorService:
         if document_embedding:
             resource.document_embedding = document_embedding
             resource.embedding_model = EMBED_MODEL
-            self.db.commit()
+        
+        # Save extracted text
+        resource.extracted_text = extracted_text
+        self.db.commit()
 
         # Create chunks with embeddings (for detailed retrieval)
         chunks = self._create_chunks(extracted_text, str(resource.id))

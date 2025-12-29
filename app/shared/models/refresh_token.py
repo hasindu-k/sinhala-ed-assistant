@@ -1,3 +1,5 @@
+# app/shared/models/refresh_token.py
+
 import uuid
 from sqlalchemy import Column, String, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID

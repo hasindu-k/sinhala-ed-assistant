@@ -1,3 +1,5 @@
+# app/services/evaluation/paper_config_service.py
+
 from typing import Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -11,9 +13,24 @@ class PaperConfigService:
     def __init__(self, db: Session):
         self.repository = EvaluationSessionRepository(db)
 
+    def create_config(self, payload, evaluation_session_id: Optional[UUID] = None, chat_session_id: Optional[UUID] = None):
+        """Wrapper for save_config using Pydantic model."""
+        return self.save_config(
+            evaluation_session_id=evaluation_session_id,
+            chat_session_id=chat_session_id,
+            paper_part=payload.paper_part,
+            subject_name=payload.subject_name,
+            medium=payload.medium,
+            weightage=payload.weightage,
+            total_main_questions=payload.total_main_questions,
+            selection_rules=payload.selection_rules,
+            is_confirmed=True # Auto-confirm when applying from active context
+        )
+
     def save_config(
         self,
-        evaluation_session_id: UUID,
+        evaluation_session_id: Optional[UUID] = None,
+        chat_session_id: Optional[UUID] = None,
         paper_part: Optional[str] = None,
         subject_name: Optional[str] = None,
         medium: Optional[str] = None,
@@ -23,11 +40,12 @@ class PaperConfigService:
         is_confirmed: Optional[bool] = None,
     ):
         """Create or update paper config for a session."""
-        existing_config = self.repository.get_paper_config(evaluation_session_id, paper_part)
+        existing_config = self.repository.get_paper_config(evaluation_session_id, chat_session_id, paper_part)
 
         if existing_config:
             return self.repository.update_paper_config(
                 evaluation_session_id=evaluation_session_id,
+                chat_session_id=chat_session_id,
                 paper_part=paper_part,
                 subject_name=subject_name,
                 medium=medium,
@@ -40,6 +58,7 @@ class PaperConfigService:
         # For create, no fields are strictly required anymore (all optional)
         return self.repository.create_paper_config(
             evaluation_session_id=evaluation_session_id,
+            chat_session_id=chat_session_id,
             paper_part=paper_part,
             subject_name=subject_name,
             medium=medium,
@@ -49,13 +68,14 @@ class PaperConfigService:
             is_confirmed=is_confirmed or False,
         )
 
-    def get_config(self, evaluation_session_id: UUID):
+    def get_config(self, evaluation_session_id: Optional[UUID] = None, chat_session_id: Optional[UUID] = None):
         """Fetch paper config for a session."""
-        return self.repository.get_paper_config(evaluation_session_id)
+        return self.repository.get_paper_config(evaluation_session_id, chat_session_id)
 
     def confirm_config(
         self,
-        evaluation_session_id: UUID,
+        evaluation_session_id: Optional[UUID] = None,
+        chat_session_id: Optional[UUID] = None,
         paper_part: Optional[str] = None,
         subject_name: Optional[str] = None,
         medium: Optional[str] = None,
@@ -67,6 +87,7 @@ class PaperConfigService:
         """Update any provided fields and mark paper config as confirmed."""
         return self.repository.update_paper_config(
             evaluation_session_id=evaluation_session_id,
+            chat_session_id=chat_session_id,
             paper_part=paper_part,
             subject_name=subject_name,
             medium=medium,

@@ -1,5 +1,7 @@
+# app/schemas/evaluation.py
+
 from pydantic import BaseModel, Field
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from uuid import UUID
 from datetime import datetime
 from decimal import Decimal
@@ -47,6 +49,23 @@ class EvaluationResourceAttach(BaseModel):
     role: EvaluationResourceRole
 
 
+from app.schemas.resource import ResourceFileResponse
+from app.schemas.rubric import RubricResponse
+
+class UserEvaluationContextResponse(BaseModel):
+    syllabus: Optional[ResourceFileResponse] = None
+    question_paper: Optional[ResourceFileResponse] = None
+    rubric: Optional[RubricResponse] = None
+    paper_config: Optional[List[Dict]] = None
+
+
+class StartEvaluationRequest(BaseModel):
+    chat_session_id: UUID
+    answer_resource_ids: List[UUID]
+
+
+
+
 class EvaluationResourceResponse(BaseModel):
     id: UUID
     evaluation_session_id: UUID
@@ -79,7 +98,8 @@ class PaperConfigUpdate(BaseModel):
 
 class PaperConfigResponse(BaseModel):
     id: UUID
-    evaluation_session_id: UUID
+    chat_session_id: Optional[UUID] = None
+    evaluation_session_id: Optional[UUID] = None
     paper_part: Optional[str] = None
     subject_name: Optional[str] = None
     medium: Optional[str] = None
@@ -155,9 +175,11 @@ class SubQuestionCreate(BaseModel):
 class SubQuestionResponse(BaseModel):
     id: UUID
     question_id: UUID
+    parent_sub_question_id: Optional[UUID] = None
     label: Optional[str] = None
     sub_question_text: Optional[str] = None
     max_marks: Optional[int] = None
+    children: list['SubQuestionResponse'] = []
 
     class Config:
         from_attributes = True
