@@ -42,6 +42,15 @@ class EvaluationSessionRepository:
             EvaluationSession.session_id == session_id
         ).all()
 
+    def get_evaluation_session_ids_by_chat_session(self, session_id: UUID) -> List[UUID]:
+        """Get only IDs of evaluation sessions for a chat session."""
+        return (
+            self.db.query(EvaluationSession.id)
+            .filter(EvaluationSession.session_id == session_id)
+            .scalars()
+            .all()
+        )
+
     def list_all_sessions(self) -> List[EvaluationSession]:
         """Get all evaluation sessions."""
         return self.db.query(EvaluationSession).all()
@@ -108,6 +117,45 @@ class EvaluationSessionRepository:
         if role:
             query = query.filter(EvaluationResource.role == role)
         return query.all()
+
+    def delete_resources_by_evaluation_ids(self, evaluation_ids: List[UUID], *, commit: bool = False) -> int:
+        """Bulk delete EvaluationResource rows for given evaluation session IDs."""
+        if not evaluation_ids:
+            return 0
+        count = (
+            self.db.query(EvaluationResource)
+            .filter(EvaluationResource.evaluation_session_id.in_(evaluation_ids))
+            .delete(synchronize_session=False)
+        )
+        if commit:
+            self.db.commit()
+        return count
+
+    def delete_paper_configs_by_evaluation_ids(self, evaluation_ids: List[UUID], *, commit: bool = False) -> int:
+        """Bulk delete PaperConfig rows for given evaluation session IDs."""
+        if not evaluation_ids:
+            return 0
+        count = (
+            self.db.query(PaperConfig)
+            .filter(PaperConfig.evaluation_session_id.in_(evaluation_ids))
+            .delete(synchronize_session=False)
+        )
+        if commit:
+            self.db.commit()
+        return count
+
+    def delete_evaluation_sessions_by_ids(self, evaluation_ids: List[UUID], *, commit: bool = False) -> int:
+        """Bulk delete EvaluationSession rows by IDs."""
+        if not evaluation_ids:
+            return 0
+        count = (
+            self.db.query(EvaluationSession)
+            .filter(EvaluationSession.id.in_(evaluation_ids))
+            .delete(synchronize_session=False)
+        )
+        if commit:
+            self.db.commit()
+        return count
     
     def create_paper_config(
         self,

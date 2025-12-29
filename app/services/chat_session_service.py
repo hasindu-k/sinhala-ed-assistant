@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.repositories.chat_session_repository import ChatSessionRepository
+from app.repositories.evaluation.evaluation_session_repository import EvaluationSessionRepository
 
 
 class ChatSessionService:
@@ -86,9 +87,23 @@ class ChatSessionService:
     def delete_session(self, session_id: UUID, user_id: UUID):
         """Delete session after ownership validation."""
         session = self.get_session_with_ownership_check(session_id, user_id)
-        
-        self.db.delete(session)
-        self.db.commit()
+
+        eval_repo = EvaluationSessionRepository(self.db)
+        try:
+            # Delete dependent evaluation data first (no DB-level cascade defined)
+            eval_ids = eval_repo.get_evaluation_session_ids_by_chat_session(session_id)
+
+            if eval_ids:
+                eval_repo.delete_resources_by_evaluation_ids(eval_ids)
+                eval_repo.delete_paper_configs_by_evaluation_ids(eval_ids)
+                eval_repo.delete_evaluation_sessions_by_ids(eval_ids)
+
+            # Delete the chat session (messages are configured with cascade)
+            self.db.delete(session)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
     
     def attach_resources(self, session_id: UUID, user_id: UUID, resource_ids: List[UUID]):
         """Attach resources to session after validation."""
