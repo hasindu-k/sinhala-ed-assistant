@@ -546,7 +546,6 @@ def _transform_messages_with_attachments(messages):
             "created_at": message.created_at,
             "attachments": _transform_attachments(message.attachments)
         }
-        logger.info("message attachments exists %d", len(message.attachments) )
         response_messages.append(message_dict)
     return response_messages
 
@@ -568,7 +567,6 @@ def _transform_messages_with_full_attachments(messages):
             "created_at": message.created_at,
             "attachments": _transform_attachments_with_resource_details(message.attachments)
         }
-        logger.info("message attachments exists %d", len(message.attachments) )
         response_messages.append(message_dict)
     return response_messages
 

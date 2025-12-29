@@ -77,10 +77,10 @@ async def upload_resource(
             detail="Failed to upload resource"
         )
 
-
+from app.utils.file_validation import validate_files
 @router.post("/upload/batch", response_model=List[ResourceUploadResponse])
 async def upload_resources(
-    files: List[UploadFile] = File(...),
+    files: List[UploadFile] = Depends(validate_files),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
