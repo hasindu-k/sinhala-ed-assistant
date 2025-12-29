@@ -164,7 +164,7 @@ class ResourceService:
         self.db.refresh(resource)
         return resource
     
-    def delete_resource(self, resource_id: UUID, user_id: UUID):
+    def delete_resource(self, resource_id: UUID, user_id: UUID, *, commit: bool = True):
         """Delete resource and associated file after ownership validation."""
         resource = self.get_resource_with_ownership_check(resource_id, user_id)
         
@@ -172,13 +172,16 @@ class ResourceService:
         if resource.storage_path and os.path.exists(resource.storage_path):
             try:
                 os.remove(resource.storage_path)
-            except Exception as file_error:
+            except Exception:
                 # Log but don't fail the operation
                 pass
         
         # Delete database record
         self.db.delete(resource)
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
     
     def process_resource(self, resource_id: UUID, user_id: UUID):
         """Process resource (OCR, chunk, embed) after validation."""

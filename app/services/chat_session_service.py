@@ -5,7 +5,16 @@ from sqlalchemy.orm import Session
 
 from app.repositories.chat_session_repository import ChatSessionRepository
 from app.repositories.evaluation.evaluation_session_repository import EvaluationSessionRepository
+from app.repositories.message_attachment_repository import MessageAttachmentRepository
+from app.services.resource_service import ResourceService
+from app.shared.models.message_relations import MessageAttachment
+from app.shared.models.session_resources import SessionResource
+from app.shared.models.evaluation_session import EvaluationResource
+from app.shared.models.question_papers import QuestionPaper
+from app.shared.models.answer_evaluation import AnswerDocument
+import logging
 
+logger = logging.getLogger(__name__)
 
 class ChatSessionService:
     """Business logic for chat sessions."""
@@ -88,19 +97,48 @@ class ChatSessionService:
         """Delete session after ownership validation."""
         session = self.get_session_with_ownership_check(session_id, user_id)
 
-        eval_repo = EvaluationSessionRepository(self.db)
         try:
-            # Delete dependent evaluation data first (no DB-level cascade defined)
-            eval_ids = eval_repo.get_evaluation_session_ids_by_chat_session(session_id)
+            if session.mode == "evaluation":
+                eval_repo = EvaluationSessionRepository(self.db)
 
-            if eval_ids:
-                eval_repo.delete_resources_by_evaluation_ids(eval_ids)
-                eval_repo.delete_paper_configs_by_evaluation_ids(eval_ids)
-                eval_repo.delete_evaluation_sessions_by_ids(eval_ids)
+                # Delete dependent evaluation data first (no DB-level cascade defined)
+                eval_ids = eval_repo.get_evaluation_session_ids_by_chat_session(session_id)
 
-            # Delete the chat session (messages are configured with cascade)
+                if eval_ids:
+                    eval_repo.delete_resources_by_evaluation_ids(eval_ids)
+                    eval_repo.delete_paper_configs_by_evaluation_ids(eval_ids)
+                    eval_repo.delete_evaluation_sessions_by_ids(eval_ids)
+            else:
+                # Learning mode: remove attachments and orphaned resources
+                att_repo = MessageAttachmentRepository(self.db)
+                candidate_resource_ids = att_repo.get_resource_ids_for_session(session_id)
+
+                # First, delete attachments
+                att_repo.delete_attachments_by_session_id(session_id)
+
+                # Then, delete any orphaned resources no longer referenced anywhere
+                if candidate_resource_ids:
+                    resource_service = ResourceService(self.db)
+                    for rid in set(candidate_resource_ids):
+                        # Check remaining references across link tables
+                        remaining_refs = 0
+                        remaining_refs += self.db.query(MessageAttachment).filter(MessageAttachment.resource_id == rid).count()
+                        remaining_refs += self.db.query(SessionResource).filter(SessionResource.resource_id == rid).count()
+                        remaining_refs += self.db.query(EvaluationResource).filter(EvaluationResource.resource_id == rid).count()
+                        remaining_refs += self.db.query(QuestionPaper).filter(QuestionPaper.resource_id == rid).count()
+                        remaining_refs += self.db.query(AnswerDocument).filter(AnswerDocument.resource_id == rid).count()
+
+                        if remaining_refs == 0:
+                            try:
+                                resource_service.delete_resource(rid, session.user_id, commit=False)
+                            except Exception:
+                                # If deletion fails for one resource, continue; final commit/rollback will handle transaction
+                                logger.warning("Failed to delete resource %s during session cleanup", rid)
+
+            # Always delete the chat session itself
             self.db.delete(session)
             self.db.commit()
+
         except Exception:
             self.db.rollback()
             raise
