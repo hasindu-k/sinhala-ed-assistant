@@ -1,3 +1,5 @@
+# app/shared/models/message_relations.py
+
 import uuid
 from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Numeric, BigInteger
 from sqlalchemy.dialects.postgresql import UUID

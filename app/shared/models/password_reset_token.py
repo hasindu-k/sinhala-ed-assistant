@@ -1,3 +1,5 @@
+# app/shared/models/password_reset_token.py
+
 import uuid
 from sqlalchemy import Column, String, DateTime, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import UUID

@@ -1,3 +1,5 @@
+# app/shared/models/session_resources.py
+
 from sqlalchemy import Column, String, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 

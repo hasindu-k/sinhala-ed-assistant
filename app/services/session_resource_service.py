@@ -1,3 +1,5 @@
+# app/services/session_resource_service.py
+
 from typing import List
 from uuid import UUID
 from sqlalchemy.orm import Session

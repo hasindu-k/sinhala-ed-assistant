@@ -22,4 +22,5 @@ class ResourceFile(Base):
     language = Column(String, nullable=True)
     document_embedding = Column(JSON, nullable=True)  # Full document embedding for fast filtering (temporarily JSON)
     embedding_model = Column(String, nullable=True)  # Model used for document embedding
+    extracted_text = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

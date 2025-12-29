@@ -1,3 +1,5 @@
+# app/services/evaluation/evaluation_workflow_service.py
+
 from typing import Optional, List
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -84,7 +86,7 @@ class EvaluationWorkflowService:
         self._get_eval_session_with_owner_check(evaluation_id, user_id)
         return self.sessions.update_evaluation_session(
             evaluation_session_id=evaluation_id,
-            status=payload.status.value if payload.status else None,
+            status=payload.status,
             rubric_id=payload.rubric_id,
         )
 
@@ -133,6 +135,10 @@ class EvaluationWorkflowService:
             cleaned_text, page_count = extract_and_clean_text_from_file(resource.storage_path)
             logger.info("Extracted %s characters from %d pages in question paper", len(cleaned_text), page_count)
 
+        # Persist OCR text back to ResourceFile (CRITICAL)
+            resource.extracted_text = cleaned_text
+            self.resource_files.db.commit()
+
         except Exception as e:
             logger.error(f"Failed to extract text from resource {resource.id}: {e}", exc_info=True)
             raise ValueError(f"Failed to extract text from question paper: {e}")
@@ -141,6 +147,16 @@ class EvaluationWorkflowService:
         try:
             # extract with paper config and paper structure separation
             result = extract_complete_exam_data(cleaned_text)
+
+            if not isinstance(result, dict):
+                raise ValueError("Gemini parser returned invalid structure")
+
+            if not any(
+                isinstance(v, dict) and "questions" in v
+                for v in result.values()
+            ):
+                raise ValueError("No questions detected in parsed paper")
+
             
             logger.info(f"Parsed question paper structure: {len(result)} papers found")
             logger.debug(f"Parsed structure details: {result}")
@@ -282,11 +298,12 @@ class EvaluationWorkflowService:
 
         # OCR the answer script if not already done
         if not answer_resource.extracted_text:
-            ocr_text = extract_and_clean_text_from_file(answer_resource.file_path)
+            ocr_text, _ = extract_and_clean_text_from_file(answer_resource.storage_path)
             # Update the resource with extracted text
             self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
         else:
             ocr_text = answer_resource.extracted_text
+        
 
         # Get question paper hierarchy
         question_papers = self.question_papers.get_question_papers_by_evaluation_session(

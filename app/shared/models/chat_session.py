@@ -1,3 +1,5 @@
+# app/shared/models/chat_session.py
+
 import uuid
 from sqlalchemy import Column, String, Integer, DateTime, Enum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID

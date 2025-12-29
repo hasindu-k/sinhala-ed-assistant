@@ -1,3 +1,5 @@
+# app/routers/resources.py
+
 import logging
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
 from sqlalchemy.orm import Session

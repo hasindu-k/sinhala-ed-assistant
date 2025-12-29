@@ -1,3 +1,5 @@
+# app/services/resource_service.py
+
 import os
 from pathlib import Path
 from typing import Optional, List, Iterable, Set
@@ -67,6 +69,7 @@ class ResourceService:
                 size_bytes=len(content),
                 source_type="user_upload",
             )
+            self.process_resource(resource.id, user_id)
             return resource
         except Exception as e:
             # Cleanup file if database save failed
