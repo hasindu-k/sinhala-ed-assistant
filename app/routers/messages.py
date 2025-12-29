@@ -23,6 +23,7 @@ from app.services.message_context_service import MessageContextService
 from app.services.message_safety_service import MessageSafetyService
 from app.services.session_resource_service import SessionResourceService
 from app.services.chat_session_service import ChatSessionService
+from app.services.resource_service import ResourceService
 from app.services.rag_service import RAGService
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -71,6 +72,24 @@ def create_user_message(
 
         attachments = payload.attachments or []
         if attachments:
+            # Validate that all resources exist and are owned by the user
+            resource_ids = [att.resource_id for att in attachments]
+            resource_service = ResourceService(db)
+            try:
+                resource_service.ensure_resources_owned(resource_ids, current_user.id)
+            except ValueError as e:
+                logger.warning(f"Resource validation error for user {current_user.id}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            except PermissionError as e:
+                logger.warning(f"User {current_user.id} attempted to attach unowned resources: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=str(e)
+                )
+            
             attachment_service = MessageAttachmentService(db)
             for att in attachments:
                 attachment_service.attach_resource(
@@ -274,6 +293,23 @@ def attach_files_to_message(
         HTTPException 500: Database error
     """
     try:
+        # Validate that all resources exist and are owned by the user
+        resource_service = ResourceService(db)
+        try:
+            resource_service.ensure_resources_owned(payload.resource_ids, current_user.id)
+        except ValueError as e:
+            logger.warning(f"Resource validation error for user {current_user.id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e)
+            )
+        except PermissionError as e:
+            logger.warning(f"User {current_user.id} attempted to attach unowned resources: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(e)
+            )
+        
         message_service = MessageService(db)
         attachments = message_service.attach_resources_to_message(
             message_id=message_id,
@@ -448,7 +484,25 @@ def get_message_history(
         
         message_service = MessageService(db)
         messages = message_service.list_session_messages_with_attachments(session_id)
-        response_messages = _transform_messages_with_attachments(messages)
+
+        # Build response including resource_ids per message
+        response_messages = []
+        for message in messages:
+            resource_ids = [att.resource_id for att in getattr(message, "attachments", [])]
+
+            response_messages.append({
+                "id": message.id,
+                "session_id": message.session_id,
+                "role": message.role,
+                "modality": message.modality,
+                "content": message.content,
+                "grade_level": message.grade_level,
+                "audio_url": message.audio_url,
+                "transcript": message.transcript,
+                "audio_duration_sec": message.audio_duration_sec,
+                "created_at": message.created_at,
+                "resource_ids": resource_ids,
+            })
         
         logger.debug(f"Retrieved {len(messages)} messages with attachments for session {session_id} by user {current_user.id}")
         return response_messages
@@ -528,28 +582,6 @@ def get_message_history_with_attachments(
             detail="Failed to retrieve message history with attachments"
         )
 
-
-def _transform_messages_with_attachments(messages):
-    """Transform message models to MessageResponse format with basic attachment details."""
-    response_messages = []
-    for message in messages:
-        message_dict = {
-            "id": message.id,
-            "session_id": message.session_id,
-            "role": message.role,
-            "modality": message.modality,
-            "content": message.content,
-            "grade_level": message.grade_level,
-            "audio_url": message.audio_url,
-            "transcript": message.transcript,
-            "audio_duration_sec": message.audio_duration_sec,
-            "created_at": message.created_at,
-            "attachments": _transform_attachments(message.attachments)
-        }
-        response_messages.append(message_dict)
-    return response_messages
-
-
 def _transform_messages_with_full_attachments(messages):
     """Transform message models to MessageWithAttachmentsResponse format with full resource details."""
     response_messages = []
@@ -588,45 +620,6 @@ def _transform_attachments_with_resource_details(attachments):
         }
         for attachment in attachments
     ]
-
-
-def _transform_attachments(attachments):
-    """Transform attachment models to AttachmentResponse format for MessageResponse."""
-    from app.core.config import settings
-    BASE_FILE_STORAGE_PATH = settings.BASE_FILE_STORAGE_PATH
-
-    results = []
-
-    for attachment in attachments:
-        resource = getattr(attachment, "resource", None)
-
-        storage_path = getattr(resource, "storage_path", None) if resource else None
-
-        if storage_path:
-            # always convert to string
-            storage_path = str(storage_path)
-
-            # normalize Windows → URL format
-            storage_path = storage_path.replace("\\", "/").lstrip("/")
-
-            url = f"{BASE_FILE_STORAGE_PATH}{storage_path}"
-        else:
-            url = ""
-
-        results.append({
-            "id": attachment.id,
-            "url": url,
-            "name": (
-                attachment.display_name
-                or getattr(resource, "original_filename", "attachment")
-                if resource else "attachment"
-            ),
-            "mime_type": getattr(resource, "mime_type", "application/octet-stream")
-                if resource else "application/octet-stream",
-        })
-
-    return results
-    
 
 
 @router.get("/{message_id}/sources", response_model=List[MessageContextChunkResponse])

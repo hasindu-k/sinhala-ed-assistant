@@ -1,10 +1,11 @@
 import logging
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
+from fastapi.responses import FileResponse
+import os
 from sqlalchemy.orm import Session
 from uuid import UUID
 from app.schemas.resource import (
     ResourceFileResponse,
-    ResourceFileCreate,
     ResourceFileUpdate,
     ResourceUploadResponse,
     ResourceProcessResponse
@@ -423,3 +424,84 @@ def process_resource(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process resource"
         )
+
+
+@router.get("/{resource_id}/download")
+def download_resource(
+    resource_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Download the resource file (protected; owner-only).
+
+    Sets Content-Disposition to attachment with the original filename.
+    """
+    try:
+        resource_service = ResourceService(db)
+        resource = resource_service.get_resource_with_ownership_check(resource_id, current_user.id)
+
+        if not resource.storage_path or not os.path.exists(resource.storage_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Stored file not found"
+            )
+
+        filename = resource.original_filename or os.path.basename(resource.storage_path)
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+        return FileResponse(
+            path=resource.storage_path,
+            media_type=resource.mime_type or "application/octet-stream",
+            headers=headers,
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to download resource")
+
+
+@router.get("/{resource_id}/view")
+def view_resource(
+    resource_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    View the resource file inline (protected; owner-only).
+
+    Sets Content-Disposition to inline with the original filename to
+    allow browser rendering for supported MIME types (e.g., PDFs, images, audio).
+    """
+    try:
+        resource_service = ResourceService(db)
+        resource = resource_service.get_resource_with_ownership_check(resource_id, current_user.id)
+
+        if not resource.storage_path or not os.path.exists(resource.storage_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Stored file not found"
+            )
+
+        filename = resource.original_filename or os.path.basename(resource.storage_path)
+        headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+
+        return FileResponse(
+            path=resource.storage_path,
+            media_type=resource.mime_type or "application/octet-stream",
+            headers=headers,
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to view resource")

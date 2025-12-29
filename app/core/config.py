@@ -35,8 +35,6 @@ class Settings(BaseSettings):
     MAIL_FROM_NAME: str = "Sinhala Educational Assistant"
     FRONTEND_URL: str = "http://localhost:3000"  # for reset link
 
-    BASE_FILE_STORAGE_PATH: str = "http://localhost:8000/"
-
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

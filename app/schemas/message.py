@@ -43,19 +43,8 @@ class MessageCreate(BaseModel):
     transcript: Optional[str] = None
     audio_duration_sec: Optional[Decimal] = None
     grade_level: Optional[GradeLevel] = None
-    attachments: Optional[list[MessageAttachment]] = None
+    attachments: Optional[List[MessageAttachment]] = None
 
-
-class MessageUpdate(BaseModel):
-    content: Optional[str] = None
-    transcript: Optional[str] = None
-    audio_duration_sec: Optional[Decimal] = None
-
-class AttachmentResponse(BaseModel):
-    id: UUID
-    url: str
-    name: str
-    mime_type: str
 
 class MessageResponse(BaseModel):
     id: UUID
@@ -68,7 +57,7 @@ class MessageResponse(BaseModel):
     transcript: Optional[str] = None
     audio_duration_sec: Optional[Decimal] = None
     created_at: datetime
-    attachments: list[AttachmentResponse] = []
+    resource_ids: list[UUID] = []
 
     class Config:
         from_attributes = True

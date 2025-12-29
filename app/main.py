@@ -97,5 +97,3 @@ app.include_router(api_router, prefix="/api/v1")
 @app.get("/")
 def root():
     return {"status": "OK"}
-
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")

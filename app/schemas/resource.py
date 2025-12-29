@@ -47,10 +47,6 @@ class ResourceUploadResponse(BaseModel):
     mime_type: str
 
 
-class ResourceProcessRequest(BaseModel):
-    resource_id: UUID
-
-
 class ResourceProcessResponse(BaseModel):
     resource_id: UUID
     status: str
