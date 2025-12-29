@@ -15,8 +15,6 @@ router = APIRouter()
 async def embed_text(payload: EmbeddingRequest):
     """
     Generate embedding for given text.
-    Currently returns dummy vector.
-    Later: connect Gemini/text-embedding-004 etc.
     """
     vector = await generate_text_embedding(payload.text)
     return EmbeddingResponse(
