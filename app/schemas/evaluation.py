@@ -98,7 +98,8 @@ class PaperConfigUpdate(BaseModel):
 
 class PaperConfigResponse(BaseModel):
     id: UUID
-    evaluation_session_id: UUID
+    chat_session_id: Optional[UUID] = None
+    evaluation_session_id: Optional[UUID] = None
     paper_part: Optional[str] = None
     subject_name: Optional[str] = None
     medium: Optional[str] = None

@@ -108,6 +108,11 @@ class ChatSessionService:
             session.subject = subject
         if rubric_id is not None:
             session.rubric_id = rubric_id
+            # Update Global Context if in Evaluation Mode
+            if session.mode == "evaluation":
+                from app.services.evaluation.user_context_service import UserContextService
+                context_service = UserContextService(self.db)
+                context_service.update_rubric(user_id, rubric_id)
         
         self.db.commit()
         self.db.refresh(session)

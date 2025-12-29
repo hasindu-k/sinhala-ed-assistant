@@ -17,8 +17,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    pass
+    op.add_column('chat_sessions', sa.Column('rubric_id', sa.UUID(), nullable=True))
+    op.create_foreign_key('fk_chat_sessions_rubric_id', 'chat_sessions', 'rubrics', ['rubric_id'], ['id'])
 
 
 def downgrade() -> None:
-    pass
+    op.drop_constraint('fk_chat_sessions_rubric_id', 'chat_sessions', type_='foreignkey')
+    op.drop_column('chat_sessions', 'rubric_id')

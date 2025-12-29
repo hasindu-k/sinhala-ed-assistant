@@ -12,7 +12,8 @@ class QuestionPaper(Base):
     __tablename__ = "question_papers"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    evaluation_session_id = Column(UUID(as_uuid=True), ForeignKey("evaluation_sessions.id"), nullable=False, index=True)
+    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True, index=True)
+    evaluation_session_id = Column(UUID(as_uuid=True), ForeignKey("evaluation_sessions.id"), nullable=True, index=True)
     resource_id = Column(UUID(as_uuid=True), ForeignKey("resource_files.id"), nullable=False)
     extracted_text = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

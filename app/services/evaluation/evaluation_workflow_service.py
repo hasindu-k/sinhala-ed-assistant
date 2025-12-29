@@ -80,22 +80,8 @@ class EvaluationWorkflowService:
             rubric_id=rubric_id,
         )
         
-        # Retrieve attached resources from Chat Session (via SessionResource)
-        from app.shared.models.session_resources import SessionResource
-        session_resources = self.db.query(SessionResource).filter(
-            SessionResource.session_id == payload.session_id
-        ).all()
-        
-        # Attach them to Evaluation Session
-        for sr in session_resources:
-            if sr.label in ["syllabus", "question_paper"]:
-                self.resources.attach_resource(
-                    evaluation_session_id=session.id,
-                    resource_id=sr.resource_id,
-                    role=sr.label
-                )
-            
         return session
+
 
     def start_evaluation_session(self, chat_session_id: UUID, answer_resource_ids: List[UUID], user_id: UUID):
         """
@@ -105,36 +91,20 @@ class EvaluationWorkflowService:
         payload = EvaluationSessionCreate(session_id=chat_session_id)
         session = self.create_session(payload, user_id)
         
-        # 2. Get Active Context for Paper Config
-        from app.services.evaluation.user_context_service import UserContextService
-        context_service = UserContextService(self.db)
-        context = context_service.get_or_create_context(user_id)
-        
-        # 3. Apply Paper Config if exists
-        if context.active_paper_config:
-            for config_item in context.active_paper_config:
-                # Convert dict to Create schema
-                # Assuming config_item matches PaperConfigCreate fields
-                try:
-                    config_create = PaperConfigCreate(**config_item)
-                    self.paper_configs.create_config(session.id, config_create)
-                except Exception as e:
-                    logger.error(f"Failed to apply paper config item: {e}")
-                    # Continue or raise? For now continue but log
-        
-        # 4. Attach Answer Scripts
+        # 2. Attach Answer Scripts
         for resource_id in answer_resource_ids:
             self._ensure_resource_owner(resource_id, user_id)
-            self.resources.attach_resource(
+            # Create Answer Document
+            self.answers.create_answer_document(
                 evaluation_session_id=session.id,
                 resource_id=resource_id,
-                role="answer_script"
+                student_identifier=f"Student-{resource_id}" # Placeholder
             )
             
-        # 5. Update Status to Processing
+        # 3. Update Status to Processing
         self.sessions.update_evaluation_session(session.id, status="processing")
         
-        # 6. Trigger Async Processing (Placeholder for now)
+        # 4. Trigger Async Processing (Placeholder for now)
         # TODO: Enqueue background task for OCR and Evaluation
         
         return session
@@ -159,40 +129,36 @@ class EvaluationWorkflowService:
             rubric_id=payload.rubric_id,
         )
 
-    def attach_resource(self, evaluation_id: UUID, payload: EvaluationResourceAttach, user_id: UUID):
-        self._get_eval_session_with_owner_check(evaluation_id, user_id)
-        self._ensure_resource_owner(payload.resource_id, user_id)
-        return self.resources.attach_resource(
-            evaluation_session_id=evaluation_id,
-            resource_id=payload.resource_id,
-            role=payload.role.value,
-        )
 
-    def parse_question_paper(self, evaluation_id: UUID, user_id: UUID):
+
+    def parse_question_paper(self, session_id: UUID, user_id: UUID):
         """
         Parse question paper by extracting text and structuring content.
         Uses OCR if needed and AI-based content separation.
         """
-        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+        # Verify ownership and get session
+        self._ensure_chat_session_owner(session_id, user_id)
 
-        # Check if already parsed
-        question_papers = self.question_papers.get_question_papers_by_evaluation_session(evaluation_id)
+        # Check if already parsed for this chat session
+        question_papers = self.question_papers.get_question_papers_by_chat_session(session_id)
         if question_papers:
             return self.question_papers.get_question_paper_with_questions(question_papers[0].id)
 
-        # Get attached question paper resource
-        resources = self.resources.get_resources_by_role(
-            evaluation_session_id=evaluation_id,
-            role="question_paper",
-        )
-        if not resources:
-            raise ValueError("No question paper resource attached to this evaluation session")
+        # Get attached question paper resource from Chat Session
+        from app.shared.models.session_resources import SessionResource
+        session_resource = self.db.query(SessionResource).filter(
+            SessionResource.session_id == session_id,
+            SessionResource.label == "question_paper"
+        ).first()
 
-        self._ensure_resource_owner(resources[0].resource_id, user_id)
+        if not session_resource:
+            raise ValueError("No question paper resource attached to this chat session")
+
+        self._ensure_resource_owner(session_resource.resource_id, user_id)
         
         # Get resource file
         resource = self.resource_files.get_resource_with_ownership_check(
-            resources[0].resource_id, 
+            session_resource.resource_id, 
             user_id
         )
         
@@ -233,10 +199,10 @@ class EvaluationWorkflowService:
             logger.error(f"Failed to parse paper structure: {e}", exc_info=True)
             raise ValueError(f"Failed to parse question paper structure: {e}")
         
-        # Create question paper entry
+        # Create question paper entry linked to Chat Session
         question_paper = self.question_papers.create_question_paper(
-            evaluation_session_id=evaluation_id,
-            resource_id=resources[0].resource_id,
+            chat_session_id=session_id,
+            resource_id=session_resource.resource_id,
             extracted_text=cleaned_text,
         )
 
@@ -249,9 +215,9 @@ class EvaluationWorkflowService:
 
                 config = paper_data.get("config", {}) or {}
 
-                # 1️⃣ Create PaperConfig for this paper
+                # 1️⃣ Create PaperConfig for this paper linked to Chat Session
                 self.paper_configs.save_config(
-                    evaluation_session_id=evaluation_id,
+                    chat_session_id=session_id,
                     paper_part=paper_key,
                     subject_name=config.get("subject_detected"),
                     medium=config.get("medium"),
@@ -301,18 +267,18 @@ class EvaluationWorkflowService:
         # Return complete question paper with questions
         return self.question_papers.get_question_paper_with_questions(question_paper.id)
 
-    def get_parsed_questions(self, evaluation_id: UUID, user_id: UUID):
-        self._get_eval_session_with_owner_check(evaluation_id, user_id)
-        question_papers = self.question_papers.get_question_papers_by_evaluation_session(evaluation_id)
+    def get_parsed_questions(self, session_id: UUID, user_id: UUID):
+        self._ensure_chat_session_owner(session_id, user_id)
+        question_papers = self.question_papers.get_question_papers_by_chat_session(session_id)
         if not question_papers:
             return []
 
         return self.question_papers.get_questions_by_paper(question_papers[0].id)
 
-    def save_paper_config(self, evaluation_id: UUID, payload: PaperConfigCreate, user_id: UUID):
-        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+    def save_paper_config(self, session_id: UUID, payload: PaperConfigCreate, user_id: UUID):
+        self._ensure_chat_session_owner(session_id, user_id)
         return self.paper_configs.save_config(
-            evaluation_session_id=evaluation_id,
+            chat_session_id=session_id,
             paper_part=payload.paper_part,
             subject_name=payload.subject_name,
             medium=payload.medium,
@@ -321,15 +287,16 @@ class EvaluationWorkflowService:
             selection_rules=payload.selection_rules,
         )
 
-    def get_paper_config(self, evaluation_id: UUID, user_id: UUID):
-        self._get_eval_session_with_owner_check(evaluation_id, user_id)
-        return self.paper_configs.get_config(evaluation_id)
+    def get_paper_config(self, session_id: UUID, user_id: UUID):
+        self._ensure_chat_session_owner(session_id, user_id)
+        return self.paper_configs.get_config(chat_session_id=session_id)
 
-    def confirm_paper_config(self, evaluation_id: UUID, payload: PaperConfigUpdate, user_id: UUID):
+    def confirm_paper_config(self, session_id: UUID, payload: PaperConfigUpdate, user_id: UUID):
         """Update provided fields and confirm the paper configuration for an evaluation session."""
-        self._get_eval_session_with_owner_check(evaluation_id, user_id)
-        return self.paper_configs.confirm_config(
-            evaluation_session_id=evaluation_id,
+        self._ensure_chat_session_owner(session_id, user_id)
+        
+        config = self.paper_configs.confirm_config(
+            chat_session_id=session_id,
             paper_part=payload.paper_part,
             subject_name=payload.subject_name,
             medium=payload.medium,
@@ -337,6 +304,26 @@ class EvaluationWorkflowService:
             total_main_questions=payload.total_main_questions,
             selection_rules=payload.selection_rules,
         )
+        
+        # Update Global Context with this new configuration
+        from app.services.evaluation.user_context_service import UserContextService
+        context_service = UserContextService(self.db)
+        # We need to serialize the config to a list of dicts as expected by update_paper_config
+        # Since we might have multiple parts (Paper I, Paper II), we should ideally fetch all configs for this session
+        # For now, we'll just save this specific confirmed config as a single-item list or append logic if needed.
+        # A simpler approach for the MVP is to save the current confirmed config as the "active" one.
+        
+        config_data = [{
+            "paper_part": config.paper_part,
+            "subject_name": config.subject_name,
+            "medium": config.medium,
+            "weightage": float(config.weightage) if config.weightage else None,
+            "total_main_questions": config.total_main_questions,
+            "selection_rules": config.selection_rules
+        }]
+        context_service.update_paper_config(user_id, config_data)
+        
+        return config
 
     def register_answer_document(self, evaluation_id: UUID, payload: AnswerDocumentCreate, user_id: UUID):
         self._get_eval_session_with_owner_check(evaluation_id, user_id)
@@ -373,13 +360,17 @@ class EvaluationWorkflowService:
         else:
             ocr_text = answer_resource.extracted_text
         
+        # Get Evaluation Session to find Chat Session
+        eval_session = self.sessions.get_evaluation_session(answer_doc.evaluation_session_id)
+        if not eval_session:
+            raise ValueError("Evaluation session not found")
 
-        # Get question paper hierarchy
-        question_papers = self.question_papers.get_question_papers_by_evaluation_session(
-            answer_doc.evaluation_session_id
+        # Get question paper hierarchy from Chat Session
+        question_papers = self.question_papers.get_question_papers_by_chat_session(
+            eval_session.session_id
         )
         if not question_papers:
-            raise ValueError("Question paper not found")
+            raise ValueError("Question paper not found for this chat session")
 
         question_paper = question_papers[0]  # Take the first question paper
 
@@ -404,69 +395,16 @@ class EvaluationWorkflowService:
             for leaf in leaves:
                 leaf_answers[str(leaf['id'])] = answer_mapping.get(str(leaf['id']), "")
 
-        # Create evaluation result with leaf-level answers only
-        return self.answers.create_evaluation_result(
+        # Create evaluation result (Placeholder for actual AI evaluation)
+        # TODO: Implement AI grading using the Rubric and Parsed Answers
+        evaluation_result = self.answers.create_evaluation_result(
             answer_document_id=answer_id,
-            parsed_answers=leaf_answers  # This would need to be added to the service
-        )
-
-    def parse_question_paper(self, session_id: UUID, user_id: UUID):
-        """
-        Parse the question paper for the given session and save the structure.
-        """
-        # Verify ownership and get session
-        eval_session = self._get_eval_session_with_owner_check(session_id, user_id)
-        
-        # Find the question paper resource
-        resources = self.resources.get_resources_by_role(eval_session.id, "question_paper")
-        if not resources:
-            raise ValueError("No question paper attached to this session")
-        
-        # Use the first one found
-        qp_resource = resources[0]
-            
-        # Get the resource file
-        resource = self.resource_files.get_resource(qp_resource.resource_id)
-        if not resource:
-            raise ValueError("Question paper resource file not found")
-            
-        # Get text
-        text = resource.extracted_text
-        if not text:
-            # Trigger processing if text is missing
-            self.resource_files.process_resource(resource.id, user_id)
-            # Refresh resource
-            self.db.refresh(resource)
-            text = resource.extracted_text
-            
-        if not text:
-             raise ValueError("Failed to extract text from question paper")
-
-        # Parse text
-        structured_data = extract_complete_exam_data(text)
-        
-        # Create QuestionPaper entry
-        qp = self.question_papers.create_question_paper(
-            evaluation_session_id=eval_session.id,
-            resource_id=resource.id,
-            extracted_text=text
+            total_score=None, # Pending evaluation
+            overall_feedback="Evaluation pending implementation."
         )
         
-        # Prepare questions data with prefixes to avoid collision
-        questions_data = {}
-        
-        if structured_data.get("Paper_I") and structured_data["Paper_I"].get("questions"):
-            for q_num, q_data in structured_data["Paper_I"]["questions"].items():
-                questions_data[f"I-{q_num}"] = q_data
-                
-        if structured_data.get("Paper_II") and structured_data["Paper_II"].get("questions"):
-            for q_num, q_data in structured_data["Paper_II"]["questions"].items():
-                questions_data[f"II-{q_num}"] = q_data
-                
-        # Save questions
-        self.question_papers.create_structured_questions(qp.id, questions_data)
-        
-        return qp
+        return evaluation_result
+
 
     def get_evaluation_result(self, answer_id: UUID, user_id: UUID):
         self._ensure_answer_owner(answer_id, user_id)

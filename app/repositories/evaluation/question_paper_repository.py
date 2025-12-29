@@ -15,12 +15,14 @@ class QuestionPaperRepository:
     
     def create_question_paper(
         self,
-        evaluation_session_id: UUID,
         resource_id: UUID,
+        chat_session_id: Optional[UUID] = None,
+        evaluation_session_id: Optional[UUID] = None,
         extracted_text: Optional[str] = None
     ) -> QuestionPaper:
         """Create a question paper entry."""
         question_paper = QuestionPaper(
+            chat_session_id=chat_session_id,
             evaluation_session_id=evaluation_session_id,
             resource_id=resource_id,
             extracted_text=extracted_text
@@ -36,6 +38,15 @@ class QuestionPaperRepository:
             QuestionPaper.id == question_paper_id
         ).first()
     
+    def get_question_papers_by_chat_session(
+        self,
+        chat_session_id: UUID
+    ) -> List[QuestionPaper]:
+        """Get all question papers for a chat session."""
+        return self.db.query(QuestionPaper).filter(
+            QuestionPaper.chat_session_id == chat_session_id
+        ).all()
+
     def get_question_papers_by_evaluation_session(
         self,
         evaluation_session_id: UUID

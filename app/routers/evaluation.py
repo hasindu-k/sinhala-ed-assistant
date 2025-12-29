@@ -163,102 +163,84 @@ def update_evaluation_session(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
 
 
-@router.post("/sessions/{evaluation_id}/resources", response_model=EvaluationResourceResponse)
-def attach_evaluation_resource(
-    evaluation_id: UUID,
-    payload: EvaluationResourceAttach,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    Attach syllabus / question paper / answer script.
-    """
-    service = EvaluationWorkflowService(db)
-    try:
-        return service.attach_resource(evaluation_id, payload, current_user.id)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    except Exception as exc:
-        logger.error(f"Failed to attach resource to evaluation {evaluation_id}: {exc}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to attach evaluation resource")
 
 
-@router.post("/sessions/{evaluation_id}/parse-paper")
+
+@router.post("/sessions/{session_id}/parse-question-paper")
 def parse_question_paper(
-    evaluation_id: UUID,
+    session_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db)
 ):
     """
-    Extract question structure from question paper.
+    Parse the question paper for the given session and save the structure.
     """
     service = EvaluationWorkflowService(db)
     try:
-        return service.parse_question_paper(evaluation_id, current_user.id)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+        qp = service.parse_question_paper(session_id, current_user.id)
+        return {"message": "Question paper parsed successfully", "question_paper_id": qp["id"]}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except Exception as exc:
-        logger.error(f"Failed to parse question paper for evaluation {evaluation_id}: {exc}", exc_info=True)
+        logger.error(f"Failed to parse question paper: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to parse question paper")
 
 
-@router.get("/sessions/{evaluation_id}/questions", response_model=List[QuestionResponse])
+@router.get("/sessions/{session_id}/questions", response_model=List[QuestionResponse])
 def get_parsed_questions(
-    evaluation_id: UUID,
+    session_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Get parsed questions from question paper.
+    Get parsed questions from question paper for a chat session.
     """
     service = EvaluationWorkflowService(db)
     try:
-        return service.get_parsed_questions(evaluation_id, current_user.id)
+        return service.get_parsed_questions(session_id, current_user.id)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except Exception as exc:
-        logger.error(f"Failed to fetch parsed questions for evaluation {evaluation_id}: {exc}", exc_info=True)
+        logger.error(f"Failed to fetch parsed questions for session {session_id}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch parsed questions")
 
 
-@router.post("/sessions/{evaluation_id}/paper-config", response_model=PaperConfigResponse)
+@router.post("/sessions/{session_id}/paper-config", response_model=PaperConfigResponse)
 def save_paper_config(
-    evaluation_id: UUID,
+    session_id: UUID,
     payload: PaperConfigCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Save paper marking configuration.
+    Save paper marking configuration for a chat session.
     """
     service = EvaluationWorkflowService(db)
     try:
-        return service.save_paper_config(evaluation_id, payload, current_user.id)
+        return service.save_paper_config(session_id, payload, current_user.id)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
-        logger.error(f"Failed to save paper config for evaluation {evaluation_id}: {exc}", exc_info=True)
+        logger.error(f"Failed to save paper config for session {session_id}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to save paper config")
 
 
-@router.get("/sessions/{evaluation_id}/paper-config", response_model=PaperConfigResponse)
+@router.get("/sessions/{session_id}/paper-config", response_model=PaperConfigResponse)
 def get_paper_config(
-    evaluation_id: UUID,
+    session_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Get paper marking configuration.
+    Get paper marking configuration for a chat session.
     """
     service = EvaluationWorkflowService(db)
     try:
-        config = service.get_paper_config(evaluation_id, current_user.id)
+        config = service.get_paper_config(session_id, current_user.id)
         if not config:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper config not found")
         return config
@@ -268,19 +250,19 @@ def get_paper_config(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
-@router.post("/sessions/{evaluation_id}/paper-config/confirm", response_model=PaperConfigResponse)
+@router.post("/sessions/{session_id}/paper-config/confirm", response_model=PaperConfigResponse)
 def confirm_paper_config(
-    evaluation_id: UUID,
+    session_id: UUID,
     payload: PaperConfigUpdate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Confirm the paper marking configuration for this evaluation session.
+    Confirm the paper marking configuration for this chat session.
     """
     service = EvaluationWorkflowService(db)
     try:
-        config = service.confirm_paper_config(evaluation_id, payload, current_user.id)
+        config = service.confirm_paper_config(session_id, payload, current_user.id)
         if not config:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper config not found")
         return config
@@ -377,24 +359,3 @@ def get_evaluation_result(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
-
-@router.post("/sessions/{session_id}/parse-question-paper")
-def parse_question_paper(
-    session_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Parse the question paper for the given session and save the structure.
-    """
-    service = EvaluationWorkflowService(db)
-    try:
-        qp = service.parse_question_paper(session_id, current_user.id)
-        return {"message": "Question paper parsed successfully", "question_paper_id": qp.id}
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
-    except Exception as exc:
-        logger.error(f"Failed to parse question paper: {exc}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to parse question paper")

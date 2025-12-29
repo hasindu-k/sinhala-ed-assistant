@@ -1,3 +1,5 @@
+
+-- updated_schema.sql
 -- Enable vector extension (install pgvector first if needed)
 CREATE EXTENSION IF NOT EXISTS vector;
 
