@@ -8,13 +8,14 @@ from app.services.hybrid_retrieval_service import HybridRetrievalService
 from app.services.resource_chunk_service import ResourceChunkService
 from app.services.message_context_service import MessageContextService
 from app.services.message_service import MessageService
-from app.utils.sinhala_prompt_builder import build_qa_prompt
+from app.utils.sinhala_prompt_builder import build_qa_prompt, build_direct_answer_prompt
 from app.utils.sinhala_summary_prompt_builder import build_summary_prompt
 from app.utils.sinhala_safety_engine import concept_map_check, detect_misconceptions
 from app.services.message_safety_service import MessageSafetyService
 from app.core.gemini_client import GeminiClient
 import json
 from app.services.intent_detection_service import IntentDetectionService
+from app.services.answerability_service import AnswerabilityService
 
 logger = logging.getLogger(__name__)
 
@@ -97,44 +98,79 @@ class RAGService:
         logger.info("Built context of length %d", len(context))
 
         # -----------------------------
-        # 4. Select prompt type
+        # ANSWERABILITY GUARD (CRITICAL)
         # -----------------------------
-        intent = IntentDetectionService.detect_intent(user_query)
+        if not AnswerabilityService.is_answerable(user_query, context):
+            logger.warning("Unanswerable question detected: %s", user_query)
 
-        logger.info("Detected intent: %s", intent)
+            refusal_prompt = f"""
+        ඔබට ලබා දී ඇති අන්තර්ගතය තුළ
+        "{user_query}" පිළිබඳ පැහැදිලි තොරතුරු නොමැත.
 
-        if intent == "summary":
-            prompt = build_summary_prompt(
-                context=context,
-                grade_level=grade_level,
-                query=user_query
-            )
-            message_grade_level = grade_level
+        🔒 නියම:
+        • ලබා දී ඇති අන්තර්ගතයෙන් පිටත කරුණු එකතු නොකරන්න
+        • නිගමන හෝ අනුමාන නොකරන්න
 
-        elif intent == "qa":
-            prompt = build_qa_prompt(
-                context=context,
-                count=5,
-                query=user_query
-            )
+        📚 ලබා දී ඇති අන්තර්ගතය:
+        {context}
+
+        ✍️ පිළිතුර:
+        """
+
+            prompt = refusal_prompt
             message_grade_level = None
 
-        elif intent == "explanation":
-            prompt = build_qa_prompt(
-                context=context,
-                count=1,
-                query=user_query
-            )
-            message_grade_level = None
-
+            # Skip normal intent routing
         else:
-            # Safe default: direct answer only
-            prompt = build_qa_prompt(
-                context=context,
-                count=1,
-                query=user_query
-            )
-            message_grade_level = None
+            # -----------------------------
+            # 4. Select prompt type
+            # -----------------------------
+            intent = IntentDetectionService.detect_intent(user_query)
+            logger.info("Detected intent: %s", intent)
+
+            # 🟢 Summary
+            if intent == "summary":
+                prompt = build_summary_prompt(
+                    context=context,
+                    grade_level=grade_level,
+                    query=user_query
+                )
+                message_grade_level = grade_level
+
+            # 🟢 Q&A GENERATION (lesson practice)
+            elif intent == "qa_generate":
+                prompt = build_qa_prompt(
+                    context=context,
+                    count=5,
+                    query=user_query
+                )
+                message_grade_level = None
+
+            # 🟢 DIRECT ANSWER (NEW)
+            elif intent == "qa_answer":
+                prompt = build_direct_answer_prompt(
+                    context=context,
+                    query=user_query
+                )
+                message_grade_level = None
+
+            # 🟡 Explanation fallback
+            elif intent == "explanation":
+                prompt = build_direct_answer_prompt(
+                    context=context,
+                    query=user_query
+                )
+                message_grade_level = None
+
+            # 🔴 Safe fallback
+            else:
+                prompt = build_direct_answer_prompt(
+                    context=context,
+                    query=user_query
+                )
+                message_grade_level = None
+
+
 
         # -----------------------------
         # 5. Generate response with Gemini
