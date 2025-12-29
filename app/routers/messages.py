@@ -4,13 +4,17 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from uuid import UUID
+import uuid
 from app.schemas.message import (
     MessageCreate,
     MessageDetachRequest,
     MessageDetail,
     MessageResponse,
+    MessageCreateResponse,
+    MessageWithAttachmentsResponse,
     MessageAttachRequest,
     MessageAttachmentResponse,
+    MessageAttachmentWithResource,
     MessageContextChunkResponse,
     MessageSafetyReportResponse,
     GenerateResponseRequest
@@ -19,7 +23,9 @@ from app.services.message_service import MessageService
 from app.services.message_attachment_service import MessageAttachmentService
 from app.services.message_context_service import MessageContextService
 from app.services.message_safety_service import MessageSafetyService
+from app.services.session_resource_service import SessionResourceService
 from app.services.chat_session_service import ChatSessionService
+from app.services.resource_service import ResourceService
 from app.services.rag_service import RAGService
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -31,35 +37,32 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/sessions/{session_id}", response_model=MessageResponse)
+@router.post("/sessions/{session_id}", response_model=MessageCreateResponse)
 def create_user_message(
-    session_id: UUID,
+    session_id: str,
     payload: MessageCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Create a user message (text or voice).
-    
-    Args:
-        session_id: ID of the chat session
-        payload: Message creation data
-        current_user: Authenticated user
-        db: Database session
-        
-    Returns:
-        MessageResponse with created message details
-        
-    Raises:
-        HTTPException 400: Invalid input or modality
-        HTTPException 403: User doesn't own the session
-        HTTPException 404: Session not found
-        HTTPException 500: Database or internal error
-    """
     try:
+        chat_session_service = ChatSessionService(db)
+
+        # 🔑 If frontend sends "undefined", CREATE SESSION PROPERLY
+        if session_id in ("undefined", "null", "", None):
+            session = chat_session_service.create_session(
+                user_id=current_user.id,
+                mode="learning",      # or infer later
+                channel="text",
+                title="New Chat",
+            )
+            parsed_session_id = session.id
+        else:
+            parsed_session_id = UUID(session_id)
+
         message_service = MessageService(db)
+
         message = message_service.create_user_message_with_validation(
-            session_id=session_id,
+            session_id=parsed_session_id,   # ✅ guaranteed to exist
             user_id=current_user.id,
             content=payload.content,
             modality=payload.modality,
@@ -68,9 +71,42 @@ def create_user_message(
             transcript=payload.transcript,
             audio_duration_sec=payload.audio_duration_sec,
         )
-        logger.info(f"User message created: {message.id} in session {session_id} by user {current_user.id}")
+
+        attachments = payload.attachments or []
+        if attachments:
+            # Validate that all resources exist and are owned by the user
+            resource_ids = [att.resource_id for att in attachments]
+            resource_service = ResourceService(db)
+            try:
+                resource_service.ensure_resources_owned(resource_ids, current_user.id)
+            except ValueError as e:
+                logger.warning(f"Resource validation error for user {current_user.id}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            except PermissionError as e:
+                logger.warning(f"User {current_user.id} attempted to attach unowned resources: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=str(e)
+                )
+            
+            attachment_service = MessageAttachmentService(db)
+            for att in attachments:
+                attachment_service.attach_resource(
+                    message_id=message.id,
+                    resource_id=att.resource_id,
+                    display_name=att.display_name,
+                    attachment_type=att.attachment_type,
+                )
+
+            logger.info(f"Attached {len(attachments)} resources to message {message.id}")
+
+        logger.info(f"User message created: {message.id} in session {parsed_session_id} by user {current_user.id}")
+
         return message
-        
+
     except ValueError as e:
         logger.warning(f"Validation error creating message in session {session_id}: {e}")
         raise HTTPException(
@@ -83,13 +119,14 @@ def create_user_message(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e)
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error creating message in session {session_id} for user {current_user.id}: {e}", exc_info=True)
+        logger.error("Failed to create message", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create message"
+            status_code=500,
+            detail="Failed to create message",
         )
-
 
 @router.get("/{message_id}", response_model=MessageResponse)
 def get_message(
@@ -258,6 +295,23 @@ def attach_files_to_message(
         HTTPException 500: Database error
     """
     try:
+        # Validate that all resources exist and are owned by the user
+        resource_service = ResourceService(db)
+        try:
+            resource_service.ensure_resources_owned(payload.resource_ids, current_user.id)
+        except ValueError as e:
+            logger.warning(f"Resource validation error for user {current_user.id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e)
+            )
+        except PermissionError as e:
+            logger.warning(f"User {current_user.id} attempted to attach unowned resources: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(e)
+            )
+        
         message_service = MessageService(db)
         attachments = message_service.attach_resources_to_message(
             message_id=message_id,
@@ -365,11 +419,16 @@ def generate_ai_response(
     """
     try:
         message_service = MessageService(db)
-        # get resource IDs from message attachments if not provided get session level resources
-        attachments = message_service.get_message_attachments(message_id, current_user.id)
+        message = message_service.get_message_with_ownership_check(message_id, current_user.id)
+
+        attachment_service = MessageAttachmentService(db)
+        attachments = attachment_service.get_message_resources(message_id)
         resource_ids = [att.resource_id for att in attachments]
-        # if not resource_ids:
-            # get session level resources
+
+        if not resource_ids:
+            session_resource_service = SessionResourceService(db)
+            session_resources = session_resource_service.get_session_resources(message.session_id)
+            resource_ids = [res.resource_id for res in session_resources]
 
         assistant_message = message_service.generate_ai_response(
             message_id=message_id,
@@ -426,10 +485,29 @@ def get_message_history(
         session_service.get_session_with_ownership_check(session_id, current_user.id)
         
         message_service = MessageService(db)
-        messages = message_service.list_session_messages(session_id)
+        messages = message_service.list_session_messages_with_attachments(session_id)
+
+        # Build response including resource_ids per message
+        response_messages = []
+        for message in messages:
+            resource_ids = [att.resource_id for att in getattr(message, "attachments", [])]
+
+            response_messages.append({
+                "id": message.id,
+                "session_id": message.session_id,
+                "role": message.role,
+                "modality": message.modality,
+                "content": message.content,
+                "grade_level": message.grade_level,
+                "audio_url": message.audio_url,
+                "transcript": message.transcript,
+                "audio_duration_sec": message.audio_duration_sec,
+                "created_at": message.created_at,
+                "resource_ids": resource_ids,
+            })
         
-        logger.debug(f"Retrieved {len(messages)} messages for session {session_id} by user {current_user.id}")
-        return messages
+        logger.debug(f"Retrieved {len(messages)} messages with attachments for session {session_id} by user {current_user.id}")
+        return response_messages
         
     except ValueError as e:
         logger.warning(f"Session {session_id} not found for message history by user {current_user.id}")
@@ -449,6 +527,101 @@ def get_message_history(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve message history"
         )
+
+
+@router.get("/sessions/{session_id}/with-attachments", response_model=List[MessageWithAttachmentsResponse])
+def get_message_history_with_attachments(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all messages for a session with attachments and resource details.
+    Includes resource file information (filename, mime_type, size, storage_path) for each attachment.
+    
+    Args:
+        session_id: ID of the chat session
+        current_user: Authenticated user
+        db: Database session
+        
+    Returns:
+        List of MessageWithAttachmentsResponse objects with full attachment details
+        
+    Raises:
+        HTTPException 403: User doesn't own the session
+        HTTPException 404: Session not found
+        HTTPException 500: Database error
+    """
+    try:
+        session_service = ChatSessionService(db)
+        session_service.get_session_with_ownership_check(session_id, current_user.id)
+        
+        message_service = MessageService(db)
+        messages = message_service.list_session_messages_with_attachments(session_id)
+        
+        # Transform to response format with full resource details
+        response_messages = _transform_messages_with_full_attachments(messages)
+        
+        logger.debug(f"Retrieved {len(messages)} messages with attachments for session {session_id} by user {current_user.id}")
+        return response_messages
+        
+    except ValueError as e:
+        logger.warning(f"Session {session_id} not found for message history by user {current_user.id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except PermissionError as e:
+        logger.warning(f"User {current_user.id} attempted unauthorized access to message history for session {session_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error retrieving message history with attachments for session {session_id} for user {current_user.id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve message history with attachments"
+        )
+
+def _transform_messages_with_full_attachments(messages):
+    """Transform message models to MessageWithAttachmentsResponse format with full resource details."""
+    response_messages = []
+    for message in messages:
+        message_dict = {
+            "id": message.id,
+            "session_id": message.session_id,
+            "role": message.role,
+            "modality": message.modality,
+            "content": message.content,
+            "grade_level": message.grade_level,
+            "audio_url": message.audio_url,
+            "transcript": message.transcript,
+            "audio_duration_sec": message.audio_duration_sec,
+            "created_at": message.created_at,
+            "attachments": _transform_attachments_with_resource_details(message.attachments)
+        }
+        response_messages.append(message_dict)
+    return response_messages
+
+
+def _transform_attachments_with_resource_details(attachments):
+    """Transform attachment models to include full resource details for MessageAttachmentWithResource."""
+    return [
+        {
+            "id": attachment.id,
+            "message_id": attachment.message_id,
+            "resource_id": attachment.resource_id,
+            "display_name": attachment.display_name,
+            "attachment_type": attachment.attachment_type,
+            "created_at": attachment.created_at,
+            "resource_filename": getattr(attachment.resource, "original_filename", None) if hasattr(attachment, "resource") else None,
+            "resource_mime_type": getattr(attachment.resource, "mime_type", None) if hasattr(attachment, "resource") else None,
+            "resource_size_bytes": getattr(attachment.resource, "size_bytes", None) if hasattr(attachment, "resource") else None,
+            "resource_storage_path": getattr(attachment.resource, "storage_path", None) if hasattr(attachment, "resource") else None,
+        }
+        for attachment in attachments
+    ]
 
 
 @router.get("/{message_id}/sources", response_model=List[MessageContextChunkResponse])

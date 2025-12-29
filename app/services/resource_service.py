@@ -48,6 +48,8 @@ class ResourceService:
         filename: str,
         content_type: str,
         content: bytes,
+        *,
+        commit: bool = True,
     ):
         """Handle complete file upload process with validation."""
         # Validate
@@ -68,6 +70,7 @@ class ResourceService:
                 mime_type=content_type,
                 size_bytes=len(content),
                 source_type="user_upload",
+                commit=commit,
             )
             self.process_resource(resource.id, user_id)
             return resource
@@ -214,3 +217,7 @@ class ResourceService:
             query_embedding=query_embedding,
             top_k=top_k
         )
+
+    def list_resources_by_ids(self, resource_ids: List[UUID]) -> List:
+        """List resources by their IDs."""
+        return self.repository.list_resources_by_ids(resource_ids)

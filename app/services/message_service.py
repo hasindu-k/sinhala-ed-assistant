@@ -1,5 +1,5 @@
 # app/services/message_service.py
-
+import logging
 from typing import Optional, List, Dict
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -14,11 +14,14 @@ class MessageService:
     def __init__(self, db: Session):
         self.db = db
         self.repository = MessageRepository(db)
+        self.logger = logging.getLogger(__name__)
 
     def validate_message_payload(self, modality: str, content: Optional[str], audio_url: Optional[str]):
         """Validate message creation payload."""
-        if modality not in ["text", "voice", "image", "file"]:
-            raise ValueError(f"Invalid modality: {modality}")
+        # Accept enum values gracefully by coercing to string
+        modality_val = getattr(modality, "value", None) or str(modality)
+        if modality_val not in ["text", "voice", "image", "file"]:
+            raise ValueError(f"Invalid modality: {modality_val}")
         
         if modality == "text" and not content:
             raise ValueError("Text messages must have content")
@@ -44,14 +47,32 @@ class MessageService:
             from app.services.chat_session_service import ChatSessionService
             session_service = ChatSessionService(self.db)
         
-        # Validate session and ownership
-        session_service.get_session_with_ownership_check(session_id, user_id)
+        self.logger.debug(" start: session_id=%s user_id=%s modality=%s", session_id, user_id, modality)
+        # If session doesn't exist, create it on-demand using sensible defaults.
+        # Otherwise verify ownership.
+        session_exists = session_service.get_session(session_id)
+        if not session_exists:
+            # create session owned by this user. Defaults mirror ChatSessionCreate schema
+            session_service.create_session(
+                user_id=user_id,
+                mode="learning",
+                channel="text",
+                title=None,
+                description=None,
+                grade=None,
+                subject=None,
+            )
+        else:
+            # ownership check
+            if not session_service.validate_ownership(session_id, user_id):
+                raise PermissionError("You don't have permission to access this session")
         
-        # Validate message payload
+        # Validate message payload (coercion handled in validator)
         self.validate_message_payload(modality, content, audio_url)
         
         # Create message
-        return self.repository.create_user_message(
+        self.logger.debug("Creating user message for session_id=%s user_id=%s", session_id, user_id)
+        msg = self.repository.create_user_message(
             session_id=session_id,
             content=content,
             modality=modality,
@@ -60,6 +81,8 @@ class MessageService:
             transcript=transcript,
             audio_duration_sec=audio_duration_sec,
         )
+        self.logger.info("User message created: %s (session=%s)", getattr(msg, "id", None), session_id)
+        return msg
 
     def create_user_message(
         self,
@@ -89,15 +112,21 @@ class MessageService:
         session_id: UUID,
         content: Optional[str],
         model_info: Optional[Dict] = None,
+        grade_level: Optional[str] = None,
     ):
         return self.repository.create_assistant_message(
             session_id=session_id,
             content=content,
             model_info=model_info,
+            grade_level=grade_level,
         )
 
     def list_session_messages(self, session_id: UUID) -> List:
         return self.repository.list_session_messages(session_id)
+    
+    def list_session_messages_with_attachments(self, session_id: UUID) -> List:
+        """List messages with attachments and resource details."""
+        return self.repository.list_session_messages_with_attachments(session_id)
     
     def get_message(self, message_id: UUID) -> Optional[Message]:
         """Get a single message by ID."""
@@ -217,18 +246,31 @@ class MessageService:
         user_id: UUID,
         resource_ids: Optional[List[UUID]] = None,
     ):
-        """Generate AI response for a user message."""
+        """Generate AI response for a user message using RAG."""
         message = self.get_message_with_ownership_check(message_id, user_id)
         
+        # RAG parameters
+        query_embedding = None
+        bm25_k: int = 8 # number of documents for BM25 fallback
+        final_k: int = 3 # number of chunks after dense re-rank
+
         if message.role != "user":
             raise ValueError("Can only generate responses for user messages")
         
+        # Get user query from message
         user_query = message.content or message.transcript or ""
         if not user_query:
             raise ValueError("Cannot generate response without user query content")
         
+        if not resource_ids:
+            raise ValueError("No resources provided for RAG. Attach resources to generate a response.")
+        
+        # generate query embedding
+        # query_embedding: Optional[List[float]] = None,
+        from app.components.document_processing.services.embedding_service import generate_text_embedding
+        query_embedding: list[float] = generate_text_embedding(user_query)
+        logging.info("Generated query embedding for message %s", message_id)
         # Generate response using RAG
-        # TODO: inject RAG service to reuse LLM client/config rather than instantiating each call
         from app.services.rag_service import RAGService
         rag_service = RAGService(self.db)
         
@@ -236,7 +278,11 @@ class MessageService:
             session_id=message.session_id,
             user_message_id=message_id,
             user_query=user_query,
-            resource_ids=resource_ids or [],
+            resource_ids=resource_ids,
+            query_embedding=query_embedding,
+            bm25_k=bm25_k,
+            final_k=final_k,
+            grade_level=message.grade_level,
         )
         
         # Get the created assistant message

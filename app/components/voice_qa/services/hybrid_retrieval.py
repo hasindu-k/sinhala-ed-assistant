@@ -45,48 +45,45 @@ def lexical_retrieval(
     top_k: int = 50,
     config: str = "simple",
 ) -> List[Dict]:
-    if not query or not query.strip() or not resource_ids:
+    if not query or not resource_ids:
         return []
 
     sql = text(
         """
-        SELECT id, text, metadata,
-               ts_rank_cd(
-                 to_tsvector(:cfg, text),
-                 plainto_tsquery(:cfg, :q)
-               ) AS rank
+        SELECT
+            id,
+            content,
+            ts_rank_cd(
+                to_tsvector(:cfg, content),
+                plainto_tsquery(:cfg, :q)
+            ) AS rank
         FROM resource_chunks
         WHERE resource_id = ANY(:resource_ids)
-          AND to_tsvector(:cfg, text) @@ plainto_tsquery(:cfg, :q)
+          AND to_tsvector(:cfg, content) @@ plainto_tsquery(:cfg, :q)
         ORDER BY rank DESC
         LIMIT :k
         """
     )
 
-    results: List[Dict] = []
+    results = []
 
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                sql,
-                {
-                    "cfg": config,
-                    "q": query,
-                    "k": top_k,
-                    "resource_ids": resource_ids,
-                },
-            ).fetchall()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            sql,
+            {
+                "cfg": config,
+                "q": query,
+                "k": top_k,
+                "resource_ids": resource_ids,
+            },
+        ).fetchall()
 
-            for r in rows:
-                results.append({
-                    "chunk_id": r.id,
-                    "text": r.text,
-                    "metadata": r.metadata,
-                    "rank": float(r.rank) if r.rank is not None else 0.0,
-                })
-
-    except Exception as e:
-        print(f"[voice_qa.hybrid_retrieval] lexical_retrieval error: {e}")
+        for r in rows:
+            results.append({
+                "chunk_id": r.id,
+                "text": r.content,   # normalize key name
+                "rank": float(r.rank) if r.rank else 0.0,
+            })
 
     return results
 
@@ -108,39 +105,37 @@ def dense_retrieval(
         return []
 
     sql = text(
-        """
-        SELECT id, text, metadata,
-               embedding <-> :vec AS distance
-        FROM resource_chunks
-        WHERE resource_id = ANY(:resource_ids)
-        ORDER BY distance ASC
-        LIMIT :k
-        """
+    """
+    SELECT
+        id,
+        content,
+        embedding <-> (:vec)::vector AS distance
+    FROM resource_chunks
+    WHERE resource_id = ANY(:resource_ids)
+    ORDER BY distance ASC
+    LIMIT :k
+    """
     )
 
-    results: List[Dict] = []
 
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                sql,
-                {
-                    "vec": q_norm,
-                    "k": top_k,
-                    "resource_ids": resource_ids,
-                },
-            ).fetchall()
+    results = []
 
-            for r in rows:
-                results.append({
-                    "chunk_id": r.id,
-                    "text": r.text,
-                    "metadata": r.metadata,
-                    "distance": float(r.distance) if r.distance is not None else None,
-                })
+    with engine.connect() as conn:
+        rows = conn.execute(
+            sql,
+            {
+                "vec": q_norm,
+                "k": top_k,
+                "resource_ids": resource_ids,
+            },
+        ).fetchall()
 
-    except Exception as e:
-        print(f"[voice_qa.hybrid_retrieval] dense_retrieval error: {e}")
+        for r in rows:
+            results.append({
+                "chunk_id": r.id,
+                "text": r.content,
+                "distance": float(r.distance),
+            })
 
     return results
 

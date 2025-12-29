@@ -23,6 +23,8 @@ class ResourceRepository:
         size_bytes: Optional[int],
         source_type: Optional[str] = None,
         language: Optional[str] = None,
+        *,
+        commit: bool = True,
     ) -> ResourceFile:
         res = ResourceFile(
             user_id=user_id,
@@ -34,8 +36,12 @@ class ResourceRepository:
             language=language,
         )
         self.db.add(res)
-        self.db.commit()
-        self.db.refresh(res)
+        if commit:
+            self.db.commit()
+            self.db.refresh(res)
+        else:
+            # Ensure PK is generated within the current transaction
+            self.db.flush()
         return res
 
     def get_resource(self, resource_id: UUID) -> Optional[ResourceFile]:
@@ -67,7 +73,7 @@ class ResourceRepository:
         Returns:
             List of dicts with resource_id and similarity_score
         """
-        if not resource_ids:
+        if not resource_ids or not query_embedding:
             return []
             
         placeholders = ", ".join([f":id{i}" for i in range(len(resource_ids))])
@@ -76,11 +82,11 @@ class ResourceRepository:
             SELECT 
                 id as resource_id,
                 original_filename,
-                1 - (document_embedding <=> :query_embedding) as similarity_score
+                1 - (document_embedding <=> (:query_embedding)::vector) AS similarity_score
             FROM resource_files
             WHERE id IN ({placeholders})
                 AND document_embedding IS NOT NULL
-            ORDER BY document_embedding <=> :query_embedding
+            ORDER BY document_embedding <=> (:query_embedding)::vector
             LIMIT :top_k
             """
         )
@@ -89,6 +95,13 @@ class ResourceRepository:
         params["query_embedding"] = query_embedding
         params["top_k"] = top_k
         
-        result = self.db.execute(sql, params)
-        return [dict(row) for row in result]
+        result = self.db.execute(sql, params).mappings()
+        return [dict(r) for r in result]
 
+    def list_resources_by_ids(self, resource_ids: List[UUID]) -> List[ResourceFile]:
+        """List resources by their IDs."""
+        return (
+            self.db.query(ResourceFile)
+            .filter(ResourceFile.id.in_(resource_ids))
+            .all()
+        ) 
