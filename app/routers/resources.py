@@ -100,6 +100,7 @@ async def upload_resources(
         HTTPException 400: Invalid file(s) or empty payload
         HTTPException 500: File storage or database error
     """
+    created_paths: List[str] = []
     try:
         if not files:
             raise ValueError("No files uploaded")
@@ -107,6 +108,7 @@ async def upload_resources(
         resource_service = ResourceService(db)
         responses: List[ResourceUploadResponse] = []
 
+        # Insert all records, then commit once at the end
         for file in files:
             content = await file.read()
             resource = resource_service.upload_resource_from_file(
@@ -114,7 +116,12 @@ async def upload_resources(
                 filename=file.filename,
                 content_type=file.content_type,
                 content=content,
+                commit=False,  # defer commit until all succeed
             )
+
+            # Track file path for cleanup if batch fails later
+            if getattr(resource, "storage_path", None):
+                created_paths.append(resource.storage_path)
 
             responses.append(
                 ResourceUploadResponse(
@@ -125,16 +132,41 @@ async def upload_resources(
                 )
             )
 
+        # Commit everything atomically
+        db.commit()
+
         logger.info(f"{len(responses)} resources uploaded by user {current_user.id}")
         return responses
         
     except ValueError as e:
+        # Roll back any pending DB work, then cleanup files
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        for p in created_paths:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
         logger.warning(f"Validation error uploading resources: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
+        # Roll back any pending DB work, then cleanup files
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        for p in created_paths:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
         logger.error(f"Error uploading resources for user {current_user.id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -444,7 +476,7 @@ def download_resource(
         if not resource.storage_path or not os.path.exists(resource.storage_path):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Stored file not found"
+                detail="The requested file no longer exists"
             )
 
         filename = resource.original_filename or os.path.basename(resource.storage_path)
@@ -485,7 +517,7 @@ def view_resource(
         if not resource.storage_path or not os.path.exists(resource.storage_path):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Stored file not found"
+                detail="The requested file no longer exists"
             )
 
         filename = resource.original_filename or os.path.basename(resource.storage_path)
