@@ -46,6 +46,7 @@ def create_chat_session(
             description=payload.description,
             grade=payload.grade,
             subject=payload.subject,
+            rubric_id=payload.rubric_id,
         )
         logger.info(f"Chat session created: {session.id} for user {current_user.id}")
         return session
@@ -177,6 +178,7 @@ def update_chat_session(
             description=payload.description,
             grade=payload.grade,
             subject=payload.subject,
+            rubric_id=payload.rubric_id,
         )
         logger.info(f"Chat session {session_id} updated by user {current_user.id}")
         return session
@@ -247,39 +249,38 @@ def delete_chat_session(
         )
 
 
-@router.post("/sessions/{session_id}/resources", status_code=status.HTTP_201_CREATED)
-def attach_resources_to_session(
+@router.post("/sessions/{session_id}/attach-resource", status_code=status.HTTP_200_OK)
+def attach_resource_to_session(
     session_id: UUID,
     payload: SessionResourceAttach,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Attach resources permanently to a session.
+    Attach a resource (syllabus or question_paper) to a session.
     
     Args:
         session_id: ID of the session
-        payload: Resource attachment data
+        payload: Resource attachment data (resource_id, role)
         current_user: Authenticated user
         db: Database session
         
     Returns:
         Confirmation message
-        
-    Raises:
-        HTTPException 400: Invalid resource IDs
-        HTTPException 403: User doesn't own the session
-        HTTPException 404: Session or resources not found
-        HTTPException 500: Database or internal error
     """
     try:
         service = ChatSessionService(db)
-        result = service.attach_resources(session_id, current_user.id, payload.resource_ids)
-        logger.info(f"Resources {payload.resource_ids} attached to session {session_id} by user {current_user.id}")
+        result = service.attach_resource(
+            session_id=session_id, 
+            user_id=current_user.id, 
+            resource_id=payload.resource_id, 
+            role=payload.role
+        )
+        logger.info(f"Resource {payload.resource_id} attached as {payload.role} to session {session_id} by user {current_user.id}")
         return result
         
     except ValueError as e:
-        logger.warning(f"Validation error attaching resources to session {session_id}: {e}")
+        logger.warning(f"Validation error attaching resource to session {session_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
@@ -291,8 +292,8 @@ def attach_resources_to_session(
             detail=str(e)
         )
     except Exception as e:
-        logger.error(f"Error attaching resources to session {session_id} for user {current_user.id}: {e}", exc_info=True)
+        logger.error(f"Error attaching resource to session {session_id} for user {current_user.id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to attach resources to session"
+            detail="Failed to attach resource to session"
         )

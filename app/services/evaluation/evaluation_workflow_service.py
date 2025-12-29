@@ -67,32 +67,33 @@ class EvaluationWorkflowService:
     def create_session(self, payload: EvaluationSessionCreate, user_id: UUID):
         self._ensure_chat_session_owner(payload.session_id, user_id)
         
-        # Get active context
-        from app.services.evaluation.user_context_service import UserContextService
-        context_service = UserContextService(self.db)
-        context = context_service.get_or_create_context(user_id)
-        
-        rubric_id = payload.rubric_id or context.active_rubric_id
+        # Get Chat Session to retrieve attached resources
+        chat_session = self.chat_sessions.get_session(payload.session_id)
+        if not chat_session:
+            raise ValueError("Chat session not found")
+            
+        # Determine Rubric ID: Payload > Chat Session > None
+        rubric_id = payload.rubric_id or chat_session.rubric_id
         
         session = self.sessions.create_evaluation_session(
             session_id=payload.session_id,
             rubric_id=rubric_id,
         )
         
-        # Attach active syllabus and QP if available
-        if context.active_syllabus_id:
-            self.resources.attach_resource(
-                evaluation_session_id=session.id,
-                resource_id=context.active_syllabus_id,
-                role="syllabus"
-            )
-            
-        if context.active_question_paper_id:
-            self.resources.attach_resource(
-                evaluation_session_id=session.id,
-                resource_id=context.active_question_paper_id,
-                role="question_paper"
-            )
+        # Retrieve attached resources from Chat Session (via SessionResource)
+        from app.shared.models.session_resources import SessionResource
+        session_resources = self.db.query(SessionResource).filter(
+            SessionResource.session_id == payload.session_id
+        ).all()
+        
+        # Attach them to Evaluation Session
+        for sr in session_resources:
+            if sr.label in ["syllabus", "question_paper"]:
+                self.resources.attach_resource(
+                    evaluation_session_id=session.id,
+                    resource_id=sr.resource_id,
+                    role=sr.label
+                )
             
         return session
 
