@@ -55,3 +55,33 @@ class MessageAttachmentRepository:
             .order_by(MessageAttachment.created_at.asc())
             .all()
         )
+
+    def delete_attachments_by_session_id(self, session_id: UUID, *, commit: bool = False) -> int:
+        """Bulk delete all attachments for messages belonging to a session."""
+        from app.shared.models.message import Message
+        count = (
+            self.db.query(MessageAttachment)
+            .filter(
+                MessageAttachment.message_id.in_(
+                    self.db.query(Message.id).filter(Message.session_id == session_id)
+                )
+            )
+            .delete(synchronize_session=False)
+        )
+        if commit:
+            self.db.commit()
+        return count
+
+    def get_resource_ids_for_session(self, session_id: UUID) -> List[UUID]:
+        """Return resource IDs attached to any message in the session."""
+        from app.shared.models.message import Message
+        return [
+            row[0]
+            for row in self.db.query(MessageAttachment.resource_id)
+            .filter(
+                MessageAttachment.message_id.in_(
+                    self.db.query(Message.id).filter(Message.session_id == session_id)
+                )
+            )
+            .all()
+        ]
