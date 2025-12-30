@@ -143,14 +143,14 @@ class ChatSessionService:
             self.db.rollback()
             raise
     
-    def attach_resources(self, session_id: UUID, user_id: UUID, resource_ids: List[UUID]):
-        """Attach resources to session after validation."""
-        if not resource_ids:
-            raise ValueError("At least one resource ID is required")
+    # def attach_resources(self, session_id: UUID, user_id: UUID, resource_ids: List[UUID]):
+    #     """Attach resources to session after validation."""
+    #     if not resource_ids:
+    #         raise ValueError("At least one resource ID is required")
         
-        # Verify ownership
-        self.get_session_with_ownership_check(session_id, user_id)
+    #     # Verify ownership
+    #     self.get_session_with_ownership_check(session_id, user_id)
         
-        # TODO: Implement actual resource attachment logic
-        # This would involve creating records in session_resources table
-        return {"detail": "Resources attached successfully"}
+    #     # TODO: Implement actual resource attachment logic
+    #     # This would involve creating records in session_resources table
+    #     return {"detail": "Resources attached successfully"}

@@ -92,15 +92,24 @@ def create_user_message(
                 )
             
             attachment_service = MessageAttachmentService(db)
+            session_resource_service = SessionResourceService(db)
+            
             for att in attachments:
+                # Attach to message
                 attachment_service.attach_resource(
                     message_id=message.id,
                     resource_id=att.resource_id,
                     display_name=att.display_name,
                     attachment_type=att.attachment_type,
                 )
+                
+                # Also attach to session
+                session_resource_service.attach_resource_to_session(
+                    session_id=parsed_session_id,
+                    resource_id=att.resource_id,
+                )
 
-            logger.info(f"Attached {len(attachments)} resources to message {message.id}")
+            logger.info(f"Attached {len(attachments)} resources to message {message.id} and session {parsed_session_id}")
 
         logger.info(f"User message created: {message.id} in session {parsed_session_id} by user {current_user.id}")
 
@@ -417,14 +426,20 @@ def process_message_attachments(
     """
     try:
         message_service = MessageService(db)
-        message_service.get_message_with_ownership_check(message_id, current_user.id)
+        message = message_service.get_message_with_ownership_check(message_id, current_user.id)
 
         attachment_service = MessageAttachmentService(db)
         attachments = attachment_service.get_message_resources(message_id)
         resource_ids = list({att.resource_id for att in attachments})
 
+        # If no message attachments, fall back to session resources
         if not resource_ids:
-            raise ValueError("No attachments found for this message")
+            session_resource_service = SessionResourceService(db)
+            session_resources = session_resource_service.get_session_resources(message.session_id)
+            resource_ids = list({res.resource_id for res in session_resources})
+
+        if not resource_ids:
+            raise ValueError("No attachments found for this message or session")
 
         resource_service = ResourceService(db)
         results = []

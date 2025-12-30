@@ -208,3 +208,5 @@ __marimo__/
 
 #firebase
 config/firebase_service_account.json
+
+uploads/
