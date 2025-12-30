@@ -17,6 +17,7 @@ from app.schemas.message import (
     MessageSafetyReportResponse,
     GenerateResponseRequest
 )
+from app.schemas.resource import ResourceProcessResponse
 from app.services.message_service import MessageService
 from app.services.message_attachment_service import MessageAttachmentService
 from app.services.message_context_service import MessageContextService
@@ -388,6 +389,77 @@ def detach_files_from_message(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to detach resources"
+        )
+
+
+@router.post("/{message_id}/attachments/process", response_model=List[ResourceProcessResponse])
+def process_message_attachments(
+    message_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    OCR, chunk, and embed all resources attached to a message.
+
+    Args:
+        message_id: ID of the message whose attachments should be processed
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        List of processing results for each attached resource
+
+    Raises:
+        HTTPException 400: No attachments or validation error
+        HTTPException 403: User doesn't own the session
+        HTTPException 404: Message not found
+        HTTPException 500: Processing error
+    """
+    try:
+        message_service = MessageService(db)
+        message_service.get_message_with_ownership_check(message_id, current_user.id)
+
+        attachment_service = MessageAttachmentService(db)
+        attachments = attachment_service.get_message_resources(message_id)
+        resource_ids = list({att.resource_id for att in attachments})
+
+        if not resource_ids:
+            raise ValueError("No attachments found for this message")
+
+        resource_service = ResourceService(db)
+        results = []
+        for resource_id in resource_ids:
+            result = resource_service.process_resource(resource_id, current_user.id)
+            results.append(result)
+
+        logger.info(
+            "Processed %s attachments for message %s by user %s",
+            len(results),
+            message_id,
+            current_user.id,
+        )
+        return results
+
+    except ValueError as e:
+        logger.warning(f"Validation error processing attachments for message {message_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except PermissionError as e:
+        logger.warning(f"User {current_user.id} attempted unauthorized processing for message {message_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(
+            f"Error processing attachments for message {message_id} for user {current_user.id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process message attachments"
         )
 
 @router.post("/{message_id}/generate", response_model=MessageResponse)
