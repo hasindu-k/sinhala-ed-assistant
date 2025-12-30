@@ -293,7 +293,7 @@ SECTION 2: QUESTION STRUCTURE RULES
 
 **Paper II (Structured):**
 - Main Questions: 1, 2, 3...
-- Sub-questions: a, b, c... or i, ii, iii...
+- Sub-questions: Use lowercase letters 'a', 'b', 'c'... as keys (convert roman numerals i, ii, iii to a, b, c if necessary).
 - Marks: Extract specific marks like "(05 marks)", "(10)", "ලකුණු 05".
 - **Rule:** Never assign 0 marks. Use null if unknown.
 

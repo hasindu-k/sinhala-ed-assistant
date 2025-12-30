@@ -207,10 +207,10 @@ def get_parsed_questions(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch parsed questions")
 
 
-@router.post("/sessions/{session_id}/paper-config", response_model=PaperConfigResponse)
+@router.post("/sessions/{session_id}/paper-config", response_model=List[PaperConfigResponse])
 def save_paper_config(
     session_id: UUID,
-    payload: PaperConfigCreate,
+    payload: List[PaperConfigCreate],
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

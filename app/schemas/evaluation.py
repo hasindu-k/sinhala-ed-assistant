@@ -1,7 +1,7 @@
 # app/schemas/evaluation.py
 
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Union, Any
 from uuid import UUID
 from datetime import datetime
 from decimal import Decimal
@@ -83,7 +83,7 @@ class PaperConfigCreate(BaseModel):
     medium: Optional[str] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
-    selection_rules: Optional[Dict[str, int]] = None
+    selection_rules: Optional[Dict[str, Any]] = None
 
 
 class PaperConfigUpdate(BaseModel):
@@ -92,7 +92,7 @@ class PaperConfigUpdate(BaseModel):
     medium: Optional[str] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
-    selection_rules: Optional[Dict[str, int]] = None
+    selection_rules: Optional[Dict[str, Any]] = None
     is_confirmed: Optional[bool] = None
 
 
@@ -105,7 +105,7 @@ class PaperConfigResponse(BaseModel):
     medium: Optional[str] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
-    selection_rules: Optional[Dict[str, int]] = None
+    selection_rules: Optional[Dict[str, Any]] = None
     is_confirmed: Optional[bool] = None
     created_at: datetime
 
@@ -147,24 +147,6 @@ class QuestionPaperResponse(BaseModel):
         from_attributes = True
 
 
-# Question Schemas
-class QuestionCreate(BaseModel):
-    question_number: Optional[str] = None
-    question_text: Optional[str] = None
-    max_marks: Optional[int] = None
-
-
-class QuestionResponse(BaseModel):
-    id: UUID
-    question_paper_id: UUID
-    question_number: Optional[str] = None
-    question_text: Optional[str] = None
-    max_marks: Optional[int] = None
-
-    class Config:
-        from_attributes = True
-
-
 # Sub Question Schemas
 class SubQuestionCreate(BaseModel):
     label: Optional[str] = None
@@ -179,7 +161,26 @@ class SubQuestionResponse(BaseModel):
     label: Optional[str] = None
     sub_question_text: Optional[str] = None
     max_marks: Optional[int] = None
-    children: list['SubQuestionResponse'] = []
+    children: List['SubQuestionResponse'] = []
+
+    class Config:
+        from_attributes = True
+
+
+# Question Schemas
+class QuestionCreate(BaseModel):
+    question_number: Optional[str] = None
+    question_text: Optional[str] = None
+    max_marks: Optional[int] = None
+
+
+class QuestionResponse(BaseModel):
+    id: UUID
+    question_paper_id: UUID
+    question_number: Optional[str] = None
+    question_text: Optional[str] = None
+    max_marks: Optional[int] = None
+    sub_questions: List[SubQuestionResponse] = Field(default=[], validation_alias="root_sub_questions")
 
     class Config:
         from_attributes = True

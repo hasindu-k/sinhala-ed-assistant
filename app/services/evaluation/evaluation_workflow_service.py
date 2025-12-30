@@ -1,5 +1,6 @@
 # app/services/evaluation/evaluation_workflow_service.py
 
+import re
 from typing import Optional, List
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -38,6 +39,24 @@ class EvaluationWorkflowService:
         self.answers = AnswerEvaluationService(db)
         self.chat_sessions = ChatSessionService(db)
         self.resource_files = ResourceService(db)
+
+    def _normalize_question_number(self, q_num: str) -> str:
+        """Normalize question number (e.g. '1.', 'Q1' -> '1')"""
+        if not q_num:
+            return q_num
+        # Remove parens, dots
+        clean = re.sub(r'[().]', '', str(q_num)).strip()
+        # Remove "Q" or "q" prefix if followed by number
+        clean = re.sub(r'^[Qq](\d+)', r'\1', clean)
+        return clean
+
+    def _normalize_sub_question_label(self, label: str) -> str:
+        """Normalize sub-question label (e.g. '(a)', 'a.' -> 'a')"""
+        if not label:
+            return label
+        # Remove parens, dots and convert to lowercase
+        clean = re.sub(r'[().]', '', str(label)).strip().lower()
+        return clean
 
     # ------------------------------------------------------------------
     # Ownership helpers
@@ -229,9 +248,10 @@ class EvaluationWorkflowService:
                 # 2️⃣ Create Questions
                 questions_dict = paper_data.get("questions", {}) or {}
                 for q_num, q_data in questions_dict.items():
+                    normalized_q_num = self._normalize_question_number(q_num)
                     question = self.question_papers.create_question(
                         question_paper_id=question_paper.id,
-                        question_number=q_num,
+                        question_number=normalized_q_num,
                         question_text=q_data.get("text"),
                         max_marks=q_data.get("marks"),
                         shared_stem=q_data.get("shared_stem"),
@@ -243,9 +263,10 @@ class EvaluationWorkflowService:
                         if not sub_data:
                             return
                         for label, data in sub_data.items():
+                            normalized_label = self._normalize_sub_question_label(label)
                             sq = self.question_papers.create_sub_question(
                                 question_id=parent_q_id,
-                                label=label,
+                                label=normalized_label,
                                 sub_question_text=data.get("text"),
                                 max_marks=data.get("marks"),
                                 parent_sub_question_id=parent_sq_id
@@ -275,17 +296,21 @@ class EvaluationWorkflowService:
 
         return self.question_papers.get_questions_by_paper(question_papers[0].id)
 
-    def save_paper_config(self, session_id: UUID, payload: PaperConfigCreate, user_id: UUID):
+    def save_paper_config(self, session_id: UUID, payload: List[PaperConfigCreate], user_id: UUID):
         self._ensure_chat_session_owner(session_id, user_id)
-        return self.paper_configs.save_config(
-            chat_session_id=session_id,
-            paper_part=payload.paper_part,
-            subject_name=payload.subject_name,
-            medium=payload.medium,
-            weightage=float(payload.weightage) if payload.weightage is not None else None,
-            total_main_questions=payload.total_main_questions,
-            selection_rules=payload.selection_rules,
-        )
+        saved_configs = []
+        for config in payload:
+            saved = self.paper_configs.save_config(
+                chat_session_id=session_id,
+                paper_part=config.paper_part,
+                subject_name=config.subject_name,
+                medium=config.medium,
+                weightage=float(config.weightage) if config.weightage is not None else None,
+                total_main_questions=config.total_main_questions,
+                selection_rules=config.selection_rules,
+            )
+            saved_configs.append(saved)
+        return saved_configs
 
     def get_paper_config(self, session_id: UUID, user_id: UUID):
         self._ensure_chat_session_owner(session_id, user_id)
