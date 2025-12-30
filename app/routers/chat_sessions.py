@@ -248,52 +248,52 @@ def delete_chat_session(
         )
 
 
-@router.post("/sessions/{session_id}/resources", status_code=status.HTTP_201_CREATED)
-def attach_resources_to_session(
-    session_id: UUID,
-    payload: SessionResourceAttach,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    Attach resources permanently to a session.
+# @router.post("/sessions/{session_id}/resources", status_code=status.HTTP_201_CREATED)
+# def attach_resources_to_session(
+#     session_id: UUID,
+#     payload: SessionResourceAttach,
+#     current_user: User = Depends(get_current_user),
+#     db: Session = Depends(get_db),
+# ):
+#     """
+#     Attach resources permanently to a session.
     
-    Args:
-        session_id: ID of the session
-        payload: Resource attachment data
-        current_user: Authenticated user
-        db: Database session
+#     Args:
+#         session_id: ID of the session
+#         payload: Resource attachment data
+#         current_user: Authenticated user
+#         db: Database session
         
-    Returns:
-        Confirmation message
+#     Returns:
+#         Confirmation message
         
-    Raises:
-        HTTPException 400: Invalid resource IDs
-        HTTPException 403: User doesn't own the session
-        HTTPException 404: Session or resources not found
-        HTTPException 500: Database or internal error
-    """
-    try:
-        service = ChatSessionService(db)
-        result = service.attach_resources(session_id, current_user.id, payload.resource_ids)
-        logger.info(f"Resources {payload.resource_ids} attached to session {session_id} by user {current_user.id}")
-        return result
+#     Raises:
+#         HTTPException 400: Invalid resource IDs
+#         HTTPException 403: User doesn't own the session
+#         HTTPException 404: Session or resources not found
+#         HTTPException 500: Database or internal error
+#     """
+#     try:
+#         service = ChatSessionService(db)
+#         result = service.attach_resources(session_id, current_user.id, payload.resource_ids)
+#         logger.info(f"Resources {payload.resource_ids} attached to session {session_id} by user {current_user.id}")
+#         return result
         
-    except ValueError as e:
-        logger.warning(f"Validation error attaching resources to session {session_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except PermissionError as e:
-        logger.warning(f"User {current_user.id} attempted unauthorized resource attachment to session {session_id}")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Error attaching resources to session {session_id} for user {current_user.id}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to attach resources to session"
-        )
+#     except ValueError as e:
+#         logger.warning(f"Validation error attaching resources to session {session_id}: {e}")
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail=str(e)
+#         )
+#     except PermissionError as e:
+#         logger.warning(f"User {current_user.id} attempted unauthorized resource attachment to session {session_id}")
+#         raise HTTPException(
+#             status_code=status.HTTP_403_FORBIDDEN,
+#             detail=str(e)
+#         )
+#     except Exception as e:
+#         logger.error(f"Error attaching resources to session {session_id} for user {current_user.id}: {e}", exc_info=True)
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail="Failed to attach resources to session"
+#         )
