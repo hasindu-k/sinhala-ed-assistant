@@ -41,6 +41,14 @@ class AnswerEvaluationService:
     def get_answer_documents_by_evaluation_session(self, evaluation_session_id: UUID) -> List:
         """Get all answer documents for an evaluation session."""
         return self.repository.get_answer_documents_by_evaluation_session(evaluation_session_id)
+
+    def get_answer_document_by_session_and_resource(self, evaluation_session_id: UUID, resource_id: UUID):
+        """Get answer document by session and resource ID."""
+        return self.repository.get_answer_document_by_session_and_resource(evaluation_session_id, resource_id)
+
+    def update_mapped_answers(self, answer_document_id: UUID, mapped_answers: Dict):
+        """Update mapped answers for an answer document."""
+        return self.repository.update_mapped_answers(answer_document_id, mapped_answers)
     
     def create_evaluation_result(
         self,
@@ -148,8 +156,9 @@ class AnswerEvaluationService:
             "question_scores": [
                 {
                     "id": score.id,
+                    "evaluation_result_id": score.evaluation_result_id,
                     "sub_question_id": score.sub_question_id,
-                    "awarded_marks": float(score.awarded_marks) if score.awarded_marks else None,
+                    "awarded_marks": score.awarded_marks,
                     "feedback": score.feedback
                 }
                 for score in scores

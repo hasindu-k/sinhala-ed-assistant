@@ -62,7 +62,7 @@ class RAGService:
             assistant_msg = self.message_service.create_assistant_message(
                 session_id=session_id,
                 content=refusal_text,
-                model_info={"model_name": "gemini-2.5-flash"},
+                model_info={"model_name": "gemini-3-flash-preview"},
             )
             return {
                 "assistant_message_id": assistant_msg.id,
@@ -141,7 +141,7 @@ class RAGService:
             session_id=session_id,
             content=generated,
             model_info={
-                "model_name": "gemini-2.5-flash", 
+                "model_name": "gemini-3-flash-preview", 
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": total_tokens

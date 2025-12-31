@@ -1,10 +1,11 @@
 # app/routers/evaluation.py
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.schemas.evaluation import (
@@ -21,7 +22,12 @@ from app.schemas.evaluation import (
     QuestionResponse,
     EvaluationResultDetail,
     UserEvaluationContextResponse,
+    AnswerMappingResponse,
+    SyllabusContentResponse,
+    RubricContentResponse,
     StartEvaluationRequest,
+    ProcessDocumentsRequest,
+    ProcessDocumentsResponse,
 )
 from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
 from app.services.evaluation.user_context_service import UserContextService
@@ -45,6 +51,48 @@ def update_active_paper_config(
     service = UserContextService(db)
     service.update_paper_config(current_user.id, config_data)
     return service.get_context_details(current_user.id)
+
+
+@router.post("/process-documents", response_model=ProcessDocumentsResponse)
+def process_documents(
+    payload: ProcessDocumentsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Process the syllabus, question paper, and answer sheets before evaluation.
+    Checks if they are already processed.
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        return service.process_documents(
+            chat_session_id=payload.chat_session_id,
+            answer_resource_ids=payload.answer_resource_ids,
+            user_id=current_user.id
+        )
+    except Exception as exc:
+        logger.error(f"Failed to process documents: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to process documents")
+
+
+@router.post("/process-documents/stream")
+def process_documents_stream(
+    payload: ProcessDocumentsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Stream progress updates for document processing (SSE).
+    """
+    service = EvaluationWorkflowService(db)
+    return StreamingResponse(
+        service.process_documents_generator(
+            chat_session_id=payload.chat_session_id,
+            answer_resource_ids=payload.answer_resource_ids,
+            user_id=current_user.id
+        ),
+        media_type="text/event-stream"
+    )
 
 
 @router.post("/start", response_model=EvaluationSessionResponse)
@@ -166,6 +214,48 @@ def update_evaluation_session(
 
 
 
+@router.get("/sessions/{session_id}/syllabus", response_model=SyllabusContentResponse)
+def get_syllabus_content(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get the extracted content of the syllabus attached to the session.
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        return service.get_syllabus_content(session_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to get syllabus content: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get syllabus content")
+
+
+@router.get("/sessions/{session_id}/rubric", response_model=RubricContentResponse)
+def get_rubric_content(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get the extracted content of the rubric (marking scheme) attached to the session.
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        return service.get_rubric_content(session_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to get rubric content: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get rubric content")
+
+
 @router.post("/sessions/{session_id}/parse-question-paper")
 def parse_question_paper(
     session_id: UUID,
@@ -229,7 +319,7 @@ def save_paper_config(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to save paper config")
 
 
-@router.get("/sessions/{session_id}/paper-config", response_model=PaperConfigResponse)
+@router.get("/sessions/{session_id}/paper-config", response_model=List[PaperConfigResponse])
 def get_paper_config(
     session_id: UUID,
     current_user: User = Depends(get_current_user),
@@ -242,18 +332,18 @@ def get_paper_config(
     try:
         config = service.get_paper_config(session_id, current_user.id)
         if not config:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper config not found")
-        return config
+            return []
+        return config if isinstance(config, list) else [config]
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
-@router.post("/sessions/{session_id}/paper-config/confirm", response_model=PaperConfigResponse)
+@router.post("/sessions/{session_id}/paper-config/confirm", response_model=List[PaperConfigResponse])
 def confirm_paper_config(
     session_id: UUID,
-    payload: PaperConfigUpdate,
+    payload: Union[PaperConfigUpdate, List[PaperConfigUpdate]],
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -262,10 +352,10 @@ def confirm_paper_config(
     """
     service = EvaluationWorkflowService(db)
     try:
-        config = service.confirm_paper_config(session_id, payload, current_user.id)
-        if not config:
+        configs = service.confirm_paper_config(session_id, payload, current_user.id)
+        if not configs:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper config not found")
-        return config
+        return configs
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except ValueError as exc:
@@ -311,6 +401,69 @@ def list_answer_documents(
     except Exception as exc:
         logger.error(f"Failed to list answers for evaluation {evaluation_id}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to list answer documents")
+
+
+@router.post("/answers/{answer_id}/parse", response_model=Dict[str, Any])
+def parse_answer_document(
+    answer_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Parse and map student answers to questions (Debug/Verification endpoint).
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        return service.parse_answer_document(answer_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to parse answer {answer_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to parse answer document")
+
+
+@router.get("/answers/{answer_id}/mapping", response_model=AnswerMappingResponse)
+def get_answer_mapping(
+    answer_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get the stored AI mapping for an answer document.
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        return service.get_answer_mapping(answer_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to get answer mapping: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get answer mapping")
+
+
+@router.get("/answers/{answer_id}/mapping-details")
+def get_answer_mapping_details(
+    answer_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get detailed answer mapping with question text and numbering.
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        return service.get_answer_mapping_details(answer_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to get answer mapping details: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get answer mapping details")
 
 
 @router.post("/answers/{answer_id}/evaluate")

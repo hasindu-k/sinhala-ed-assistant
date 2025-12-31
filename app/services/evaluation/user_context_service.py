@@ -35,7 +35,19 @@ class UserContextService:
 
     def update_rubric(self, user_id: UUID, rubric_id: UUID) -> UserEvaluationContext:
         context = self.get_or_create_context(user_id)
-        context.active_rubric_id = rubric_id
+        # Check if it's a ResourceFile or a Rubric entity
+        # For now, we assume if it comes from the upload endpoint, it's a ResourceFile
+        # But the method signature just takes a UUID.
+        # We'll try to find it in ResourceFile first.
+        resource = self.db.query(ResourceFile).filter(ResourceFile.id == rubric_id).first()
+        if resource:
+            context.active_rubric_resource_id = rubric_id
+            # Clear the structured rubric ID if we are switching to a file-based one
+            # context.active_rubric_id = None 
+        else:
+            # Assume it's a structured Rubric
+            context.active_rubric_id = rubric_id
+            
         self.db.commit()
         self.db.refresh(context)
         return context
@@ -59,7 +71,9 @@ class UserContextService:
             question_paper = self.db.query(ResourceFile).filter(ResourceFile.id == context.active_question_paper_id).first()
             
         rubric = None
-        if context.active_rubric_id:
+        if context.active_rubric_resource_id:
+             rubric = self.db.query(ResourceFile).filter(ResourceFile.id == context.active_rubric_resource_id).first()
+        elif context.active_rubric_id:
             rubric = self.db.query(Rubric).filter(Rubric.id == context.active_rubric_id).first()
             
         return {

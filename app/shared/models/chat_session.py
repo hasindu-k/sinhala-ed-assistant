@@ -29,3 +29,9 @@ class ChatSession(Base):
         back_populates="session", 
         cascade="all, delete-orphan" 
     )
+
+    resources = relationship(
+        "SessionResource",
+        backref="session",
+        cascade="all, delete-orphan"
+    )

@@ -19,6 +19,7 @@ class EvaluationResourceRole(str, Enum):
     syllabus = "syllabus"
     question_paper = "question_paper"
     answer_script = "answer_script"
+    rubric = "rubric"
 
 
 # Evaluation Session Schemas
@@ -64,6 +65,36 @@ class StartEvaluationRequest(BaseModel):
     answer_resource_ids: List[UUID]
 
 
+class ProcessDocumentsRequest(BaseModel):
+    chat_session_id: UUID
+    answer_resource_ids: List[UUID]
+
+
+class DocumentProcessingStatus(BaseModel):
+    resource_id: UUID
+    role: str
+    status: str  # "processed", "already_processed", "failed"
+    message: Optional[str] = None
+
+
+class ProcessDocumentsResponse(BaseModel):
+    results: List[DocumentProcessingStatus]
+
+
+class AnswerMappingResponse(BaseModel):
+    answer_document_id: UUID
+    mapped_answers: Optional[Dict[str, Any]] = None
+    extracted_text: Optional[str] = None
+
+
+class SyllabusContentResponse(BaseModel):
+    resource_id: UUID
+    extracted_text: Optional[str] = None
+
+
+class RubricContentResponse(BaseModel):
+    resource_id: UUID
+    extracted_text: Optional[str] = None
 
 
 class EvaluationResourceResponse(BaseModel):
@@ -81,15 +112,18 @@ class PaperConfigCreate(BaseModel):
     paper_part: Optional[str] = None
     subject_name: Optional[str] = None
     medium: Optional[str] = None
+    total_marks: Optional[int] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
     selection_rules: Optional[Dict[str, Any]] = None
+    is_confirmed: Optional[bool] = False
 
 
 class PaperConfigUpdate(BaseModel):
     paper_part: Optional[str] = None
     subject_name: Optional[str] = None
     medium: Optional[str] = None
+    total_marks: Optional[int] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
     selection_rules: Optional[Dict[str, Any]] = None
@@ -103,6 +137,7 @@ class PaperConfigResponse(BaseModel):
     paper_part: Optional[str] = None
     subject_name: Optional[str] = None
     medium: Optional[str] = None
+    total_marks: Optional[int] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
     selection_rules: Optional[Dict[str, Any]] = None

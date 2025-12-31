@@ -29,7 +29,7 @@ router = APIRouter()
 @router.post("/upload", response_model=ResourceBulkUploadResponse)
 async def upload_resource(
     files: List[UploadFile] = File(...),
-    resource_type: Optional[str] = Query(None, enum=["syllabus", "question_paper"]),
+    resource_type: Optional[str] = Query(None, enum=["syllabus", "question_paper", "rubric"]),
     chat_session_id: Optional[UUID] = Query(None, description="Optional chat session ID to attach the resource to"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -75,6 +75,8 @@ async def upload_resource(
                     context_service.update_syllabus(user_id, resource.id)
                 elif resource_type == "question_paper":
                     context_service.update_question_paper(user_id, resource.id)
+                elif resource_type == "rubric":
+                    context_service.update_rubric(user_id, resource.id)
             
             # Attach to Chat Session if provided
             if chat_session_id and resource_type:

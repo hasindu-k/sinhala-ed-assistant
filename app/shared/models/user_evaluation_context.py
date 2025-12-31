@@ -15,6 +15,7 @@ class UserEvaluationContext(Base):
     active_syllabus_id = Column(UUID(as_uuid=True), ForeignKey("resource_files.id"), nullable=True)
     active_question_paper_id = Column(UUID(as_uuid=True), ForeignKey("resource_files.id"), nullable=True)
     active_rubric_id = Column(UUID(as_uuid=True), ForeignKey("rubrics.id"), nullable=True)
+    active_rubric_resource_id = Column(UUID(as_uuid=True), ForeignKey("resource_files.id"), nullable=True)
     
     # Stores the configuration (weightage, parts, etc.) for the active question paper
     active_paper_config = Column(JSONB, nullable=True)

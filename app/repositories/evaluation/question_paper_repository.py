@@ -80,10 +80,17 @@ class QuestionPaperRepository:
         return question
     
     def get_questions_by_paper(self, question_paper_id: UUID) -> List[Question]:
-        """Get all questions for a question paper."""
-        return self.db.query(Question).filter(
+        """Get all questions for a question paper (Natural Sort)."""
+        questions = self.db.query(Question).filter(
             Question.question_paper_id == question_paper_id
-        ).order_by(Question.question_number).all()
+        ).all()
+
+        def natural_sort_key(q):
+            import re
+            text = q.question_number or ""
+            return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
+
+        return sorted(questions, key=natural_sort_key)
     
     def create_sub_question(
         self,
