@@ -101,7 +101,7 @@ async def qa_from_voice(
     # ----------------------------------------------------
     raw_text = VoiceService.transcribe_audio(temp_path)
     normalized, standard = VoiceService.standardize_southern_sinhala(raw_text)
-    question_text = standard or normalized or raw_text
+    question_text = standard
 
     # ----------------------------------------------------
     # 5️⃣ SAVE USER MESSAGE (VOICE)
