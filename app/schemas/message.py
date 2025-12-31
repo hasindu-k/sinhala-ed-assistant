@@ -44,6 +44,7 @@ class MessageCreate(BaseModel):
     transcript: Optional[str] = None
     audio_duration_sec: Optional[Decimal] = None
     grade_level: Optional[str] = None  
+    attachments: Optional[List[MessageAttachment]] = None
 
 
 class MessageUpdate(BaseModel):
