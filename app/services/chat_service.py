@@ -1,4 +1,5 @@
-#app/services/chat_service.py
+# app/services/chat_service.py
+
 import uuid
 from typing import Optional
 from uuid import UUID

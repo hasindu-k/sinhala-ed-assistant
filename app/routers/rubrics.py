@@ -1,3 +1,5 @@
+# app/routers/rubrics.py
+
 import logging
 from typing import List
 from uuid import UUID
@@ -15,12 +17,34 @@ from app.schemas.rubric import (
     RubricCriterionResponse,
 )
 from app.services.evaluation.rubric_service import RubricService
+from app.services.evaluation.user_context_service import UserContextService
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.post("/{rubric_id}/activate", response_model=RubricResponse)
+def activate_rubric(
+    rubric_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Set a rubric as the active rubric for the user.
+    """
+    service = RubricService(db)
+    rubric = service.get_rubric(rubric_id)
+    if not rubric:
+        raise HTTPException(status_code=404, detail="Rubric not found")
+        
+    context_service = UserContextService(db)
+    context_service.update_rubric(current_user.id, rubric_id)
+    
+    return rubric
+
 
 
 @router.get("/", response_model=List[RubricResponse])

@@ -13,7 +13,7 @@ class GeminiClient:
 
             genai.configure(api_key=settings.GOOGLE_API_KEY)
 
-            cls._model = genai.GenerativeModel("gemini-2.5-flash")
+            cls._model = genai.GenerativeModel("gemini-3-flash-preview")
 
         return cls._model
     

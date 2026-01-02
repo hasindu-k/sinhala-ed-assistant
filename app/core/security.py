@@ -40,12 +40,13 @@ def _create_token(data: dict[str, Any], expires_delta: timedelta) -> tuple[str, 
     return token, jti
 
 
-def create_access_token(user_id: UUID) -> str:
+def create_access_token(user_id: UUID) -> tuple[str, int]:
     token, _ = _create_token(
         {"sub": str(user_id), "type": "access"},
         timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     )
-    return token
+    expires_in = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    return token, expires_in
 
 
 def create_refresh_token(user_id: UUID) -> tuple[str, str, datetime]:

@@ -24,7 +24,7 @@ def upgrade() -> None:
         ADD COLUMN medium VARCHAR,
         ADD COLUMN weightage NUMERIC(5,2),
         ADD COLUMN selection_rules JSONB,
-        ADD COLUMN is_confirmed BOOLEAN DEFAULT FALSE
+        ADD COLUMN is_confirmed BOOLEAN DEFAULT FALSE;
                
         ALTER TABLE questions
         ADD COLUMN shared_stem TEXT,

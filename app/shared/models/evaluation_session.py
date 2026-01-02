@@ -1,3 +1,5 @@
+# app/shared/models/evaluation_session.py
+
 import uuid
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean, Numeric
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -29,7 +31,8 @@ class PaperConfig(Base):
     __tablename__ = "paper_config"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    evaluation_session_id = Column(UUID(as_uuid=True), ForeignKey("evaluation_sessions.id"), nullable=False, index=True)
+    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True, index=True)
+    evaluation_session_id = Column(UUID(as_uuid=True), ForeignKey("evaluation_sessions.id"), nullable=True, index=True)
     
     # Identity
     paper_part = Column(String, nullable=True)  # e.g., 'Paper_I', 'Paper_II'
@@ -37,6 +40,7 @@ class PaperConfig(Base):
     medium = Column(String, nullable=True)
     
     # Scoring Logic (Crucial for calculation)
+    total_marks = Column(Integer, nullable=True)  # Explicit total marks for the paper
     weightage = Column(Numeric(5, 2), nullable=True)  # How much this paper contributes to final grade (e.g., 40.0% or 60.0%)
     
     # Selection Rules (Needed to validate if student answered enough questions)

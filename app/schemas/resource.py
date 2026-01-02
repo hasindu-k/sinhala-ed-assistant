@@ -1,8 +1,11 @@
+# app/schemas/resource.py
+
 from pydantic import BaseModel, Field
 from typing import Optional
 from uuid import UUID
 from datetime import datetime
 from enum import Enum
+from typing import List
 
 
 class ResourceSource(str, Enum):
@@ -47,6 +50,10 @@ class ResourceUploadResponse(BaseModel):
     mime_type: str
 
 
+class ResourceBulkUploadResponse(BaseModel):
+    uploads: list[ResourceUploadResponse]
+
+
 class ResourceProcessRequest(BaseModel):
     resource_id: UUID
 
@@ -56,3 +63,7 @@ class ResourceProcessResponse(BaseModel):
     status: str
     chunks_created: Optional[int] = None
     message: Optional[str] = None
+
+
+class ResourceBatchProcessRequest(BaseModel):
+    resource_ids: List[UUID]

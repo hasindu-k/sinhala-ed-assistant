@@ -25,7 +25,7 @@ def classify_document(text: str) -> str:
     if not text or not text.strip():
         return "unknown"
     
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    model = genai.GenerativeModel("gemini-3-flash-preview")
     
     try:
         response = model.generate_content(
@@ -187,7 +187,7 @@ def separate_paper_content(text: str):
         return {}
 
     # Initialize model (ensure api_key is configured elsewhere)
-    model = genai.GenerativeModel("gemini-2.0-flash-exp") # Updated to latest flash model for better speed/cost
+    model = genai.GenerativeModel("gemini-3-flash-preview") # Updated to latest flash model for better speed/cost
 
     try:
         logger.info("Starting Sinhala structure extraction.")
@@ -237,7 +237,7 @@ def fix_sinhala_ocr(text: str) -> str:
     if not text or not text.strip():
         return text
 
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    model = genai.GenerativeModel("gemini-3-flash-preview")
 
     prompt = f"""
     You are a Sinhala OCR text corrector.
@@ -293,7 +293,7 @@ SECTION 2: QUESTION STRUCTURE RULES
 
 **Paper II (Structured):**
 - Main Questions: 1, 2, 3...
-- Sub-questions: a, b, c... or i, ii, iii...
+- Sub-questions: Use lowercase letters 'a', 'b', 'c'... as keys (convert roman numerals i, ii, iii to a, b, c if necessary).
 - Marks: Extract specific marks like "(05 marks)", "(10)", "ලකුණු 05".
 - **Rule:** Never assign 0 marks. Use null if unknown.
 
@@ -377,7 +377,7 @@ def extract_complete_exam_data(text: str):
         return {}
 
     # Initialize model
-    model = genai.GenerativeModel("gemini-2.5-flash") 
+    model = genai.GenerativeModel("gemini-3-flash-preview") 
 
     try:
         logger.info("Starting combined exam extraction.")
@@ -417,3 +417,123 @@ def extract_complete_exam_data(text: str):
     except Exception as e:
         logger.error(f"❌ Error in combined extraction: {e}")
         return {}
+
+ANSWER_MAPPING_PROMPT = """
+You are an expert AI for mapping student answers to exam questions.
+Your task is to map the student's handwritten answer text (OCR output) to the correct Question ID from the provided question structure.
+
+========================
+INPUTS
+========================
+1. QUESTION STRUCTURE (JSON):
+   - Contains the hierarchy of questions and sub-questions.
+   - Each question has a unique "id" and a "label" (e.g., "1", "a", "i").
+
+2. STUDENT ANSWER TEXT (OCR):
+   - Raw text extracted from the student's answer script.
+   - May contain noise, broken characters, or be out of order.
+   - Students usually write the question number before the answer (e.g., "1. Answer...", "2(a) Answer...").
+
+========================
+TASK
+========================
+- Analyze the student's text to identify which part corresponds to which question.
+- Map the extracted answer text to the corresponding "id" from the Question Structure.
+- If a question is NOT answered, do NOT include it in the output (or map it to null).
+- If an answer spans multiple lines, combine them.
+- Ignore irrelevant text (headers, footers, noise).
+
+========================
+OUTPUT FORMAT (STRICT JSON)
+========================
+Return a single JSON object where keys are the "id" of the question/sub-question and values are the student's answer text.
+
+Example:
+{{
+  "uuid-of-question-1": "Student's answer for question 1...",
+  "uuid-of-subquestion-1a": "Student's answer for 1(a)..."
+}}
+
+========================
+QUESTION STRUCTURE
+========================
+{structure}
+
+========================
+STUDENT ANSWER TEXT
+========================
+{answer_text}
+"""
+
+def map_student_answers(answer_text: str, question_structure: dict) -> dict:
+    """
+    Maps student answer text to question IDs using Gemini.
+    """
+    if not answer_text or not answer_text.strip():
+        return {}
+
+    model = genai.GenerativeModel("gemini-3-flash-preview")
+
+    try:
+        logger.info("Starting student answer mapping.")
+        # Convert structure to a simplified format for the prompt to save tokens
+        simplified_structure = _simplify_structure_for_prompt(question_structure)
+        
+        response = model.generate_content(
+            ANSWER_MAPPING_PROMPT.format(
+                structure=json.dumps(simplified_structure, indent=2, ensure_ascii=False),
+                answer_text=answer_text[:30000]
+            ),
+            generation_config={"response_mime_type": "application/json"},
+             safety_settings={
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+        )
+
+        result = json.loads(response.text)
+        logger.info(f"Mapped {len(result)} answers successfully.")
+        return result
+
+    except Exception as e:
+        logger.error(f"❌ Error in answer mapping: {e}")
+        return {}
+
+def _simplify_structure_for_prompt(questions: list) -> list:
+    """
+    Helper to create a lightweight structure for the AI prompt.
+    """
+    simple = []
+    for q in questions:
+        q_obj = {
+            "id": str(q.id),
+            "label": q.question_number,
+            "text": q.question_text[:50] if q.question_text else ""
+        }
+        # Add sub-questions if any
+        # Note: This assumes the input 'questions' list contains SQLAlchemy objects or dicts
+        # We need to handle both or ensure consistent input. 
+        # Assuming SQLAlchemy objects based on usage context, but let's be safe.
+        
+        sub_qs = getattr(q, "sub_questions", [])
+        if sub_qs:
+            q_obj["sub_questions"] = _simplify_sub_questions(sub_qs)
+            
+        simple.append(q_obj)
+    return simple
+
+def _simplify_sub_questions(sub_questions: list) -> list:
+    simple_subs = []
+    for sq in sub_questions:
+        sq_obj = {
+            "id": str(sq.id),
+            "label": sq.label,
+            "text": sq.sub_question_text[:50] if sq.sub_question_text else ""
+        }
+        children = getattr(sq, "children", [])
+        if children:
+            sq_obj["children"] = _simplify_sub_questions(children)
+        simple_subs.append(sq_obj)
+    return simple_subs

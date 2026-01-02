@@ -3,9 +3,10 @@
 from typing import Optional, List, Dict
 from uuid import UUID
 from decimal import Decimal
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.shared.models.answer_evaluation import AnswerDocument, EvaluationResult, QuestionScore
+from app.shared.models.question_papers import SubQuestion
 
 
 class AnswerEvaluationRepository:
@@ -45,6 +46,26 @@ class AnswerEvaluationRepository:
         return self.db.query(AnswerDocument).filter(
             AnswerDocument.evaluation_session_id == evaluation_session_id
         ).all()
+
+    def get_answer_document_by_session_and_resource(
+        self,
+        evaluation_session_id: UUID,
+        resource_id: UUID
+    ) -> Optional[AnswerDocument]:
+        """Get answer document by session and resource ID."""
+        return self.db.query(AnswerDocument).filter(
+            AnswerDocument.evaluation_session_id == evaluation_session_id,
+            AnswerDocument.resource_id == resource_id
+        ).first()
+
+    def update_mapped_answers(self, answer_document_id: UUID, mapped_answers: Dict) -> Optional[AnswerDocument]:
+        """Update mapped answers for an answer document."""
+        answer_doc = self.get_answer_document(answer_document_id)
+        if answer_doc:
+            answer_doc.mapped_answers = mapped_answers
+            self.db.commit()
+            self.db.refresh(answer_doc)
+        return answer_doc
     
     def create_evaluation_result(
         self,
@@ -81,14 +102,16 @@ class AnswerEvaluationRepository:
     def create_question_score(
         self,
         evaluation_result_id: UUID,
-        sub_question_id: UUID,
         awarded_marks: Decimal,
+        sub_question_id: Optional[UUID] = None,
+        question_id: Optional[UUID] = None,
         feedback: Optional[str] = None
     ) -> QuestionScore:
-        """Create a score for a sub-question."""
+        """Create a score for a question or sub-question."""
         question_score = QuestionScore(
             evaluation_result_id=evaluation_result_id,
             sub_question_id=sub_question_id,
+            question_id=question_id,
             awarded_marks=awarded_marks,
             feedback=feedback
         )
@@ -102,7 +125,10 @@ class AnswerEvaluationRepository:
         evaluation_result_id: UUID
     ) -> List[QuestionScore]:
         """Get all question scores for an evaluation result."""
-        return self.db.query(QuestionScore).filter(
+        return self.db.query(QuestionScore).options(
+            joinedload(QuestionScore.question),
+            joinedload(QuestionScore.sub_question).joinedload(SubQuestion.question)
+        ).filter(
             QuestionScore.evaluation_result_id == evaluation_result_id
         ).all()
     

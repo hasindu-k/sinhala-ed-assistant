@@ -15,12 +15,14 @@ class QuestionPaperService:
     
     def create_question_paper(
         self,
-        evaluation_session_id: UUID,
         resource_id: UUID,
+        chat_session_id: Optional[UUID] = None,
+        evaluation_session_id: Optional[UUID] = None,
         extracted_text: Optional[str] = None
     ):
         """Create a question paper entry."""
         return self.repository.create_question_paper(
+            chat_session_id=chat_session_id,
             evaluation_session_id=evaluation_session_id,
             resource_id=resource_id,
             extracted_text=extracted_text
@@ -30,6 +32,10 @@ class QuestionPaperService:
         """Get question paper by ID."""
         return self.repository.get_question_paper(question_paper_id)
     
+    def get_question_papers_by_chat_session(self, chat_session_id: UUID) -> List:
+        """Get all question papers for a chat session."""
+        return self.repository.get_question_papers_by_chat_session(chat_session_id)
+
     def get_question_papers_by_evaluation_session(self, evaluation_session_id: UUID) -> List:
         """Get all question papers for an evaluation session."""
         return self.repository.get_question_papers_by_evaluation_session(evaluation_session_id)
@@ -63,13 +69,15 @@ class QuestionPaperService:
         label: str,
         sub_question_text: str,
         max_marks: Optional[int] = None,
+        parent_sub_question_id: Optional[UUID] = None,
     ):
         """Create a sub-question."""
         return self.repository.create_sub_question(
             question_id=question_id,
             label=label,
             sub_question_text=sub_question_text,
-            max_marks=max_marks
+            max_marks=max_marks,
+            parent_sub_question_id=parent_sub_question_id
         )
     
     def get_sub_questions_by_question(self, question_id: UUID) -> List:

@@ -1,8 +1,11 @@
+# app/schemas/chat.py
+
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
 from enum import Enum
+from app.schemas.session_resource import SessionResourceResponse
 
 
 class ChatMode(str, Enum):
@@ -23,6 +26,7 @@ class ChatSessionCreate(BaseModel):
     description: Optional[str] = None
     grade: Optional[int] = None
     subject: Optional[str] = None
+    rubric_id: Optional[UUID] = None
 
 
 class ChatSessionUpdate(BaseModel):
@@ -30,6 +34,7 @@ class ChatSessionUpdate(BaseModel):
     description: Optional[str] = None
     grade: Optional[int] = None
     subject: Optional[str] = None
+    rubric_id: Optional[UUID] = None
 
 
 class ChatSessionResponse(BaseModel):
@@ -41,7 +46,9 @@ class ChatSessionResponse(BaseModel):
     description: Optional[str] = None
     grade: Optional[int] = None
     subject: Optional[str] = None
-    created_at: datetime
+    rubric_id: Optional[UUID] = None
+    resources: List[SessionResourceResponse] = []
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
     class Config:
@@ -49,4 +56,6 @@ class ChatSessionResponse(BaseModel):
 
 
 class SessionResourceAttach(BaseModel):
-    resource_ids: list[UUID]
+    resource_id: UUID
+    role: str = Field(..., description="Role of the resource: 'syllabus', 'question_paper', or 'rubric'")
+

@@ -1,4 +1,7 @@
+# app/shared/models/chat_session.py
+
 import uuid
+from sqlalchemy.orm import relationship
 from sqlalchemy import Column, String, Integer, DateTime, Enum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
@@ -17,5 +20,18 @@ class ChatSession(Base):
     description = Column(String, nullable=True)
     grade = Column(Integer, nullable=True)
     subject = Column(String, nullable=True)
+    rubric_id = Column(UUID(as_uuid=True), ForeignKey("rubrics.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    messages = relationship(
+        "Message", 
+        back_populates="session", 
+        cascade="all, delete-orphan" 
+    )
+
+    resources = relationship(
+        "SessionResource",
+        backref="session",
+        cascade="all, delete-orphan"
+    )

@@ -1,4 +1,5 @@
-#  app/services/resource_service.py
+# app/services/resource_service.py
+
 import os
 from pathlib import Path
 from typing import Optional, List, Iterable, Set
@@ -47,6 +48,8 @@ class ResourceService:
         filename: str,
         content_type: str,
         content: bytes,
+        *,
+        commit: bool = True,
     ):
         """Handle complete file upload process with validation."""
         # Validate
@@ -67,7 +70,9 @@ class ResourceService:
                 mime_type=content_type,
                 size_bytes=len(content),
                 source_type="user_upload",
+                commit=commit,
             )
+            self.process_resource(resource.id, user_id)
             return resource
         except Exception as e:
             # Cleanup file if database save failed
@@ -161,7 +166,7 @@ class ResourceService:
         self.db.refresh(resource)
         return resource
     
-    def delete_resource(self, resource_id: UUID, user_id: UUID):
+    def delete_resource(self, resource_id: UUID, user_id: UUID, *, commit: bool = True):
         """Delete resource and associated file after ownership validation."""
         resource = self.get_resource_with_ownership_check(resource_id, user_id)
         
@@ -169,13 +174,16 @@ class ResourceService:
         if resource.storage_path and os.path.exists(resource.storage_path):
             try:
                 os.remove(resource.storage_path)
-            except Exception as file_error:
+            except Exception:
                 # Log but don't fail the operation
                 pass
         
         # Delete database record
         self.db.delete(resource)
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
     
     def process_resource(self, resource_id: UUID, user_id: UUID):
         """Process resource (OCR, chunk, embed) after validation."""
