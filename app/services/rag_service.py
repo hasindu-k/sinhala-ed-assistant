@@ -10,7 +10,7 @@ from app.services.message_context_service import MessageContextService
 from app.services.message_service import MessageService
 from app.utils.sinhala_prompt_builder import build_qa_prompt, build_direct_answer_prompt
 from app.utils.sinhala_summary_prompt_builder import build_summary_prompt
-from app.utils.sinhala_safety_engine import concept_map_check, detect_misconceptions
+from app.utils.sinhala_safety_engine import concept_map_check, detect_misconceptions, attach_evidence
 from app.services.message_safety_service import MessageSafetyService
 from app.core.gemini_client import GeminiClient
 import json
@@ -192,9 +192,35 @@ class RAGService:
         is_valid = len(missing) == 0 and len(extra) == 0
 
         flagged = detect_misconceptions(generated, context)
+        flagged = attach_evidence(flagged, context)
 
-        logger.info("Safety check - is_valid: %s, missing: %d, extra: %d, flagged: %d",
-                    is_valid, len(missing), len(extra), len(flagged))
+        # ---- High-level summary ----
+        logger.info(
+            "Safety check summary | is_valid=%s | missing=%d | extra=%d | flagged=%d",
+            is_valid,
+            len(missing),
+            len(extra),
+            len(flagged),
+        )
+
+        # ---- Detailed concept logs ----
+        if missing:
+            logger.info("Missing concepts: %s", missing[:15])  # limit for readability
+
+        if extra:
+            logger.info("Extra concepts: %s", extra[:15])
+
+        # ---- Detailed misconception logs ----
+        for i, f in enumerate(flagged, start=1):
+            logger.info(
+                "FLAGGED #%d | severity=%s | ratio=%.2f\nSENTENCE: %s\nEVIDENCE: %s",
+                i,
+                f.get("severity"),
+                f.get("unseen_ratio"),
+                f.get("sentence"),
+                f.get("evidence"),
+            )
+
         logger.info("Saving assistant message...")
 
         # -----------------------------

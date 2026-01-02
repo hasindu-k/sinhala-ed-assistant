@@ -74,3 +74,48 @@ def detect_misconceptions(generated: str, source: str):
             })
 
     return flagged
+
+def attach_evidence(
+    flagged_sentences: list[dict],
+    context: str
+) -> list[dict]:
+    """
+    Attach supporting or conflicting evidence from context
+    to each flagged sentence.
+    """
+
+    if not flagged_sentences or not context:
+        return flagged_sentences
+
+    # Split context into sentences
+    context_sentences = [
+        s.strip()
+        for s in re.split(r"[.!?]", context)
+        if len(s.strip()) > 10
+    ]
+
+    context_concepts = [
+        extract_concepts(s) for s in context_sentences
+    ]
+
+    enriched = []
+
+    for item in flagged_sentences:
+        sentence = item["sentence"]
+        sent_concepts = extract_concepts(sentence)
+
+        best_match = None
+        best_overlap = 0
+
+        for ctx_sentence, ctx_concepts in zip(context_sentences, context_concepts):
+            overlap = len(sent_concepts & ctx_concepts)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_match = ctx_sentence
+
+        enriched.append({
+            **item,
+            "evidence": best_match
+        })
+
+    return enriched
