@@ -1,15 +1,22 @@
+#app/services/evaluation/grading_service.py
+
 import logging
+import re
+import json
 from uuid import UUID
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from decimal import Decimal
-import numpy as np
+
 from rank_bm25 import BM25Okapi
 from sentence_transformers import util
-
 from sqlalchemy.orm import Session
-from app.shared.models.answer_evaluation import AnswerDocument, EvaluationResult, QuestionScore
+
+from app.shared.models.answer_evaluation import (
+    AnswerDocument,
+    EvaluationResult,
+    QuestionScore,
+)
 from app.shared.models.question_papers import Question, SubQuestion
-from app.shared.models.rubrics import RubricCriterion
 from app.shared.models.session_resources import SessionResource
 from app.shared.models.resource_file import ResourceFile
 from app.shared.ai.embeddings import xlmr
@@ -17,456 +24,358 @@ from app.core.gemini_client import GeminiClient
 
 logger = logging.getLogger(__name__)
 
+
 class GradingService:
     def __init__(self, db: Session):
         self.db = db
         self.gemini = GeminiClient()
 
+    # ----------------------------------------------------------
+    # MARK RESOLUTION
+    # ----------------------------------------------------------
+    def _resolve_max_marks(self, question):
+        if hasattr(question, "max_marks") and question.max_marks:
+            return int(question.max_marks)
+
+        if isinstance(question, SubQuestion):
+            parent = question.parent_question
+            if parent and parent.sub_questions:
+                explicit = [sq.max_marks for sq in parent.sub_questions if sq.max_marks]
+                if explicit:
+                    return int(question.max_marks or 1)
+                return max(1, int(parent.max_marks) // len(parent.sub_questions))
+
+        return 1
+    # ----------------------------------------------------------
+    # PUBLIC ENTRY
+    # ----------------------------------------------------------
     def grade_answer_document(self, answer_doc_id: UUID, user_id: UUID):
-        """
-        Orchestrates the grading process for a single answer document.
-        """
-        # 1. Fetch Context
-        answer_doc = self.db.query(AnswerDocument).filter(AnswerDocument.id == answer_doc_id).first()
-        if not answer_doc:
-            raise ValueError("Answer document not found")
+        answer_doc = (
+            self.db.query(AnswerDocument)
+            .filter(AnswerDocument.id == answer_doc_id)
+            .first()
+        )
+        if not answer_doc or not answer_doc.mapped_answers:
+            raise ValueError("Answer document not ready for grading")
 
-        if not answer_doc.mapped_answers:
-            raise ValueError("Answer document has not been mapped yet")
-
-        # Fetch Evaluation Session to get Rubric and Question Paper
         from app.shared.models.evaluation_session import EvaluationSession
-        eval_session = self.db.query(EvaluationSession).filter(EvaluationSession.id == answer_doc.evaluation_session_id).first()
-        
-        # Fetch Rubric Text (Needed for fallback)
-        rubric_text = ""
-        # Try attached rubric resource first
-        rubric_res = self.db.query(SessionResource).filter(
-            SessionResource.session_id == eval_session.session_id,
-            SessionResource.label == "rubric"
-        ).first()
-        
-        if rubric_res:
-            res_file = self.db.query(ResourceFile).filter(ResourceFile.id == rubric_res.resource_id).first()
-            if res_file:
-                rubric_text = res_file.extracted_text
+        eval_session = (
+            self.db.query(EvaluationSession)
+            .filter(EvaluationSession.id == answer_doc.evaluation_session_id)
+            .first()
+        )
 
-        # Fallback: Check for Structured Rubric if no file-based rubric text found
-        if not rubric_text and eval_session.rubric_id:
-            from app.shared.models.rubrics import Rubric, RubricCriterion
-            rubric = self.db.query(Rubric).filter(Rubric.id == eval_session.rubric_id).first()
-            if rubric:
-                criteria = self.db.query(RubricCriterion).filter(RubricCriterion.rubric_id == rubric.id).all()
-                rubric_text = f"Rubric Name: {rubric.name}\nDescription: {rubric.description}\n\nGeneral Criteria:\n"
-                for c in criteria:
-                    rubric_text += f"- {c.criterion} (Weight: {c.weight_percentage}%)\n"
+        rubric_text = self._load_rubric_text(eval_session)
+        syllabus_text = self._load_syllabus_text(eval_session)
 
-        # Fetch Syllabus Text (New Requirement)
-        syllabus_text = ""
-        syllabus_res = self.db.query(SessionResource).filter(
-            SessionResource.session_id == eval_session.session_id,
-            SessionResource.label == "syllabus"
-        ).first()
-        
-        if syllabus_res:
-            res_file = self.db.query(ResourceFile).filter(ResourceFile.id == syllabus_res.resource_id).first()
-            if res_file:
-                syllabus_text = res_file.extracted_text
-
-        # Fetch Questions
         from app.services.evaluation.question_paper_service import QuestionPaperService
         qp_service = QuestionPaperService(self.db)
-        qps = qp_service.get_question_papers_by_chat_session(eval_session.session_id)
-        if not qps:
-            raise ValueError("Question paper not found")
-        
-        questions = qp_service.get_questions_by_paper(qps[0].id) # Assuming single paper for now
 
-        # Create Evaluation Result Record
+        question_papers = qp_service.get_question_papers_by_chat_session(
+            eval_session.session_id
+        )
+
+        questions: List[Question] = []
+        for qp in question_papers:
+            questions.extend(qp_service.get_questions_by_paper(qp.id))
+
         eval_result = EvaluationResult(
             answer_document_id=answer_doc.id,
-            total_score=0,
-            overall_feedback="Grading in progress..."
+            total_score=Decimal(0),
+            overall_feedback="Grading in progress...",
         )
         self.db.add(eval_result)
         self.db.commit()
 
-        total_score = Decimal(0)
-        
-        # 2. Iterate and Grade
-        # Flatten questions to easily find by label/number
         question_map = self._build_question_map(questions)
+        total_score = Decimal(0)
 
+        # ------------------------------------------------------
+        # MAIN GRADING LOOP
+        # ------------------------------------------------------
         for key, student_text in answer_doc.mapped_answers.items():
-            logger.info(f"Starting grading for question {key}...")
-            # key might be "1", "1(a)", "Q1.a" etc.
-            target_q = self._find_matching_question(key, question_map)
-            
-            if not target_q:
-                logger.warning(f"Could not find question for answer key: {key}")
-                continue
+            target = self._find_matching_question(key, question_map)
+            if not target:
+                logger.error(f"UNRESOLVED mapping key: {key}")
+                continue  
 
-            # Determine max marks
-            max_marks = target_q.max_marks if hasattr(target_q, 'max_marks') else 0
-            if not max_marks:
-                continue
+            max_marks = self._resolve_max_marks(target)
 
-            # Extract Reference Context from Syllabus (or Rubric if Syllabus missing)
-            reference_text = self._get_reference_context(target_q, syllabus_text, rubric_text)
+            reference_text = self._get_reference_context(
+                target, syllabus_text, rubric_text
+            )
 
-            # Calculate Score (Pure Semantic)
-            score_ratio, _ = self._calculate_semantic_score(
-                student_text, 
-                reference_text, 
-                max_marks
+            # Use Gemini for both scoring and feedback
+            gemini_result = self._grade_with_gemini(
+                student_text=student_text,
+                reference_text=reference_text,
+                question=target,
+                max_marks=max_marks,
+                q_number=key
             )
             
-            awarded_marks = Decimal(score_ratio * float(max_marks))
+            awarded_marks = Decimal(str(gemini_result.get("score", 0))).quantize(Decimal("0.01"))
+            feedback = gemini_result.get("feedback", "Feedback unavailable.")
+            
+            # Fallback if Gemini returns 0 but text similarity is high (safety net)
+            # But user said scoring is "all the way wrong", so trust Gemini more.
+            
             total_score += awarded_marks
-            
-            logger.info(f"Completed grading for question {key}. Awarded: {awarded_marks}/{max_marks}")
 
-            # Generate Feedback using Gemini (Style, Missing Concepts, Corrections)
-            feedback = self._generate_feedback_with_gemini(
-                student_text,
-                reference_text,
-                target_q,
-                awarded_marks,
-                max_marks
-            )
-
-            # Save Question Score
-            # We need to link to a SubQuestion if possible, or Question
-            # The schema links to SubQuestion. If it's a main question, we might need a dummy subquestion or adjust schema.
-            # For now, assuming target_q is a SubQuestion or we treat Question as one.
-            
-            sub_q_id = target_q.id
-            # If target_q is a Question (main), we might need to handle it. 
-            # But QuestionScore links to sub_question_id. 
-            # Let's assume for now we only grade leaf nodes (SubQuestions).
-            # If mapped_answers points to a Main Question that has children, we might be in trouble.
-            # But usually mapping maps to the specific part.
-            
-            # Check if target_q is Question or SubQuestion
-            if isinstance(target_q, Question):
-                # If it's a main question without subquestions, we can't link it to sub_question_id directly 
-                # unless we change schema or have a 1-to-1 mapping.
-                # For this implementation, I'll skip saving if it's a main question to avoid FK error, 
-                # OR we need to fix the schema. 
-                # Let's check if we can find a "default" subquestion or if we should create one.
-                pass 
-            else:
+            # ONLY store marks for sub-questions
+            if isinstance(target, SubQuestion):
                 qs = QuestionScore(
                     evaluation_result_id=eval_result.id,
-                    sub_question_id=sub_q_id,
+                    sub_question_id=target.id,
                     awarded_marks=awarded_marks,
-                    feedback=feedback
+                    feedback=feedback,
                 )
-                self.db.add(qs)
 
-        # 3. Finalize
-        eval_result.total_score = total_score
-        eval_result.overall_feedback = self._generate_overall_feedback(total_score, eval_result.id)
+            elif isinstance(target, Question):
+                qs = QuestionScore(
+                    evaluation_result_id=eval_result.id,
+                    question_id=target.id,
+                    awarded_marks=awarded_marks,
+                    feedback=feedback,
+                )
+
+            else:
+                logger.error(f"Invalid target type for key {key}: {type(target)}")
+                continue
+
+            self.db.add(qs)
+
+        self.db.flush()
+
+        eval_result.total_score = sum(
+            qs.awarded_marks for qs in self.db.query(QuestionScore)
+            .filter(QuestionScore.evaluation_result_id == eval_result.id)
+        )
+
+        eval_result.overall_feedback = self._generate_overall_feedback(
+            total_score, eval_result.id
+        )
+
         self.db.commit()
-        
         return eval_result
 
-    def _get_reference_context(self, question: Any, syllabus_text: str, rubric_text: str) -> str:
-        """
-        Finds the most relevant section from Syllabus (primary) or Rubric (secondary)
-        using BM25 retrieval.
-        """
-        q_text = getattr(question, 'question_text', '') or getattr(question, 'sub_question_text', '')
-        
-        # Prefer Syllabus, fallback to Rubric
-        source_text = syllabus_text if syllabus_text else rubric_text
-        
-        if not source_text:
+    # ----------------------------------------------------------
+    # SCORING LOGIC (FIXED)
+    # ----------------------------------------------------------
+    def _score_answer(self, student_text: str, reference_text: str, max_marks: int) -> float:
+        q_type = self._classify_question(max_marks)
+        semantic = self._semantic_similarity(student_text, reference_text)
+
+        # Short factual answers
+        if q_type == "short":
+            return 1.0 if semantic >= 0.70 else semantic
+
+        # Structured answers
+        if q_type == "structured":
+            return 1.0 if semantic >= 0.65 else semantic * 0.9
+
+        # Essay answers (EXAMINER STYLE)
+        coverage, _ = self._calculate_coverage_score(
+            student_text, reference_text, max_marks
+        )
+
+        return self._apply_marking_band(semantic, coverage)
+
+    def _classify_question(self, max_marks: int) -> str:
+        if max_marks <= 2:
+            return "short"
+        if max_marks <= 4:
+            return "structured"
+        return "essay"
+
+    def _semantic_similarity(self, student_text: str, reference_text: str) -> float:
+        if not reference_text:
+            return 0.0
+        emb1 = xlmr.encode(student_text, convert_to_tensor=True)
+        emb2 = xlmr.encode(reference_text, convert_to_tensor=True)
+        return max(0.0, min(1.0, util.cos_sim(emb1, emb2).item()))
+
+    # ----------------------------------------------------------
+    # MARKING BANDS (CRITICAL FIX)
+    # ----------------------------------------------------------
+    def _apply_marking_band(self, semantic: float, coverage: float) -> float:
+        combined = (0.6 * semantic) + (0.4 * coverage)
+
+        if combined >= 0.85:
+            return 0.95   # Excellent
+        if combined >= 0.75:
+            return 0.85   # Very good
+        if combined >= 0.65:
+            return 0.70   # Good
+        if combined >= 0.50:
+            return 0.55   # Partial
+        if combined >= 0.35:
+            return 0.35   # Weak
+        if combined >= 0.20:
+            return 0.20   # Very weak
+
+        return 0.0
+
+    # ----------------------------------------------------------
+    # CONTEXT & COVERAGE
+    # ----------------------------------------------------------
+    def _get_reference_context(self, question, syllabus_text: str, rubric_text: str) -> str:
+        q_text = getattr(question, "question_text", "") or getattr(
+            question, "sub_question_text", ""
+        )
+        source = syllabus_text or rubric_text
+        if not source:
             return ""
 
-        # Simple chunking by paragraphs
-        chunks = [c.strip() for c in source_text.split('\n\n') if c.strip()]
+        chunks = [c.strip() for c in source.split("\n\n") if c.strip()]
         if not chunks:
-            chunks = [c.strip() for c in source_text.split('\n') if c.strip()]
-            
-        if not chunks:
-            return source_text[:1000] # Fallback
+            chunks = [c.strip() for c in source.split("\n") if c.strip()]
 
-        # Tokenize for BM25
-        tokenized_chunks = [chunk.split() for chunk in chunks]
-        bm25 = BM25Okapi(tokenized_chunks)
-        
-        tokenized_query = q_text.split()
-        top_chunks = bm25.get_top_n(tokenized_query, chunks, n=1)
-        
-        return top_chunks[0] if top_chunks else ""
+        bm25 = BM25Okapi([c.split() for c in chunks])
+        return bm25.get_top_n(q_text.split(), chunks, n=1)[0]
 
-    def _calculate_semantic_score(self, student_text: str, reference_text: str, max_marks: int) -> tuple[float, str]:
-        """
-        Calculates score based purely on Semantic Similarity (XLM-R) between student answer and reference text.
-        NO Gemini involvement.
-        """
+    def _calculate_coverage_score(self, student_text, reference_text, max_marks):
         if not reference_text:
-            return 0.0, "No reference material found in Syllabus/Rubric."
+            return 0.0, "No reference"
 
-        try:
-            # XLM-R Score (Semantic Similarity)
-            emb1 = xlmr.encode(student_text, convert_to_tensor=True)
-            emb2 = xlmr.encode(reference_text, convert_to_tensor=True)
-            cosine_score = util.cos_sim(emb1, emb2).item()
-            
-            # Clip to 0-1
-            semantic_score = max(0.0, min(1.0, cosine_score))
-            
-            # Heuristic: If similarity is very low (< 0.2), it's probably wrong.
-            # If it's high (> 0.7), it's full marks.
-            # Let's scale it a bit to be more generous or strict.
-            # For now, raw cosine score.
-            
-            feedback = f"Graded based on semantic similarity ({semantic_score:.2f}) with syllabus content."
-            return semantic_score, feedback
-            
-        except Exception as e:
-            logger.error(f"Semantic scoring failed: {e}")
-            return 0.0, "Scoring failed."
+        sentences = re.split(r"(?<=[.!?])\s+", reference_text)
+        sentences = [s for s in sentences if len(s.strip()) > 10]
 
+        student_emb = xlmr.encode(student_text, convert_to_tensor=True)
+
+        hits = 0
+        for s in sentences:
+            sim = util.cos_sim(
+                student_emb, xlmr.encode(s, convert_to_tensor=True)
+            ).item()
+            if sim >= 0.55:
+                hits += 1
+
+        ratio = hits / max(1, len(sentences))
+        return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
+
+    # ----------------------------------------------------------
+    # QUESTION MAPPING
+    # ----------------------------------------------------------
     def _build_question_map(self, questions: List[Question]) -> Dict[str, Any]:
-        """
-        Builds a lookup map: "1" -> Q1, "1(a)" -> SQ_a, "uuid" -> Q/SQ
-        """
         q_map = {}
         for q in questions:
-            # Map UUID
-            q_map[str(q.id)] = q
-            
-            # Normalize Q number
-            q_num = str(q.question_number).strip().lower().replace(".", "")
+            q_num = str(q.question_number).lower().replace(".", "")
             q_map[q_num] = q
-            
-            if q.sub_questions:
-                for sq in q.sub_questions:
-                    # Map UUID
-                    q_map[str(sq.id)] = sq
-                    
-                    # Normalize label
-                    sq_label = str(sq.label).strip().lower().replace("(", "").replace(")", "")
-                    # Map "1a", "1.a", "a" (if unique context)
-                    key = f"{q_num}{sq_label}"
-                    q_map[key] = sq
-                    q_map[f"{q_num}.{sq_label}"] = sq
-                    q_map[f"{q_num}({sq_label})"] = sq
+            q_map[str(q.id)] = q
+
+            for sq in q.sub_questions or []:
+                key = f"{q_num}{sq.label}".replace("(", "").replace(")", "")
+                q_map[key] = sq
+                q_map[str(sq.id)] = sq
         return q_map
 
     def _find_matching_question(self, key: str, q_map: Dict[str, Any]):
-        # 1. Try exact match (UUIDs usually match here)
-        if key in q_map:
-            return q_map[key]
-            
-        # 2. Try normalized match
-        norm_key = str(key).strip().lower().replace(" ", "").replace(".", "").replace("(", "").replace(")", "")
-        if norm_key in q_map:
-            return q_map[norm_key]
-        
-        return None
+        norm = key.lower().replace(" ", "").replace(".", "").replace("(", "").replace(")", "")
+        return q_map.get(key) or q_map.get(norm)
 
-    def _extract_model_answer(self, rubric_text: str, question: Any, q_label: str) -> str:
-        """
-        Uses Gemini to extract the relevant marking criteria for a specific question.
-        """
-        if not rubric_text:
-            return ""
+    # ----------------------------------------------------------
+    # LOADERS
+    # ----------------------------------------------------------
+    def _load_rubric_text(self, eval_session):
+        res = (
+            self.db.query(SessionResource)
+            .filter(
+                SessionResource.session_id == eval_session.session_id,
+                SessionResource.label == "rubric",
+            )
+            .first()
+        )
+        if res:
+            rf = self.db.query(ResourceFile).filter(ResourceFile.id == res.resource_id).first()
+            return rf.extracted_text if rf else ""
+        return ""
 
-        q_text = getattr(question, 'question_text', '') or getattr(question, 'sub_question_text', '')
-        
-        prompt = f"""
-        You are a helpful assistant extracting marking schemes.
-        
-        Rubric/Marking Scheme:
-        {rubric_text[:10000]} ... (truncated)
-        
-        Question {q_label}: "{q_text}"
-        
-        Task: Extract the specific model answer or marking points for Question {q_label} from the Rubric.
-        Return ONLY the relevant text.
-        """
-        
+    def _load_syllabus_text(self, eval_session):
+        res = (
+            self.db.query(SessionResource)
+            .filter(
+                SessionResource.session_id == eval_session.session_id,
+                SessionResource.label == "syllabus",
+            )
+            .first()
+        )
+        if res:
+            rf = self.db.query(ResourceFile).filter(ResourceFile.id == res.resource_id).first()
+            return rf.extracted_text if rf else ""
+        return ""
+
+    # ----------------------------------------------------------
+    # GEMINI FEEDBACK
+    # ----------------------------------------------------------
+    def _grade_with_gemini(
+        self, student_text, reference_text, question, max_marks, q_number
+    ) -> Dict[str, Any]:
         try:
-            response = self.gemini.generate_content(prompt)
-            return response.get("text", "").strip()
+            q_text = getattr(question, "question_text", "") or getattr(
+                question, "sub_question_text", ""
+            )
+            
+            # Try to get a human-readable number if possible
+            display_number = q_number
+            if hasattr(question, "question_number") and question.question_number:
+                display_number = question.question_number
+            elif hasattr(question, "label") and question.label:
+                 # It's a subquestion, try to find parent
+                 if hasattr(question, "question") and question.question and question.question.question_number:
+                     display_number = f"{question.question.question_number}({question.label})"
+                 else:
+                     display_number = question.label
+
+            prompt = f"""
+You are an expert teacher grading a student's answer.
+Question {display_number}: {q_text}
+Max Marks: {max_marks}
+
+Reference/Rubric:
+{reference_text}
+
+Student Answer:
+{student_text}
+
+Task:
+1. Compare the student's answer with the reference.
+2. Award marks based on accuracy and completeness.
+3. Provide short, helpful feedback in Sinhala.
+
+Output JSON ONLY:
+{{
+    "score": <float_marks_awarded>,
+    "feedback": "<feedback_string>"
+}}
+"""
+            response = self.gemini.generate_content(prompt).get("text", "")
+            
+            # Clean up response to ensure valid JSON
+            cleaned_response = response.strip()
+            if cleaned_response.startswith("```json"):
+                cleaned_response = cleaned_response[7:]
+            if cleaned_response.endswith("```"):
+                cleaned_response = cleaned_response[:-3]
+            
+            data = json.loads(cleaned_response.strip())
+            
+            # Ensure feedback has the question number prefix
+            feedback_text = data.get("feedback", "")
+            data["feedback"] = f"**Question {display_number}**\n\n{feedback_text}"
+            
+            return data
+            
+        except Exception as e:
+            logger.error(f"Gemini grading failed for {q_number}: {e}")
+            return {"score": 0.0, "feedback": f"**Question {q_number}**\nGrading unavailable."}
+
+    def _generate_overall_feedback(self, total_score, result_id):
+        try:
+            prompt = f"""
+Total Score: {total_score}
+Give concise overall feedback in Sinhala.
+"""
+            return self.gemini.generate_content(prompt).get("text", "")
         except Exception:
-            return ""
-
-    def _calculate_score_and_feedback(self, student_text: str, model_text: str, max_marks: int, question: Any) -> tuple[float, str]:
-        """
-        Calculates score (0.0 to 1.0) and generates feedback.
-        """
-        semantic_score = 0.0
-        raw_bm25 = 0.0
-        
-        if model_text:
-            # 1. BM25 Score (Keyword Relevance)
-            tokenized_student = student_text.split()
-            tokenized_model = model_text.split()
-            
-            if tokenized_model and tokenized_student:
-                bm25 = BM25Okapi([tokenized_model])
-                bm25_scores = bm25.get_scores(tokenized_student)
-                raw_bm25 = sum(bm25_scores)
-            
-            # 2. XLM-R Score (Semantic Similarity)
-            try:
-                emb1 = xlmr.encode(student_text, convert_to_tensor=True)
-                emb2 = xlmr.encode(model_text, convert_to_tensor=True)
-                cosine_score = util.cos_sim(emb1, emb2).item()
-                semantic_score = max(0.0, min(1.0, cosine_score))
-            except Exception as e:
-                logger.warning(f"XLM-R encoding failed: {e}")
-
-        # 3. Gemini Grading (The Judge)
-        q_text = getattr(question, 'question_text', '') or getattr(question, 'sub_question_text', '')
-        
-        if model_text:
-            prompt = f"""
-            You are an expert examiner. Grade this answer.
-            
-            Question: {q_text}
-            Max Marks: {max_marks}
-            
-            Model Answer / Criteria:
-            {model_text}
-            
-            Student Answer:
-            {student_text}
-            
-            AI Metrics:
-            - Semantic Similarity (XLM-R): {semantic_score:.2f} / 1.0
-            - Keyword Overlap Signal (BM25): {raw_bm25:.2f} (Higher is better)
-            
-            Task:
-            1. Assign a score out of {max_marks}.
-            2. Provide brief feedback.
-            
-            Output Format (JSON):
-            {{
-                "score": 2.5,
-                "feedback": "Good attempt but missed..."
-            }}
-            """
-        else:
-            # Zero-shot grading (No model answer)
-            prompt = f"""
-            You are an expert examiner. Grade this answer based on your general knowledge of the subject.
-            
-            Question: {q_text}
-            Max Marks: {max_marks}
-            
-            Student Answer:
-            {student_text}
-            
-            Task:
-            1. Assign a score out of {max_marks}.
-            2. Provide brief feedback.
-            
-            Output Format (JSON):
-            {{
-                "score": 2.5,
-                "feedback": "Good attempt..."
-            }}
-            """
-        
-        try:
-            response = self.gemini.generate_content(prompt)
-            # Parse JSON (simple regex or assumption)
-            import json
-            # Clean markdown
-            cleaned = response.replace("```json", "").replace("```", "").strip()
-            if "{" in cleaned:
-                cleaned = cleaned[cleaned.find("{"):cleaned.rfind("}")+1]
-            
-            data = json.loads(cleaned)
-            
-            score = float(data.get("score", 0))
-            feedback = data.get("feedback", "")
-            
-            # Normalize to 0-1 ratio
-            ratio = score / float(max_marks) if float(max_marks) > 0 else 0
-            return ratio, feedback
-            
-        except Exception as e:
-            logger.error(f"Grading failed: {e}")
-            # Fallback if Gemini fails
-            if model_text:
-                return semantic_score, "Graded based on semantic similarity (AI fallback)."
-            else:
-                return 0.0, "Grading failed and no model answer available."
-
-    def _generate_overall_feedback(self, total_score: Decimal, result_id: UUID) -> str:
-        """
-        Generates overall feedback using Gemini based on the total score and general performance.
-        """
-        try:
-            # Fetch all question scores for this result to give a summary
-            scores = self.db.query(QuestionScore).filter(QuestionScore.evaluation_result_id == result_id).all()
-            
-            summary_text = ""
-            for s in scores:
-                summary_text += f"- Q: {s.awarded_marks} marks. Feedback: {s.feedback}\n"
-            
-            prompt = f"""
-            You are an expert examiner providing overall feedback for a student's exam paper.
-            
-            Total Score: {total_score}
-            
-            Question-wise Performance Summary:
-            {summary_text[:5000]} (truncated if too long)
-            
-            Task:
-            Provide a constructive overall feedback summary in Sinhala (or English if preferred by context).
-            - Highlight strengths (answering style, good concepts).
-            - Highlight general weaknesses or common mistakes found in the paper.
-            - Provide encouragement.
-            
-            Keep it concise (2-3 paragraphs).
-            """
-            
-            response = self.gemini.generate_content(prompt)
-            return response.get("text", "").strip()
-        except Exception as e:
-            logger.error(f"Overall feedback generation failed: {e}")
-            return f"Total Score: {total_score}. Good job!"
-
-    def _generate_feedback_with_gemini(self, student_text: str, reference_text: str, question: Any, awarded_marks: Decimal, max_marks: int) -> str:
-        """
-        Generates detailed feedback using Gemini.
-        """
-        q_text = getattr(question, 'question_text', '') or getattr(question, 'sub_question_text', '')
-        
-        prompt = f"""
-        You are an expert examiner. Provide feedback for this answer.
-        
-        Question: {q_text}
-        Marks Awarded: {awarded_marks} / {max_marks}
-        
-        Student Answer:
-        "{student_text}"
-        
-        Reference Material (Syllabus/Rubric Excerpt):
-        "{reference_text}"
-        
-        Task:
-        Provide constructive feedback in Sinhala (or English).
-        1. Comment on the answering style.
-        2. Identify missing concepts or key points based on the Reference Material.
-        3. If the marks are low, explain why it is wrong or incomplete.
-        4. Do NOT mention "Gemini" or "AI". Speak as a teacher.
-        
-        Keep it brief (2-3 sentences).
-        """
-        
-        try:
-            response = self.gemini.generate_content(prompt)
-            return response.get("text", "").strip()
-        except Exception as e:
-            logger.error(f"Feedback generation failed: {e}")
-            return "Feedback could not be generated."
-
+            return f"Total Score: {total_score}"

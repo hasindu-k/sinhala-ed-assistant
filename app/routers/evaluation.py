@@ -95,22 +95,49 @@ def process_documents_stream(
     )
 
 
+from fastapi import BackgroundTasks
+from app.core.database import SessionLocal
+
+def run_evaluation_background_task(session_id: UUID, answer_resource_ids: List[UUID], user_id: UUID):
+    """
+    Background task wrapper to handle DB session lifecycle.
+    """
+    db = SessionLocal()
+    try:
+        service = EvaluationWorkflowService(db)
+        service.execute_evaluation_process(session_id, answer_resource_ids, user_id)
+    finally:
+        db.close()
+
 @router.post("/start", response_model=EvaluationSessionResponse)
 def start_evaluation(
     payload: StartEvaluationRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Start a new evaluation session using the active context and provided answer scripts.
+    Processing happens in the background.
     """
     service = EvaluationWorkflowService(db)
     try:
-        return service.start_evaluation_session(
+        # Initialize session synchronously
+        session = service.initialize_evaluation_session(
             chat_session_id=payload.chat_session_id,
             answer_resource_ids=payload.answer_resource_ids,
             user_id=current_user.id
         )
+        
+        # Offload processing to background
+        background_tasks.add_task(
+            run_evaluation_background_task,
+            session.id,
+            payload.answer_resource_ids,
+            current_user.id
+        )
+        
+        return session
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:

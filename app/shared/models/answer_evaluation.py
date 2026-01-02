@@ -29,11 +29,17 @@ class EvaluationResult(Base):
     evaluated_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+from sqlalchemy.orm import relationship
+
 class QuestionScore(Base):
     __tablename__ = "question_scores"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     evaluation_result_id = Column(UUID(as_uuid=True), ForeignKey("evaluation_results.id"), nullable=False, index=True)
-    sub_question_id = Column(UUID(as_uuid=True), ForeignKey("sub_questions.id"), nullable=False)
+    question_id = Column(UUID(as_uuid=True), ForeignKey("questions.id"), nullable=True)
+    sub_question_id = Column(UUID(as_uuid=True), ForeignKey("sub_questions.id"), nullable=True)
     awarded_marks = Column(Numeric, nullable=True)
     feedback = Column(Text, nullable=True)
+
+    question = relationship("Question", foreign_keys=[question_id])
+    sub_question = relationship("SubQuestion", foreign_keys=[sub_question_id])

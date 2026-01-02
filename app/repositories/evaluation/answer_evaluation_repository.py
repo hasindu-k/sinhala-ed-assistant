@@ -3,9 +3,10 @@
 from typing import Optional, List, Dict
 from uuid import UUID
 from decimal import Decimal
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.shared.models.answer_evaluation import AnswerDocument, EvaluationResult, QuestionScore
+from app.shared.models.question_papers import SubQuestion
 
 
 class AnswerEvaluationRepository:
@@ -101,14 +102,16 @@ class AnswerEvaluationRepository:
     def create_question_score(
         self,
         evaluation_result_id: UUID,
-        sub_question_id: UUID,
         awarded_marks: Decimal,
+        sub_question_id: Optional[UUID] = None,
+        question_id: Optional[UUID] = None,
         feedback: Optional[str] = None
     ) -> QuestionScore:
-        """Create a score for a sub-question."""
+        """Create a score for a question or sub-question."""
         question_score = QuestionScore(
             evaluation_result_id=evaluation_result_id,
             sub_question_id=sub_question_id,
+            question_id=question_id,
             awarded_marks=awarded_marks,
             feedback=feedback
         )
@@ -122,7 +125,10 @@ class AnswerEvaluationRepository:
         evaluation_result_id: UUID
     ) -> List[QuestionScore]:
         """Get all question scores for an evaluation result."""
-        return self.db.query(QuestionScore).filter(
+        return self.db.query(QuestionScore).options(
+            joinedload(QuestionScore.question),
+            joinedload(QuestionScore.sub_question).joinedload(SubQuestion.question)
+        ).filter(
             QuestionScore.evaluation_result_id == evaluation_result_id
         ).all()
     

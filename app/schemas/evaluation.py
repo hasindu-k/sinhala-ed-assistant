@@ -241,7 +241,8 @@ class EvaluationResultResponse(BaseModel):
 
 # Question Score Schemas
 class QuestionScoreCreate(BaseModel):
-    sub_question_id: UUID
+    question_id: Optional[UUID] = None
+    sub_question_id: Optional[UUID] = None
     awarded_marks: Optional[Decimal] = None
     feedback: Optional[str] = None
 
@@ -249,7 +250,8 @@ class QuestionScoreCreate(BaseModel):
 class QuestionScoreResponse(BaseModel):
     id: UUID
     evaluation_result_id: UUID
-    sub_question_id: UUID
+    question_id: Optional[UUID] = None
+    sub_question_id: Optional[UUID] = None
     awarded_marks: Optional[Decimal] = None
     feedback: Optional[str] = None
 

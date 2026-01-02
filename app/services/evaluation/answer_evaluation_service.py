@@ -10,6 +10,7 @@
 from typing import Optional, List, Dict
 from uuid import UUID
 from decimal import Decimal
+import re
 from sqlalchemy.orm import Session
 
 from app.repositories.evaluation.answer_evaluation_repository import AnswerEvaluationRepository
@@ -147,6 +148,24 @@ class AnswerEvaluationService:
         
         scores = self.repository.get_question_scores_by_result(evaluation_result_id)
         
+        # Sort scores naturally by question number
+        def sort_key(score):
+            q_num = ""
+            if score.question and score.question.question_number:
+                q_num = score.question.question_number
+            elif score.sub_question:
+                # Try to get parent question number
+                parent_num = ""
+                if score.sub_question.question and score.sub_question.question.question_number:
+                    parent_num = score.sub_question.question.question_number
+                
+                q_num = f"{parent_num}{score.sub_question.label}"
+            
+            # Natural sort split (e.g. "10" comes after "2")
+            return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(q_num))]
+
+        scores.sort(key=sort_key)
+        
         return {
             "id": result.id,
             "answer_document_id": result.answer_document_id,
@@ -157,6 +176,7 @@ class AnswerEvaluationService:
                 {
                     "id": score.id,
                     "evaluation_result_id": score.evaluation_result_id,
+                    "question_id": score.question_id,
                     "sub_question_id": score.sub_question_id,
                     "awarded_marks": score.awarded_marks,
                     "feedback": score.feedback

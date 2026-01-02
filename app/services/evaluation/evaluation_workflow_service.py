@@ -110,9 +110,10 @@ class EvaluationWorkflowService:
         return session
 
 
-    def start_evaluation_session(self, chat_session_id: UUID, answer_resource_ids: List[UUID], user_id: UUID):
+    def initialize_evaluation_session(self, chat_session_id: UUID, answer_resource_ids: List[UUID], user_id: UUID):
         """
-        Creates a session, attaches active context + answers, and starts processing.
+        Creates a session, attaches active context + answers, and sets status to processing.
+        Returns the session immediately.
         """
         # 1. Create Session (reuses logic to attach Rubric, Syllabus, QP)
         # Check if session already exists for this chat_session (created by process_documents)
@@ -141,26 +142,34 @@ class EvaluationWorkflowService:
         # 3. Update Status to Processing
         self.sessions.update_evaluation_session(session.id, status="processing")
         
-        # 4. Trigger Evaluation for each answer
-        # In a real production app, this should be a background task (Celery/BullMQ)
-        # For now, we will trigger it synchronously or just ensure the records are ready.
-        # Since the user explicitly called "start", let's ensure we have results.
-        
-        for resource_id in answer_resource_ids:
-            # Find the answer document we just ensured exists
-            ad = self.answers.get_answer_document_by_session_and_resource(session.id, resource_id)
-            if ad:
-                try:
-                    logger.info(f"Triggering evaluation for answer document {ad.id}...")
-                    self.evaluate_answer(ad.id, user_id)
-                    logger.info(f"Evaluation finished for answer document {ad.id}.")
-                except Exception as e:
-                    logger.error(f"Failed to evaluate answer {ad.id}: {e}")
-                    # Continue with others
-        
-        self.sessions.update_evaluation_session(session.id, status="completed")
-        
         return session
+
+    def execute_evaluation_process(self, session_id: UUID, answer_resource_ids: List[UUID], user_id: UUID):
+        """
+        Performs the actual heavy lifting of evaluation.
+        Should be called in a background task.
+        """
+        try:
+            logger.info(f"Starting background evaluation for session {session_id}")
+            
+            for resource_id in answer_resource_ids:
+                # Find the answer document we just ensured exists
+                ad = self.answers.get_answer_document_by_session_and_resource(session_id, resource_id)
+                if ad:
+                    try:
+                        logger.info(f"Triggering evaluation for answer document {ad.id}...")
+                        self.evaluate_answer(ad.id, user_id)
+                        logger.info(f"Evaluation finished for answer document {ad.id}.")
+                    except Exception as e:
+                        logger.error(f"Failed to evaluate answer {ad.id}: {e}")
+                        # Continue with others
+            
+            self.sessions.update_evaluation_session(session_id, status="completed")
+            logger.info(f"Background evaluation completed for session {session_id}")
+            
+        except Exception as e:
+            logger.error(f"Critical error in background evaluation: {e}")
+            self.sessions.update_evaluation_session(session_id, status="failed")
 
     def list_sessions(self, user_id: UUID, session_id: Optional[UUID] = None) -> List:
         if session_id:
