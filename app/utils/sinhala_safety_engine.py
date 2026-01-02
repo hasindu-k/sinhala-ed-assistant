@@ -22,13 +22,55 @@ def concept_map_check(generated: str, source: str):
     }
  
 def detect_misconceptions(generated: str, source: str):
-    src = extract_concepts(source)
+    """
+    Relative, explainable misconception detection.
+
+    For each sentence in the generated answer:
+    - Extract concepts
+    - Compare against source concepts
+    - Flag only if a large proportion is unsupported
+    - Assign severity based on unseen ratio
+
+    Returns:
+        List of dicts:
+        [
+          {
+            "sentence": "...",
+            "severity": "low|medium|high",
+            "unseen_ratio": float
+          }
+        ]
+    """
+    src_concepts = extract_concepts(source)
     flagged = []
- 
+
     for sentence in re.split(r"[.!?]", generated):
-        new = extract_concepts(sentence) - src
-        if len(new) >= 20:
-            flagged.append(sentence.strip())
- 
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+
+        sent_concepts = extract_concepts(sentence)
+
+        # Skip very short or trivial sentences
+        if len(sent_concepts) < 6:
+            continue
+
+        unseen = sent_concepts - src_concepts
+        unseen_ratio = len(unseen) / len(sent_concepts)
+
+        # Only flag when majority is unsupported
+        if unseen_ratio >= 0.5:
+            if unseen_ratio >= 0.75:
+                severity = "high"
+            elif unseen_ratio >= 0.6:
+                severity = "medium"
+            else:
+                severity = "low"
+
+            flagged.append({
+                "sentence": sentence,
+                "severity": severity,
+                "unseen_ratio": round(unseen_ratio, 2)
+            })
+
     return flagged
- 
