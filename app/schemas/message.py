@@ -37,9 +37,18 @@ class MessageAttachment(BaseModel):
     attachment_type: Optional[str] = "pdf"
 
 class MessageCreate(BaseModel):
-    modality: MessageModality
-    content: Optional[str] = None
+    content: str
+    role: str = "user"
+    modality: MessageModality = MessageModality.text
     audio_url: Optional[str] = None
+    transcript: Optional[str] = None
+    audio_duration_sec: Optional[Decimal] = None
+    grade_level: Optional[str] = None  
+    attachments: Optional[List[MessageAttachment]] = None
+
+
+class MessageUpdate(BaseModel):
+    content: Optional[str] = None
     transcript: Optional[str] = None
     audio_duration_sec: Optional[Decimal] = None
     grade_level: Optional[GradeLevel] = None
