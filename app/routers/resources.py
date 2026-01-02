@@ -12,7 +12,8 @@ from app.schemas.resource import (
     ResourceFileUpdate,
     ResourceUploadResponse,
     ResourceBulkUploadResponse,
-    ResourceProcessResponse
+    ResourceProcessResponse,
+    ResourceBatchProcessRequest
 )
 from app.schemas.resource_chunk import ResourceChunkResponse
 from app.services.resource_service import ResourceService
@@ -114,7 +115,7 @@ async def upload_resource(
     logger.info(f"Uploaded {len(upload_results)} resources for user {user_id}")
     return ResourceBulkUploadResponse(uploads=upload_results)
 
-from app.utils.file_validation import validate_files
+from app.utils.file_validation import validate_files, MAX_FILES
 @router.post("/upload/batch", response_model=List[ResourceUploadResponse])
 async def upload_resources(
     files: List[UploadFile] = Depends(validate_files),
@@ -491,6 +492,71 @@ def process_resource(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process resource"
+        )
+
+
+@router.post("/process/batch", response_model=List[ResourceProcessResponse])
+def process_resources_batch(
+    payload: ResourceBatchProcessRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    OCR, chunk, and embed multiple resources.
+
+    Args:
+        payload: List of resource IDs to process
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        List of ResourceProcessResponse with processing results for each resource
+
+    Raises:
+        HTTPException 400: Empty list or validation error
+        HTTPException 403: User doesn't own one or more resources
+        HTTPException 404: One or more resources not found
+        HTTPException 500: Processing error
+    """
+    try:
+        if not payload.resource_ids:
+            raise ValueError("No resource IDs provided")
+
+        if len(payload.resource_ids) > MAX_FILES:
+            raise ValueError(f"Too many resources to process. Maximum allowed is {MAX_FILES}.")
+
+        resource_service = ResourceService(db)
+        
+        # Validate ownership of all resources upfront
+        resource_service.ensure_resources_owned(payload.resource_ids, current_user.id)
+
+        results = []
+        for resource_id in payload.resource_ids:
+            result = resource_service.process_resource(resource_id, current_user.id)
+            results.append(result)
+
+        logger.info(
+            f"{len(results)} resources processed by user {current_user.id}"
+        )
+        return results
+
+    except ValueError as e:
+        logger.warning(f"Validation error processing resources: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except PermissionError as e:
+        logger.warning(f"User {current_user.id} attempted unauthorized batch processing: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error processing resources batch for user {current_user.id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process resources"
         )
 
 

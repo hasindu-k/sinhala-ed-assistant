@@ -5,6 +5,7 @@ from typing import Optional
 from uuid import UUID
 from datetime import datetime
 from enum import Enum
+from typing import List
 
 
 class ResourceSource(str, Enum):
@@ -62,3 +63,7 @@ class ResourceProcessResponse(BaseModel):
     status: str
     chunks_created: Optional[int] = None
     message: Optional[str] = None
+
+
+class ResourceBatchProcessRequest(BaseModel):
+    resource_ids: List[UUID]

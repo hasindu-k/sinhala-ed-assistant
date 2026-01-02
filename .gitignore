@@ -208,3 +208,7 @@ __marimo__/
 
 #firebase
 config/firebase_service_account.json
+
+#model
+app/models/whisper-sinhala-accent-model/
+uploads/
