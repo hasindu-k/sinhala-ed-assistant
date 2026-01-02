@@ -13,6 +13,7 @@ from app.shared.models.message_relations import MessageContextChunk, MessageAtta
 from app.shared.models.session_resources import SessionResource
 from app.shared.models.password_reset_token import PasswordResetToken
 from app.shared.models.refresh_token import RefreshToken
+from app.shared.models.user_evaluation_context import UserEvaluationContext
 
 __all__ = [
     "User",
@@ -37,4 +38,5 @@ __all__ = [
     "SessionResource",
     "PasswordResetToken",
     "RefreshToken",
+    "UserEvaluationContext",
 ]

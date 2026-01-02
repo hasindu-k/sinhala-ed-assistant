@@ -10,6 +10,7 @@
 from typing import Optional, List, Dict
 from uuid import UUID
 from decimal import Decimal
+import re
 from sqlalchemy.orm import Session
 
 from app.repositories.evaluation.answer_evaluation_repository import AnswerEvaluationRepository
@@ -41,6 +42,14 @@ class AnswerEvaluationService:
     def get_answer_documents_by_evaluation_session(self, evaluation_session_id: UUID) -> List:
         """Get all answer documents for an evaluation session."""
         return self.repository.get_answer_documents_by_evaluation_session(evaluation_session_id)
+
+    def get_answer_document_by_session_and_resource(self, evaluation_session_id: UUID, resource_id: UUID):
+        """Get answer document by session and resource ID."""
+        return self.repository.get_answer_document_by_session_and_resource(evaluation_session_id, resource_id)
+
+    def update_mapped_answers(self, answer_document_id: UUID, mapped_answers: Dict):
+        """Update mapped answers for an answer document."""
+        return self.repository.update_mapped_answers(answer_document_id, mapped_answers)
     
     def create_evaluation_result(
         self,
@@ -139,6 +148,24 @@ class AnswerEvaluationService:
         
         scores = self.repository.get_question_scores_by_result(evaluation_result_id)
         
+        # Sort scores naturally by question number
+        def sort_key(score):
+            q_num = ""
+            if score.question and score.question.question_number:
+                q_num = score.question.question_number
+            elif score.sub_question:
+                # Try to get parent question number
+                parent_num = ""
+                if score.sub_question.question and score.sub_question.question.question_number:
+                    parent_num = score.sub_question.question.question_number
+                
+                q_num = f"{parent_num}{score.sub_question.label}"
+            
+            # Natural sort split (e.g. "10" comes after "2")
+            return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(q_num))]
+
+        scores.sort(key=sort_key)
+        
         return {
             "id": result.id,
             "answer_document_id": result.answer_document_id,
@@ -148,8 +175,10 @@ class AnswerEvaluationService:
             "question_scores": [
                 {
                     "id": score.id,
+                    "evaluation_result_id": score.evaluation_result_id,
+                    "question_id": score.question_id,
                     "sub_question_id": score.sub_question_id,
-                    "awarded_marks": float(score.awarded_marks) if score.awarded_marks else None,
+                    "awarded_marks": score.awarded_marks,
                     "feedback": score.feedback
                 }
                 for score in scores

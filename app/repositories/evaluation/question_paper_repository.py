@@ -15,12 +15,14 @@ class QuestionPaperRepository:
     
     def create_question_paper(
         self,
-        evaluation_session_id: UUID,
         resource_id: UUID,
+        chat_session_id: Optional[UUID] = None,
+        evaluation_session_id: Optional[UUID] = None,
         extracted_text: Optional[str] = None
     ) -> QuestionPaper:
         """Create a question paper entry."""
         question_paper = QuestionPaper(
+            chat_session_id=chat_session_id,
             evaluation_session_id=evaluation_session_id,
             resource_id=resource_id,
             extracted_text=extracted_text
@@ -36,6 +38,15 @@ class QuestionPaperRepository:
             QuestionPaper.id == question_paper_id
         ).first()
     
+    def get_question_papers_by_chat_session(
+        self,
+        chat_session_id: UUID
+    ) -> List[QuestionPaper]:
+        """Get all question papers for a chat session."""
+        return self.db.query(QuestionPaper).filter(
+            QuestionPaper.chat_session_id == chat_session_id
+        ).all()
+
     def get_question_papers_by_evaluation_session(
         self,
         evaluation_session_id: UUID
@@ -69,10 +80,17 @@ class QuestionPaperRepository:
         return question
     
     def get_questions_by_paper(self, question_paper_id: UUID) -> List[Question]:
-        """Get all questions for a question paper."""
-        return self.db.query(Question).filter(
+        """Get all questions for a question paper (Natural Sort)."""
+        questions = self.db.query(Question).filter(
             Question.question_paper_id == question_paper_id
-        ).order_by(Question.question_number).all()
+        ).all()
+
+        def natural_sort_key(q):
+            import re
+            text = q.question_number or ""
+            return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
+
+        return sorted(questions, key=natural_sort_key)
     
     def create_sub_question(
         self,
@@ -80,13 +98,15 @@ class QuestionPaperRepository:
         label: str,
         sub_question_text: str,
         max_marks: Optional[int] = None,
+        parent_sub_question_id: Optional[UUID] = None,
     ) -> SubQuestion:
         """Create a sub-question."""
         sub_question = SubQuestion(
             question_id=question_id,
             label=label,
             sub_question_text=sub_question_text,
-            max_marks=max_marks
+            max_marks=max_marks,
+            parent_sub_question_id=parent_sub_question_id
         )
         self.db.add(sub_question)
         self.db.commit()
@@ -99,6 +119,7 @@ class QuestionPaperRepository:
             SubQuestion.question_id == question_id
         ).order_by(SubQuestion.label).all()
     
+
     def create_structured_questions(
         self,
         question_paper_id: UUID,
@@ -106,51 +127,86 @@ class QuestionPaperRepository:
     ) -> List[Question]:
         """
         Create questions and sub-questions from structured data.
-        
-        structured_data format:
-        {
-            "Q01": {
-                "question_text": "Main question text",
-                "max_marks": 20,
-                "sub_questions": {
-                    "a": {"text": "Sub question a", "marks": 5},
-                    "b": {"text": "Sub question b", "marks": 5}
-                }
-            }
-        }
         """
-        questions = []
+        created_questions = []
         
         for q_num, q_data in structured_data.items():
+            # Handle options for MCQs by appending to text if present
+            q_text = q_data.get("text", "")
+            if "options" in q_data and isinstance(q_data["options"], list):
+                options_text = "\n".join(q_data["options"])
+                q_text = f"{q_text}\n\nOptions:\n{options_text}"
+            
+            # Create main question
             question = self.create_question(
                 question_paper_id=question_paper_id,
-                question_number=q_num,
-                question_text=q_data.get("question_text", ""),
-                max_marks=q_data.get("max_marks", 0)
+                question_number=str(q_num),
+                question_text=q_text,
+                max_marks=q_data.get("marks"),
+                shared_stem=q_data.get("shared_stem"),
+                inherits_shared_stem_from=str(q_data.get("inherits_shared_stem_from")) if q_data.get("inherits_shared_stem_from") else None
             )
-            questions.append(question)
+            created_questions.append(question)
             
-            sub_questions_data = q_data.get("sub_questions", {})
-            for label, sq_data in sub_questions_data.items():
-                self.create_sub_question(
-                    question_id=question.id,
-                    label=label,
-                    sub_question_text=sq_data.get("text", ""),
-                    max_marks=sq_data.get("marks", 0)
+            # Handle sub-questions
+            if "sub_questions" in q_data and isinstance(q_data["sub_questions"], dict):
+                self._create_recursive_sub_questions(
+                    question.id, 
+                    q_data["sub_questions"]
                 )
-        
-        return questions
-    
+                
+        return created_questions
+
+    def _create_recursive_sub_questions(
+        self, 
+        question_id: UUID, 
+        sub_questions_data: Dict, 
+        parent_sub_question_id: Optional[UUID] = None
+    ):
+        for label, sub_data in sub_questions_data.items():
+            # Create sub-question
+            sub_q = self.create_sub_question(
+                question_id=question_id,
+                label=str(label),
+                sub_question_text=sub_data.get("text", ""),
+                max_marks=sub_data.get("marks"),
+                parent_sub_question_id=parent_sub_question_id
+            )
+            
+            # Check for nested sub-questions (if any)
+            if "sub_questions" in sub_data and isinstance(sub_data["sub_questions"], dict):
+                 self._create_recursive_sub_questions(
+                    question_id,
+                    sub_data["sub_questions"],
+                    parent_sub_question_id=sub_q.id
+                )
+
     def get_question_paper_with_questions(
         self,
         question_paper_id: UUID
     ) -> Optional[Dict]:
-        """Get complete question paper with all questions and sub-questions."""
+        """Get complete question paper with all questions and sub-questions in hierarchical structure."""
         paper = self.get_question_paper(question_paper_id)
         if not paper:
             return None
         
         questions = self.get_questions_by_paper(question_paper_id)
+        
+        def build_sub_question_tree(sub_questions: List[SubQuestion], parent_id=None):
+            """Recursively build hierarchical sub-question structure."""
+            children = []
+            for sq in sub_questions:
+                if sq.parent_sub_question_id == parent_id:
+                    child_tree = {
+                        "id": sq.id,
+                        "label": sq.label,
+                        "text": sq.sub_question_text,
+                        "max_marks": sq.max_marks,
+                        "parent_sub_question_id": sq.parent_sub_question_id,
+                        "children": build_sub_question_tree(sub_questions, sq.id)
+                    }
+                    children.append(child_tree)
+            return children
         
         result = {
             "id": paper.id,
@@ -168,15 +224,7 @@ class QuestionPaperRepository:
                 "question_number": question.question_number,
                 "question_text": question.question_text,
                 "max_marks": question.max_marks,
-                "sub_questions": [
-                    {
-                        "id": sq.id,
-                        "label": sq.label,
-                        "text": sq.sub_question_text,
-                        "max_marks": sq.max_marks
-                    }
-                    for sq in sub_questions
-                ]
+                "sub_questions": build_sub_question_tree(sub_questions)
             })
         
         return result

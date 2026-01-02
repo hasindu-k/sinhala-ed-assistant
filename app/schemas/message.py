@@ -1,3 +1,5 @@
+# app/schemas/message.py
+
 from pydantic import BaseModel
 from typing import Optional, Any, List
 from uuid import UUID

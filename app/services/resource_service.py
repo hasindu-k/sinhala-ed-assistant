@@ -1,4 +1,5 @@
-#  app/services/resource_service.py
+# app/services/resource_service.py
+
 import os
 from pathlib import Path
 from typing import Optional, List, Iterable, Set
@@ -71,6 +72,7 @@ class ResourceService:
                 source_type="user_upload",
                 commit=commit,
             )
+            self.process_resource(resource.id, user_id)
             return resource
         except Exception as e:
             # Cleanup file if database save failed

@@ -1,3 +1,5 @@
+# app/shared/models/resource_chunks.py
+
 import uuid
 from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, Numeric
 from sqlalchemy.dialects.postgresql import UUID
@@ -16,7 +18,7 @@ class ResourceChunk(Base):
     content = Column(Text, nullable=True)
     content_length = Column(Integer, nullable=True)
     token_count = Column(Integer, nullable=True)
-    embedding = Column(Vector(768), nullable=True)
+    embedding = Column(Vector(768), nullable=True)  # Vector for embeddings
     embedding_model = Column(String, nullable=True)
     start_char = Column(Integer, nullable=True)
     end_char = Column(Integer, nullable=True)

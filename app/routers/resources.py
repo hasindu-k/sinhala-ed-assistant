@@ -1,5 +1,8 @@
+# app/routers/resources.py
+
 import logging
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
+from typing import List, Optional
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status, Query
 from fastapi.responses import FileResponse
 import os
 from sqlalchemy.orm import Session
@@ -8,76 +11,109 @@ from app.schemas.resource import (
     ResourceFileResponse,
     ResourceFileUpdate,
     ResourceUploadResponse,
+    ResourceBulkUploadResponse,
     ResourceProcessResponse,
     ResourceBatchProcessRequest
 )
 from app.schemas.resource_chunk import ResourceChunkResponse
 from app.services.resource_service import ResourceService
 from app.services.resource_chunk_service import ResourceChunkService
+from app.services.evaluation.user_context_service import UserContextService
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
-from typing import List
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/upload", response_model=ResourceUploadResponse)
+@router.post("/upload", response_model=ResourceBulkUploadResponse)
 async def upload_resource(
-    file: UploadFile = File(...),
+    files: List[UploadFile] = File(...),
+    resource_type: Optional[str] = Query(None, enum=["syllabus", "question_paper", "rubric"]),
+    chat_session_id: Optional[UUID] = Query(None, description="Optional chat session ID to attach the resource to"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Upload a resource file (PDF, image, audio).
+    Upload one or more resource files (PDF, image, audio).
     
     Args:
-        file: Uploaded file
+        files: List of uploaded files
+        resource_type: Optional type of resource to set as active context (syllabus, question_paper)
+        chat_session_id: Optional chat session ID to attach the resource to
         current_user: Authenticated user
         db: Database session
         
     Returns:
-        ResourceUploadResponse with upload details
+        ResourceBulkUploadResponse with list of upload details
         
     Raises:
         HTTPException 400: Invalid file type or empty file
         HTTPException 500: File storage or database error
     """
-    try:
-        # Read file content
-        content = await file.read()
-        
-        # Upload via service
-        resource_service = ResourceService(db)
-        resource = resource_service.upload_resource_from_file(
-            user_id=current_user.id,
-            filename=file.filename,
-            content_type=file.content_type,
-            content=content,
-        )
-        
-        logger.info(f"Resource uploaded: {resource.id} ({file.filename}) by user {current_user.id}")
-        
-        return ResourceUploadResponse(
-            resource_id=resource.id,
-            filename=file.filename,
-            size_bytes=len(content),
-            mime_type=file.content_type,
-        )
-        
-    except ValueError as e:
-        logger.warning(f"Validation error uploading resource: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Error uploading resource for user {current_user.id}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upload resource"
-        )
+    user_id = current_user.id  # Load user_id early to avoid lazy loading issues
+    upload_results = []
+    
+    for file in files:
+        try:
+            # Read file content
+            content = await file.read()
+            
+            # Upload via service
+            resource_service = ResourceService(db)
+            resource = resource_service.upload_resource_from_file(
+                user_id=user_id,
+                filename=file.filename,
+                content_type=file.content_type,
+                content=content,
+            )
+            
+            # Update user context if resource_type is provided (Legacy/Global Context)
+            if resource_type:
+                context_service = UserContextService(db)
+                if resource_type == "syllabus":
+                    context_service.update_syllabus(user_id, resource.id)
+                elif resource_type == "question_paper":
+                    context_service.update_question_paper(user_id, resource.id)
+                elif resource_type == "rubric":
+                    context_service.update_rubric(user_id, resource.id)
+            
+            # Attach to Chat Session if provided
+            if chat_session_id and resource_type:
+                from app.services.chat_session_service import ChatSessionService
+                chat_service = ChatSessionService(db)
+                chat_service.attach_resource(
+                    session_id=chat_session_id,
+                    user_id=user_id,
+                    resource_id=resource.id,
+                    role=resource_type
+                )
+            
+            upload_results.append(ResourceUploadResponse(
+                resource_id=resource.id,
+                filename=file.filename,
+                size_bytes=len(content),
+                mime_type=file.content_type,
+            ))
+            
+        except ValueError as e:
+            logger.warning(f"Validation error uploading resource {file.filename}: {e}")
+            # For multiple files, we might want to continue with others or fail all
+            # For now, fail all if any fails
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Validation error for {file.filename}: {str(e)}"
+            )
+        except Exception as e:
+            logger.error(f"Error uploading resource {file.filename} for user {user_id}: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to upload {file.filename}"
+            )
+    
+    logger.info(f"Uploaded {len(upload_results)} resources for user {user_id}")
+    return ResourceBulkUploadResponse(uploads=upload_results)
 
 from app.utils.file_validation import validate_files, MAX_FILES
 @router.post("/upload/batch", response_model=List[ResourceUploadResponse])

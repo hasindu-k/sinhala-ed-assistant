@@ -1,4 +1,5 @@
-#app/services/chat_session_service.py
+# app/services/chat_session_service.py
+
 from typing import Optional, List
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -32,12 +33,27 @@ class ChatSessionService:
         description: Optional[str] = None,
         grade: Optional[int] = None,
         subject: Optional[str] = None,
+        rubric_id: Optional[UUID] = None,
     ):
         # Validation
         if not mode or not channel:
             raise ValueError("Mode and channel are required")
         
-        return self.repository.create_session(
+        final_rubric_id = rubric_id
+        
+        # Only apply global context logic for EVALUATION mode
+        if mode == "evaluation":
+            # 1. Get User Context (Global "Active" Settings)
+            from app.services.evaluation.user_context_service import UserContextService
+            context_service = UserContextService(self.db)
+            context = context_service.get_or_create_context(user_id)
+            
+            # 2. Determine Rubric (Payload > Global Context)
+            if not final_rubric_id:
+                final_rubric_id = context.active_rubric_id
+        
+        # 3. Create Session
+        session = self.repository.create_session(
             user_id=user_id,
             mode=mode,
             channel=channel,
@@ -45,7 +61,18 @@ class ChatSessionService:
             description=description,
             grade=grade,
             subject=subject,
+            rubric_id=final_rubric_id,
         )
+        
+        # 4. Copy Active Resources (Syllabus, Question Paper) to this Session (Only for Evaluation)
+        if mode == "evaluation":
+            if context.active_syllabus_id:
+                self.repository.attach_resource(session.id, context.active_syllabus_id, "syllabus")
+                
+            if context.active_question_paper_id:
+                self.repository.attach_resource(session.id, context.active_question_paper_id, "question_paper")
+            
+        return session
 
     def get_session(self, session_id: UUID):
         return self.repository.get_session(session_id)
@@ -75,6 +102,7 @@ class ChatSessionService:
         description: Optional[str] = None,
         grade: Optional[int] = None,
         subject: Optional[str] = None,
+        rubric_id: Optional[UUID] = None,
     ):
         """Update session after ownership validation."""
         session = self.get_session_with_ownership_check(session_id, user_id)
@@ -88,6 +116,13 @@ class ChatSessionService:
             session.grade = grade
         if subject is not None:
             session.subject = subject
+        if rubric_id is not None:
+            session.rubric_id = rubric_id
+            # Update Global Context if in Evaluation Mode
+            if session.mode == "evaluation":
+                from app.services.evaluation.user_context_service import UserContextService
+                context_service = UserContextService(self.db)
+                context_service.update_rubric(user_id, rubric_id)
         
         self.db.commit()
         self.db.refresh(session)
@@ -143,14 +178,29 @@ class ChatSessionService:
             self.db.rollback()
             raise
     
-    # def attach_resources(self, session_id: UUID, user_id: UUID, resource_ids: List[UUID]):
-    #     """Attach resources to session after validation."""
-    #     if not resource_ids:
-    #         raise ValueError("At least one resource ID is required")
+    def attach_resource(self, session_id: UUID, user_id: UUID, resource_id: UUID, role: str):
+        """Attach a resource to session with a specific role."""
+        # Verify ownership
+        session = self.get_session_with_ownership_check(session_id, user_id)
         
-    #     # Verify ownership
-    #     self.get_session_with_ownership_check(session_id, user_id)
+        # Verify resource ownership (optional but good practice)
+        from app.services.resource_service import ResourceService
+        resource_service = ResourceService(self.db)
+        resource_service.get_resource_with_ownership_check(resource_id, user_id)
         
-    #     # TODO: Implement actual resource attachment logic
-    #     # This would involve creating records in session_resources table
-    #     return {"detail": "Resources attached successfully"}
+        # 1. Attach to this specific session
+        self.repository.attach_resource(session_id, resource_id, role)
+        
+        # 2. Update Global Context (so future chats use this new resource by default)
+        # Only if this is an EVALUATION session
+        if session.mode == "evaluation":
+            from app.services.evaluation.user_context_service import UserContextService
+            context_service = UserContextService(self.db)
+            
+            if role == "syllabus":
+                context_service.update_syllabus(user_id, resource_id)
+            elif role == "question_paper":
+                context_service.update_question_paper(user_id, resource_id)
+            
+        return {"detail": f"Resource attached as {role} successfully"}
+
