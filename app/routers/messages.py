@@ -33,6 +33,8 @@ from app.core.security import get_current_user
 from app.shared.models.user import User
 from app.shared.models.message import Message
 from typing import List
+from app.services.safety_summary_service import SafetySummaryService
+from fastapi import status
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -822,4 +824,45 @@ def get_message_safety_report(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve safety report"
+        )
+
+@router.get("/{message_id}/safety-summary")
+def get_message_safety_summary(
+    message_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get a user-facing safety summary for an assistant message.
+
+    This endpoint returns a lightweight, aggregated view
+    without exposing raw hallucination details.
+    """
+    try:
+        message_service = MessageService(db)
+        message_service.get_message_with_ownership_check(message_id, current_user.id)
+
+        summary_service = SafetySummaryService(db)
+        summary = summary_service.build_summary(message_id)
+
+        return summary
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(
+            f"Error retrieving safety summary for message {message_id}: {e}",
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve safety summary"
         )
