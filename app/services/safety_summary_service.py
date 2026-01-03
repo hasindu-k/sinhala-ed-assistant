@@ -2,6 +2,8 @@ from typing import Dict
 from uuid import UUID
 
 from app.services.message_safety_service import MessageSafetyService
+import logging
+logger = logging.getLogger(__name__)
 
 
 class SafetySummaryService:
@@ -30,6 +32,13 @@ class SafetySummaryService:
         flagged = report.flagged_sentences or []
         missing = report.missing_concepts or []
         extra = report.extra_concepts or []
+
+        logger.info("Building safety summary | message_id=%s | missing=%d | extra=%d | flagged=%d",
+            message_id,
+            len(missing),
+            len(extra),
+            len(flagged),
+        )
 
         severity = self._compute_severity(flagged, missing, extra)
         confidence = self._compute_confidence(missing, extra, flagged)
