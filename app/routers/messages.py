@@ -591,6 +591,7 @@ def get_message_history(
                 "audio_duration_sec": message.audio_duration_sec,
                 "created_at": message.created_at,
                 "resource_ids": resource_ids,
+                "parent_msg_id": message.parent_msg_id,
             })
         
         logger.debug(f"Retrieved {len(messages)} messages with attachments for session {session_id} by user {current_user.id}")

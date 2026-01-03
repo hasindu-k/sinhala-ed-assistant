@@ -69,6 +69,7 @@ class MessageResponse(BaseModel):
     audio_duration_sec: Optional[Decimal] = None
     created_at: datetime
     resource_ids: list[UUID] = []
+    parent_msg_id: Optional[UUID] = None
 
     class Config:
         from_attributes = True
