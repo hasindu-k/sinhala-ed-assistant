@@ -175,9 +175,9 @@ class MessageSafetyReportCreate(BaseModel):
 class MessageSafetyReportResponse(BaseModel):
     id: UUID
     message_id: UUID
-    missing_concepts: Optional[str] = None
-    extra_concepts: Optional[str] = None
-    flagged_sentences: Optional[str] = None
+    missing_concepts: Optional[List[str]] = None
+    extra_concepts: Optional[List[str]] = None
+    flagged_sentences: Optional[List[Any]] = None
     reasoning: Optional[str] = None
     created_at: datetime
 

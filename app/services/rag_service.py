@@ -13,7 +13,6 @@ from app.utils.sinhala_summary_prompt_builder import build_summary_prompt
 from app.utils.sinhala_safety_engine import concept_map_check, detect_misconceptions, attach_evidence
 from app.services.message_safety_service import MessageSafetyService
 from app.core.gemini_client import GeminiClient
-import json
 from app.services.intent_detection_service import IntentDetectionService
 from app.services.answerability_service import AnswerabilityService
 
@@ -246,9 +245,9 @@ class RAGService:
         self.safety_service.create_safety_report(
             assistant_msg.id,
             {
-                "missing_concepts": json.dumps(list(missing)[:50]) if missing else None,
-                "extra_concepts": json.dumps(list(extra)[:50]) if extra else None,
-                "flagged_sentences": json.dumps(flagged) if flagged else None,
+                "missing_concepts": list(missing)[:50] if missing else None,
+                "extra_concepts": list(extra)[:50] if extra else None,
+                "flagged_sentences": flagged if flagged else None,
                 "reasoning": "Hybrid RAG with Sinhala QA/Summary",
             },
         )
