@@ -28,6 +28,12 @@ class HybridRetrievalService:
         """Simple Sinhala-friendly tokenizer: keeps words, removes punctuation."""
         return re.findall(r"[අ-෴]+", text)
 
+    def _bm25_text(self, chunk) -> list[str]:
+        text = chunk.content or ""
+        if chunk.pseudo_questions:
+            text = text + "\n" + chunk.pseudo_questions
+        return self._tokenize_sinhala(text)
+
     def retrieve(
         self,
         resource_ids: List[UUID],
@@ -77,15 +83,34 @@ class HybridRetrievalService:
             )
 
         # -----------------------------
-        # 3. BM25 fallback for documents without embeddings
+        # 3. BM25 fallback using chunk content
         # -----------------------------
         if not top_resource_ids and resources_without_emb:
-            corpus = [self._tokenize_sinhala(r.original_filename or "") for r in resources_without_emb]
-            bm25 = BM25Okapi(corpus)
-            query_tokens = self._tokenize_sinhala(query)
-            scores = bm25.get_scores(query_tokens)
-            top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:bm25_k]
-            top_resource_ids.extend([resources_without_emb[i].id for i in top_indices])
+            resource_ids_wo_emb = [r.id for r in resources_without_emb]
+            chunks = self.chunk_service.get_chunks_by_resource(resource_ids_wo_emb)
+
+            if chunks:
+                corpus = [self._bm25_text(ch) for ch in chunks]
+                bm25 = BM25Okapi(corpus)
+
+                query_tokens = self._tokenize_sinhala(query)
+                scores = bm25.get_scores(query_tokens)
+
+                ranked_chunks = sorted(
+                    zip(chunks, scores),
+                    key=lambda x: x[1],
+                    reverse=True
+                )[:bm25_k]
+
+                top_resource_ids.extend(
+                    list({ch.resource_id for ch, _ in ranked_chunks})
+                )
+
+                # Debug log (safe)
+                logger.info(
+                    "BM25 TEXT SAMPLE:\n%s",
+                    " ".join(self._bm25_text(chunks[0]))
+                )
 
         if not top_resource_ids:
             return []
@@ -100,7 +125,7 @@ class HybridRetrievalService:
             return []
         
         logger.info("Retrieved %d chunks from top resources", len(top_chunks))
-
+ 
         # -----------------------------
         # 5. Dense re-ranking on chunk embeddings
         # -----------------------------
