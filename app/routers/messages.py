@@ -35,7 +35,6 @@ from app.shared.models.message import Message
 from typing import List
 from app.services.safety_summary_service import SafetySummaryService
 from fastapi import status
-from app.services.safety_summary_service import SafetySummaryService
 from app.schemas.safety_summary import SafetySummaryResponse
 
 logger = logging.getLogger(__name__)
