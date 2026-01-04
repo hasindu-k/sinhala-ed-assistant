@@ -18,14 +18,13 @@ class RubricRepository:
         created_by: Optional[UUID],
         name: str,
         description: Optional[str] = None,
-        rubric_type: Optional[str] = None,
     ) -> Rubric:
         """Create a new rubric."""
         rubric = Rubric(
             created_by=created_by,
             name=name,
             description=description,
-            rubric_type=rubric_type,
+            rubric_type='system' if created_by is None else 'custom',
         )
         self.db.add(rubric)
         self.db.commit()
@@ -56,7 +55,6 @@ class RubricRepository:
         rubric_id: UUID,
         name: Optional[str] = None,
         description: Optional[str] = None,
-        rubric_type: Optional[str] = None,
     ) -> Optional[Rubric]:
         """Update rubric."""
         rubric = self.get_rubric(rubric_id)
@@ -65,8 +63,6 @@ class RubricRepository:
                 rubric.name = name
             if description is not None:
                 rubric.description = description
-            if rubric_type is not None:
-                rubric.rubric_type = rubric_type
             self.db.commit()
             self.db.refresh(rubric)
         return rubric

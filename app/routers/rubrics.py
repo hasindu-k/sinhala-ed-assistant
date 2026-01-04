@@ -67,7 +67,6 @@ def create_rubric(payload: RubricCreate, current_user: User = Depends(get_curren
             current_user.id,
             payload.name,
             payload.description,
-            payload.rubric_type,
             payload.criteria,
         )
     except Exception as exc:
