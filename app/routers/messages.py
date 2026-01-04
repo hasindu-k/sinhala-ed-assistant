@@ -526,6 +526,20 @@ def generate_ai_response(
             user_id=current_user.id,
             resource_ids=resource_ids,
         )
+
+        # Attach safety summary to generated assistant message
+        try:
+            summary_service = SafetySummaryService(db)
+            summary = summary_service.build_summary(assistant_message.id)
+            if summary:  # Only create dict if summary exists
+                assistant_message.safety_summary = {
+                    "overall_severity": summary.get("overall_severity"),
+                    "confidence_score": summary.get("confidence_score"),
+                    "reliability": summary.get("reliability"),
+                }
+        except Exception as e:
+            logger.debug(f"No safety summary for generated message {assistant_message.id}: {e}")
+
         logger.info(f"AI response generated for message {message_id} by user {current_user.id}")
         return assistant_message
         
@@ -578,10 +592,24 @@ def get_message_history(
         message_service = MessageService(db)
         messages = message_service.list_session_messages_with_attachments(session_id)
 
-        # Build response including resource_ids per message
+        # Build response including resource_ids and safety summary per message
+        summary_service = SafetySummaryService(db)
         response_messages = []
         for message in messages:
             resource_ids = [att.resource_id for att in getattr(message, "attachments", [])]
+
+            safety_summary = None
+            if getattr(message, "role", None) == "assistant":
+                try:
+                    summary = summary_service.build_summary(message.id)
+                    if summary:  # Only create dict if summary exists
+                        safety_summary = {
+                            "overall_severity": summary.get("overall_severity"),
+                            "confidence_score": summary.get("confidence_score"),
+                            "reliability": summary.get("reliability"),
+                        }
+                except Exception as e:
+                    logger.debug(f"No safety summary for message {message.id}: {e}")
 
             response_messages.append({
                 "id": message.id,
@@ -596,6 +624,7 @@ def get_message_history(
                 "created_at": message.created_at,
                 "resource_ids": resource_ids,
                 "parent_msg_id": message.parent_msg_id,
+                "safety_summary": safety_summary,
             })
         
         logger.debug(f"Retrieved {len(messages)} messages with attachments for session {session_id} by user {current_user.id}")

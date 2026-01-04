@@ -4,6 +4,7 @@ import numpy as np
 from app.components.document_processing.services.embedding_service import generate_text_embedding
 
 IntentType = Literal[
+    "greeting",
     "summary",
     "qa_generate",
     "qa_answer",
@@ -16,12 +17,14 @@ class IntentDetectionService:
     Option 3: Hybrid Rule + Semantic Gate
     """
 
+    GREETING_RULES = ["hello", "hi", "hey", "හායි", "හලෝ", "ආයුබෝවන්", "කොහොමද", "ගුඩ් මෝනින්", "good morning", "good afternoon", "good evening"]
     SUMMARY_RULES = ["සාරාංශ", "සංක්ෂිප්ත", "කෙටියෙන්", "මුල් අදහස්"]
     QA_GENERATE_RULES = ["ප්‍රශ්න", "පිළිතුරු", "qa", "q&a", "සාදන්න", "හදන්න"]
     QA_ANSWER_RULES = ["යනු කුමක්ද", "කියන්න"]
     EXPLANATION_RULES = ["විස්තර", "පහදන්න", "පැහැදිලි"]
 
     SEMANTIC_ANCHORS = {
+        "greeting": "හායි ආයුබෝවන් කොහොමද",
         "summary": "මෙම අන්තර්ගතය සාරාංශ කරන්න",
         "qa_generate": "මෙම පාඩමෙන් ප්‍රශ්න සහ පිළිතුරු සාදන්න",
         "qa_answer": "මෙම ප්‍රශ්නයට සෘජු පිළිතුරක් ලබා දෙන්න",
@@ -33,6 +36,10 @@ class IntentDetectionService:
         q = query.lower().strip()
 
         # -------- Step 1: Rule-based --------
+        # Check for greetings first (highest priority)
+        if any(w in q for w in cls.GREETING_RULES):
+            return "greeting"
+
         if any(w in q for w in cls.SUMMARY_RULES):
             return "summary"
 

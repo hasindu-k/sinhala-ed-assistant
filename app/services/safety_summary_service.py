@@ -13,84 +13,98 @@ class SafetySummaryService:
         report = self.safety_service.get_safety_report(message_id)
 
         if not report:
+            return None
+
+        flagged = report.flagged_sentences or []
+
+        if not flagged:
             return {
                 "overall_severity": "low",
                 "confidence_score": 1.0,
                 "reliability": "fully_supported",
-                "flags": {},
                 "message": "This answer is well supported by the provided content.",
                 "has_details": False,
+                "flags": {"flagged_sentences": 0},
             }
 
-        flagged = report.flagged_sentences or []
-
         # -----------------------------
-        # Re-evaluate severity using SEMANTIC similarity
+        # Sentence-level semantic check (BATCH)
         # -----------------------------
-        semantic_severities = []
-        similarity_scores = []
-
-        for item in flagged:
-            sentence = item.get("sentence", "")
-            evidence = item.get("evidence", "")
-
-            similarity = SemanticSimilarityService.similarity(
-                sentence, evidence
-            )
-            similarity_scores.append(similarity)
-
+        # Prepare pairs for batch processing
+        pairs = [(item.get("sentence", ""), item.get("evidence", "")) for item in flagged]
+        
+        # Batch compute all similarities at once (MUCH faster)
+        similarities = SemanticSimilarityService.similarity_batch(pairs)
+        
+        severities = []
+        for similarity in similarities:
             if similarity >= 0.80:
-                semantic_severities.append("low")
+                severities.append("low")
             elif similarity >= 0.65:
-                semantic_severities.append("medium")
+                severities.append("medium")
             else:
-                semantic_severities.append("high")
+                severities.append("high")
+
+        total = len(severities)
+        high_count = severities.count("high")
+        medium_count = severities.count("medium")
+
+        high_ratio = high_count / total
+        medium_plus_ratio = (high_count + medium_count) / total
 
         # -----------------------------
-        # Overall severity (semantic-based)
+        # Overall severity (PROPORTIONAL)
         # -----------------------------
-        if "high" in semantic_severities:
-            overall = "high"
-        elif semantic_severities.count("medium") >= 2:
-            overall = "medium"
+        if high_ratio >= 0.30:
+            overall_severity = "high"
+        elif medium_plus_ratio >= 0.40:
+            overall_severity = "medium"
         else:
-            overall = "low"
+            overall_severity = "low"
 
         # -----------------------------
-        # Confidence score (meaning-based)
+        # Confidence score (semantic)
         # -----------------------------
-        if similarity_scores:
-            avg_similarity = sum(similarity_scores) / len(similarity_scores)
-        else:
-            avg_similarity = 1.0
-
-        # Convert similarity → confidence
-        confidence = max(0.05, round(avg_similarity, 2))
+        avg_similarity = sum(similarities) / total
+        confidence_score = round(avg_similarity, 2)
 
         # -----------------------------
-        # Reliability label
+        # Reliability (aligned)
         # -----------------------------
-        if confidence >= 0.85:
+        if confidence_score >= 0.85:
             reliability = "fully_supported"
-        elif confidence >= 0.65:
+        elif confidence_score >= 0.65:
             reliability = "partially_supported"
         else:
             reliability = "likely_unsupported"
 
+        # -----------------------------
+        # User-facing message
+        # -----------------------------
+        message = self._summary_message(
+            overall_severity, confidence_score
+        )
+
         return {
-            "overall_severity": overall,
-            "confidence_score": confidence,
+            "overall_severity": overall_severity,
+            "confidence_score": confidence_score,
             "reliability": reliability,
+            "message": message,
+            "has_details": overall_severity != "low",
             "flags": {
-                "flagged_sentences": len(flagged),
+                "flagged_sentences": total,
             },
-            "message": self._summary_message(overall),
-            "has_details": overall != "low",
         }
 
-    def _summary_message(self, severity: str) -> str:
+    def _summary_message(self, severity: str, confidence: float) -> str:
         if severity == "high":
-            return "This answer contains information not supported by the provided content."
+            return (
+                "Some parts of this answer are not clearly supported "
+                "by the provided content."
+            )
         if severity == "medium":
-            return "Some parts of this answer may not be fully supported."
+            return (
+                "Most of this answer is supported, but a few parts "
+                "may need verification."
+            )
         return "This answer is well supported by the provided content."

@@ -57,6 +57,12 @@ class MessageUpdate(BaseModel):
     attachments: Optional[List[MessageAttachment]] = None
 
 
+class MessageSafetySummary(BaseModel):
+    overall_severity: Optional[str] = None
+    confidence_score: Optional[float] = None
+    reliability: Optional[str] = None
+
+
 class MessageResponse(BaseModel):
     id: UUID
     session_id: UUID
@@ -70,6 +76,7 @@ class MessageResponse(BaseModel):
     created_at: datetime
     resource_ids: list[UUID] = []
     parent_msg_id: Optional[UUID] = None
+    safety_summary: Optional[MessageSafetySummary] = None
 
     class Config:
         from_attributes = True
