@@ -58,6 +58,11 @@ class MessageSafetyReport(Base):
     flagged_sentences = Column(JSONB, nullable=True)  # JSONB stored as string
     reasoning = Column(JSONB, nullable=True)  # JSONB stored as string
 
+    # Cached computed summary values (for performance)
+    computed_severity = Column(String, nullable=True)  # "low", "medium", "high"
+    computed_confidence_score = Column(Numeric, nullable=True)  # 0.0 - 1.0
+    computed_reliability = Column(String, nullable=True)  # "fully_supported", "partially_supported", "likely_unsupported"
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     message = relationship(

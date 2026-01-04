@@ -270,8 +270,13 @@ class RAGService:
         )
 
         # -----------------------------
-        # 8. Save safety report
+        # 8. Compute summary and save safety report
         # -----------------------------
+        # Pre-compute and cache the summary to avoid recalculation on every fetch
+        from app.services.safety_summary_service import SafetySummaryService
+        
+        computed_values = SafetySummaryService.compute_from_flagged(flagged, is_unanswerable)
+        
         self.safety_service.create_safety_report(
             assistant_msg.id,
             {
@@ -279,6 +284,8 @@ class RAGService:
                 "extra_concepts": list(extra)[:50] if extra else None,
                 "flagged_sentences": flagged if flagged else None,
                 "reasoning": "Hybrid RAG with Sinhala QA/Summary",
+                # Cache computed values
+                **computed_values,
             },
         )
 
