@@ -1,5 +1,7 @@
 from typing import Dict
 from app.services.message_safety_service import MessageSafetyService
+import logging
+logger = logging.getLogger(__name__)
 from app.services.semantic_similarity_service import SemanticSimilarityService
 
 

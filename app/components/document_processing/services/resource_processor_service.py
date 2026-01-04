@@ -5,6 +5,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from sqlalchemy.orm import Session
+import cv2
 
 from app.shared.models.resource_file import ResourceFile
 from app.shared.models.resource_chunks import ResourceChunk
@@ -30,42 +31,86 @@ class ResourceProcessorService:
         if file_ext not in ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.webp']:
             raise ValueError(f"Unsupported file type: {file_ext}")
 
-    def _extract_text(self, file_path: str) -> tuple[str, int]:
+    def _extract_text(self, file_path: str) -> tuple[str, int, str]:
         """
         Extract text from PDF or image file.
         
         Returns:
-            (extracted_text, page_count)
+            (extracted_text, page_count, detected_language)
         """
         # Import utilities
         from app.components.document_processing.utils.file_operations import convert_file_to_images
-        from app.components.document_processing.services.text_extraction import extract_text_from_pdf, process_ocr_for_images
+        from app.components.document_processing.services.text_extraction import (
+            extract_text_from_pdf,
+            process_ocr_for_images,
+            classify_text_type,
+            detect_language_from_text,
+        )
         from app.components.document_processing.utils.text_cleaner import basic_clean
         
         file_ext = Path(file_path).suffix.lower()
         
         try:
             if file_ext == '.pdf':
-                # Try direct text extraction first
+                # Quick language sniff from first page text if available
+                lang_hint = "unknown"
                 try:
-                    extracted_text, page_count = extract_text_from_pdf(file_path)
-                    if extracted_text.strip():  # If we got meaningful text
-                        cleaned_text = basic_clean(extracted_text)
-                        return cleaned_text, page_count
+                    import pdfplumber
+                    with pdfplumber.open(file_path) as pdf:
+                        if pdf.pages:
+                            sample_text = pdf.pages[0].extract_text() or ""
+                            lang_hint = detect_language_from_text(sample_text)
+                            logger.info(f"Detected script from PDF text sample: {lang_hint}")
                 except Exception as e:
-                    logger.warning(f"Direct PDF text extraction failed, falling back to OCR: {e}")
+                    logger.debug(f"PDF language sniff failed: {e}")
+
+                # If likely English, try direct text extraction first (faster than OCR)
+                if lang_hint == "english":
+                    try:
+                        extracted_text, page_count = extract_text_from_pdf(file_path)
+                        if extracted_text.strip():
+                            cleaned_text = basic_clean(extracted_text)
+                            logger.info("Direct PDF text extraction succeeded (english hint)")
+                            return cleaned_text, page_count
+                        logger.info("Direct PDF extraction returned empty text; falling back to OCR")
+                    except Exception as e:
+                        logger.warning(f"Direct PDF text extraction failed, falling back to OCR: {e}")
                 
-                # Fallback to OCR
+                # Convert PDF to images for OCR
                 images = convert_file_to_images(file_path, 'pdf')
+                
+                # Classify first image to determine text type
+                if images:
+                    # Convert PIL Image to numpy array for classification
+                    import numpy as np
+                    first_img_np = cv2.cvtColor(np.array(images[0]), cv2.COLOR_RGB2BGR)
+                    
+                    # Save temporarily for classification
+                    temp_img_path = f"{file_path}_temp_classify.png"
+                    cv2.imwrite(temp_img_path, first_img_np)
+                    text_type = classify_text_type(temp_img_path)
+                    os.remove(temp_img_path)
+                    logger.info(f"Detected text type for PDF: {text_type} (lang_hint={lang_hint})")
+                
                 extracted_text, page_count = process_ocr_for_images(images)
                 cleaned_text = basic_clean(extracted_text)
-                return cleaned_text, page_count
+
+                # If initial hint was unknown, infer from extracted text
+                inferred_lang = detect_language_from_text(cleaned_text)
+                final_lang = lang_hint if lang_hint != "unknown" else inferred_lang
+                return cleaned_text, page_count, final_lang
             else:
-                # For images, use OCR
+                # For images, classify first
+                text_type = classify_text_type(file_path)
+                logger.info(f"Detected text type for image: {text_type}")
+                
+                # Use OCR
                 images = convert_file_to_images(file_path, file_ext.lstrip('.'))
                 extracted_text, page_count = process_ocr_for_images(images)
                 cleaned_text = basic_clean(extracted_text)
-                return cleaned_text, page_count
+
+                inferred_lang = detect_language_from_text(cleaned_text)
+                return cleaned_text, page_count, inferred_lang
         except Exception as e:
             logger.error(f"Failed to extract text from {file_path}: {e}")
             raise ValueError(f"Text extraction failed: {e}")
@@ -151,13 +196,30 @@ class ResourceProcessorService:
         Raises:
             ValueError: If resource file is missing or processing fails
         """
+        # Check if already processed
+        if resource.extracted_text:
+            # Check if chunks exist
+            chunk_count = self.db.query(ResourceChunk).filter(
+                ResourceChunk.resource_id == resource.id
+            ).count()
+            
+            if chunk_count > 0:
+                logger.info("Resource %s already processed with %d chunks", resource.id, chunk_count)
+                return {
+                    "resource_id": str(resource.id),
+                    "status": "already_processed",
+                    "extracted_text_length": len(resource.extracted_text),
+                    "chunks_created": chunk_count,
+                    "message": "Resource already processed, skipping"
+                }
+        
         # Validate resource
         self._validate_resource_file(resource)
         
         logger.info("Starting processing for resource %s: %s", resource.id, resource.original_filename)
         
         # Extract text via OCR
-        extracted_text, page_count = self._extract_text(resource.storage_path)
+        extracted_text, page_count, detected_language = self._extract_text(resource.storage_path)
         
         if not extracted_text.strip():
             raise ValueError("No text could be extracted from the document")
@@ -174,6 +236,8 @@ class ResourceProcessorService:
         
         # Save extracted text
         resource.extracted_text = extracted_text
+        # Save detected language (sinhala/english/mixed/unknown)
+        resource.language = detected_language
         self.db.commit()
 
         # Create chunks with embeddings (for detailed retrieval)
