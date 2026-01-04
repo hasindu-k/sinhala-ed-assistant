@@ -35,6 +35,8 @@ from app.shared.models.message import Message
 from typing import List
 from app.services.safety_summary_service import SafetySummaryService
 from fastapi import status
+from app.services.safety_summary_service import SafetySummaryService
+from app.schemas.safety_summary import SafetySummaryResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -826,7 +828,10 @@ def get_message_safety_report(
             detail="Failed to retrieve safety report"
         )
 
-@router.get("/{message_id}/safety-summary")
+@router.get(
+    "/{message_id}/safety-summary",
+    response_model=SafetySummaryResponse
+)
 def get_message_safety_summary(
     message_id: UUID,
     current_user: User = Depends(get_current_user),
@@ -835,12 +840,15 @@ def get_message_safety_summary(
     """
     Get a user-facing safety summary for an assistant message.
 
-    This endpoint returns a lightweight, aggregated view
-    without exposing raw hallucination details.
+    This endpoint provides a high-level risk assessment without
+    exposing raw hallucination details.
     """
     try:
+        # Ownership check (reuse existing logic)
         message_service = MessageService(db)
-        message_service.get_message_with_ownership_check(message_id, current_user.id)
+        message_service.get_message_with_ownership_check(
+            message_id, current_user.id
+        )
 
         summary_service = SafetySummaryService(db)
         summary = summary_service.build_summary(message_id)
@@ -850,19 +858,21 @@ def get_message_safety_summary(
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
+            detail=str(e),
         )
+
     except PermissionError as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e)
+            detail=str(e),
         )
+
     except Exception as e:
         logger.error(
             f"Error retrieving safety summary for message {message_id}: {e}",
-            exc_info=True
+            exc_info=True,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve safety summary"
+            detail="Failed to retrieve safety summary",
         )

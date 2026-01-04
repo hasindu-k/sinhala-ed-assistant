@@ -1,90 +1,90 @@
 from typing import Dict
-from uuid import UUID
-
 from app.services.message_safety_service import MessageSafetyService
+from app.services.semantic_similarity_service import SemanticSimilarityService
 
 
 class SafetySummaryService:
-    """
-    Builds a lightweight, user-facing safety summary derived from
-    the detailed MessageSafetyReport.
-
-    This service does NOT persist data.
-    It only aggregates and interprets existing safety analysis.
-    """
-
-    # Tunable heuristics (documented for explainability)
-    MAX_PENALTY = 50
-    FLAG_WEIGHT = 2  # flagged sentences are higher risk than concept mismatches
-
     def __init__(self, db):
         self.safety_service = MessageSafetyService(db)
 
-    def build_summary(self, message_id: UUID) -> Dict:
+    def build_summary(self, message_id) -> Dict:
         report = self.safety_service.get_safety_report(message_id)
 
-        # No safety analysis yet
         if not report:
-            return self._empty_summary()
+            return {
+                "overall_severity": "low",
+                "confidence_score": 1.0,
+                "reliability": "fully_supported",
+                "flags": {},
+                "message": "This answer is well supported by the provided content.",
+                "has_details": False,
+            }
 
         flagged = report.flagged_sentences or []
-        missing = report.missing_concepts or []
-        extra = report.extra_concepts or []
 
-        severity = self._compute_severity(flagged, missing, extra)
-        confidence = self._compute_confidence(missing, extra, flagged)
-        reliability = self._reliability_label(confidence)
+        # -----------------------------
+        # Re-evaluate severity using SEMANTIC similarity
+        # -----------------------------
+        semantic_severities = []
+        similarity_scores = []
+
+        for item in flagged:
+            sentence = item.get("sentence", "")
+            evidence = item.get("evidence", "")
+
+            similarity = SemanticSimilarityService.similarity(
+                sentence, evidence
+            )
+            similarity_scores.append(similarity)
+
+            if similarity >= 0.80:
+                semantic_severities.append("low")
+            elif similarity >= 0.65:
+                semantic_severities.append("medium")
+            else:
+                semantic_severities.append("high")
+
+        # -----------------------------
+        # Overall severity (semantic-based)
+        # -----------------------------
+        if "high" in semantic_severities:
+            overall = "high"
+        elif semantic_severities.count("medium") >= 2:
+            overall = "medium"
+        else:
+            overall = "low"
+
+        # -----------------------------
+        # Confidence score (meaning-based)
+        # -----------------------------
+        if similarity_scores:
+            avg_similarity = sum(similarity_scores) / len(similarity_scores)
+        else:
+            avg_similarity = 1.0
+
+        # Convert similarity → confidence
+        confidence = max(0.05, round(avg_similarity, 2))
+
+        # -----------------------------
+        # Reliability label
+        # -----------------------------
+        if confidence >= 0.85:
+            reliability = "fully_supported"
+        elif confidence >= 0.65:
+            reliability = "partially_supported"
+        else:
+            reliability = "likely_unsupported"
 
         return {
-            "severity": severity,
-            "confidence": confidence,
+            "overall_severity": overall,
+            "confidence_score": confidence,
             "reliability": reliability,
-            "explanation": self._summary_message(severity),
-            "has_details": bool(missing or extra or flagged),
-            "has_high_risk": severity == "high",
-            "counts": {
-                "missing": len(missing),
-                "extra": len(extra),
-                "flagged": len(flagged),
+            "flags": {
+                "flagged_sentences": len(flagged),
             },
+            "message": self._summary_message(overall),
+            "has_details": overall != "low",
         }
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _compute_severity(self, flagged, missing, extra) -> str:
-        """
-        Severity prioritizes correctness risk over quantity.
-        """
-        if any(f.get("severity") == "high" for f in flagged):
-            return "high"
-
-        if flagged or len(missing) > 5 or len(extra) > 5:
-            return "medium"
-
-        return "low"
-
-    def _compute_confidence(self, missing, extra, flagged) -> float:
-        """
-        Confidence reflects how much of the answer is supported
-        by retrieved content.
-        """
-        penalty = (
-            len(missing)
-            + len(extra)
-            + (len(flagged) * self.FLAG_WEIGHT)
-        )
-
-        score = max(0.0, 1.0 - (penalty / self.MAX_PENALTY))
-        return round(score, 2)
-
-    def _reliability_label(self, confidence: float) -> str:
-        if confidence >= 0.85:
-            return "fully_supported"
-        if confidence >= 0.6:
-            return "partially_supported"
-        return "likely_unsupported"
 
     def _summary_message(self, severity: str) -> str:
         if severity == "high":
@@ -92,18 +92,3 @@ class SafetySummaryService:
         if severity == "medium":
             return "Some parts of this answer may not be fully supported."
         return "This answer is well supported by the provided content."
-
-    def _empty_summary(self) -> Dict:
-        return {
-            "severity": "low",
-            "confidence": 1.0,
-            "reliability": "fully_supported",
-            "explanation": "No safety issues detected.",
-            "has_details": False,
-            "has_high_risk": False,
-            "counts": {
-                "missing": 0,
-                "extra": 0,
-                "flagged": 0,
-            },
-        }
