@@ -79,13 +79,33 @@ class GradingService:
         for qp in question_papers:
             questions.extend(qp_service.get_questions_by_paper(qp.id))
 
-        eval_result = EvaluationResult(
-            answer_document_id=answer_doc.id,
-            total_score=Decimal(0),
-            overall_feedback="Grading in progress...",
+        # Check for existing evaluation result
+        existing_result = (
+            self.db.query(EvaluationResult)
+            .filter(EvaluationResult.answer_document_id == answer_doc.id)
+            .first()
         )
-        self.db.add(eval_result)
+
+        if existing_result:
+            logger.info(f"Updating existing evaluation result {existing_result.id}")
+            # Clear existing scores
+            self.db.query(QuestionScore).filter(
+                QuestionScore.evaluation_result_id == existing_result.id
+            ).delete()
+            
+            eval_result = existing_result
+            eval_result.total_score = Decimal(0)
+            eval_result.overall_feedback = "Grading in progress..."
+        else:
+            eval_result = EvaluationResult(
+                answer_document_id=answer_doc.id,
+                total_score=Decimal(0),
+                overall_feedback="Grading in progress...",
+            )
+            self.db.add(eval_result)
+        
         self.db.commit()
+        self.db.refresh(eval_result)
 
         question_map = self._build_question_map(questions)
         total_score = Decimal(0)

@@ -171,6 +171,74 @@ class EvaluationWorkflowService:
             logger.error(f"Critical error in background evaluation: {e}")
             self.sessions.update_evaluation_session(session_id, status="failed")
 
+    def execute_evaluation_process_generator(self, session_id: UUID, answer_resource_ids: List[UUID], user_id: UUID):
+        """
+        Generator that yields progress updates for evaluation process.
+        Yields JSON strings formatted for SSE.
+        """
+        import json
+        
+        total_docs = len(answer_resource_ids)
+        current_doc_index = 0
+        
+        def make_event(msg, progress=None, status="processing", detail=None):
+            nonlocal current_doc_index
+            if progress is None:
+                # Calculate progress based on completed docs + current step estimate
+                # This is a rough estimate
+                base_progress = int((current_doc_index / total_docs) * 100) if total_docs > 0 else 0
+                progress = base_progress
+            
+            data = {
+                "progress": progress,
+                "message": msg,
+                "status": status,
+                "detail": detail
+            }
+            return json.dumps(data, default=str) + "\n"
+
+        yield make_event("Starting evaluation process...", progress=0)
+        logger.info(f"Stream: Starting evaluation for session {session_id}")
+
+        try:
+            # Initialize session if not already (though usually called after init)
+            # But here we assume session is initialized or we are just running the process
+            
+            for resource_id in answer_resource_ids:
+                
+                # Find the answer document
+                ad = self.answers.get_answer_document_by_session_and_resource(session_id, resource_id)
+                if not ad:
+                    yield make_event(f"Answer document for resource {resource_id} not found, skipping.", status="warning")
+                    continue
+
+                try:
+                    yield make_event(f"Evaluating answer document {current_doc_index + 1}/{total_docs}...", status="processing")
+                    logger.info(f"Stream: Evaluating answer document {ad.id}...")
+                    
+                    # We can't easily stream inside evaluate_answer without refactoring it to be a generator too.
+                    # For now, we just wait for it to finish.
+                    self.evaluate_answer(ad.id, user_id)
+                    
+                    current_doc_index += 1
+                    yield make_event(f"Completed evaluation for document {current_doc_index}/{total_docs}", status="success")
+                    logger.info(f"Stream: Evaluation finished for answer document {ad.id}.")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to evaluate answer {ad.id}: {e}")
+                    yield make_event(f"Failed to evaluate document {current_doc_index + 1}: {str(e)}", status="error")
+                    # Still increment index to show progress
+                    current_doc_index += 1
+            
+            self.sessions.update_evaluation_session(session_id, status="completed")
+            yield make_event("Evaluation process completed successfully.", progress=100, status="completed")
+            logger.info(f"Stream: Evaluation completed for session {session_id}")
+            
+        except Exception as e:
+            logger.error(f"Critical error in evaluation stream: {e}")
+            self.sessions.update_evaluation_session(session_id, status="failed")
+            yield make_event(f"Evaluation process failed: {str(e)}", status="failed")
+
     def list_sessions(self, user_id: UUID, session_id: Optional[UUID] = None) -> List:
         if session_id:
             self._ensure_chat_session_owner(session_id, user_id)
@@ -1080,14 +1148,8 @@ class EvaluationWorkflowService:
         # if existing:
         #    return existing
         
-        # If existing result exists, delete it to allow re-evaluation (since we changed logic)
-        existing = self.answers.get_evaluation_result_by_answer_document(answer_id)
-        if existing:
-            logger.info(f"Deleting existing evaluation result {existing.id} for re-evaluation")
-            # Manually delete related QuestionScores first to avoid FK violation
-            self.db.query(QuestionScore).filter(QuestionScore.evaluation_result_id == existing.id).delete()
-            self.db.delete(existing)
-            self.db.commit()
+        # If existing result exists, we will handle it in GradingService (update instead of delete)
+        # This avoids potential FK issues with delete/create cycles in the same flow.
 
         # Get the answer document with OCR text
         answer_resource = self.resource_files.get_resource(answer_doc.resource_id)
