@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from uuid import UUID
 from app.schemas.chat import ChatSessionCreate, ChatSessionUpdate, ChatSessionResponse, SessionResourceAttach
+from app.schemas.resource import ResourceFileResponse
 from app.services.chat_session_service import ChatSessionService
 from app.services.session_resource_service import SessionResourceService
 from app.core.database import get_db
@@ -300,3 +301,38 @@ def attach_resource_to_session(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to attach resource to session"
         )
+
+
+@router.get("/sessions/{session_id}/resources", response_model=List[ResourceFileResponse])
+def get_session_resources(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all resources attached to a specific chat session.
+    """
+    try:
+        # Verify session exists and belongs to user
+        chat_service = ChatSessionService(db)
+        session = chat_service.get_session(session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+        # Check ownership
+        if hasattr(session, 'user_id') and session.user_id != current_user.id:
+             raise HTTPException(status_code=403, detail="Not authorized to access this session")
+
+        service = SessionResourceService(db)
+        resources = service.get_resources_by_session_id(session_id)
+        return resources
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching resources for session {session_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch session resources"
+        )
+

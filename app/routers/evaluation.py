@@ -145,6 +145,39 @@ def start_evaluation(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start evaluation")
 
 
+@router.post("/start/stream")
+def start_evaluation_stream(
+    payload: StartEvaluationRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Start a new evaluation session and stream progress updates (SSE).
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        # Initialize session synchronously
+        session = service.initialize_evaluation_session(
+            chat_session_id=payload.chat_session_id,
+            answer_resource_ids=payload.answer_resource_ids,
+            user_id=current_user.id
+        )
+        
+        return StreamingResponse(
+            service.execute_evaluation_process_generator(
+                session_id=session.id,
+                answer_resource_ids=payload.answer_resource_ids,
+                user_id=current_user.id
+            ),
+            media_type="text/event-stream"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to start evaluation stream: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start evaluation stream")
+
+
 @router.get("/context", response_model=UserEvaluationContextResponse)
 def get_user_evaluation_context(
     current_user: User = Depends(get_current_user),

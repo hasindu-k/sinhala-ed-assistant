@@ -1,10 +1,10 @@
 # app/routers/rubrics.py
 
 import logging
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 
 from app.schemas.rubric import (
@@ -57,19 +57,42 @@ def list_rubrics(current_user: User = Depends(get_current_user), db: Session = D
 
 
 @router.post("/", response_model=RubricResponse)
-def create_rubric(payload: RubricCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_rubric(
+    payload: RubricCreate, 
+    chat_session_id: Optional[UUID] = Query(None, description="Optional chat session ID to attach the rubric to"),
+    current_user: User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
     """
     Create a custom rubric.
     """
     service = RubricService(db)
     try:
-        return service.create_rubric(
+        rubric = service.create_rubric(
             current_user.id,
             payload.name,
             payload.description,
             payload.rubric_type,
             payload.criteria,
         )
+        
+        if chat_session_id:
+            from app.services.chat_session_service import ChatSessionService
+            chat_service = ChatSessionService(db)
+            # Verify ownership and existence
+            session = chat_service.get_session_with_ownership_check(chat_session_id, current_user.id)
+            
+            # Update session with rubric_id
+            # We can use a repository method or service method if available, or direct update here for now
+            # Ideally, ChatSessionService should have update_session method
+            chat_service.update_session(chat_session_id, user_id=current_user.id, rubric_id=rubric.id)
+            
+            # Also update user context if it's an evaluation session
+            if session.mode == "evaluation":
+                context_service = UserContextService(db)
+                context_service.update_rubric(current_user.id, rubric.id)
+                
+        return rubric
     except Exception as exc:
         logger.error(f"Failed to create rubric for user {current_user.id}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create rubric")

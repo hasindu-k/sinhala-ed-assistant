@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.shared.models.session_resources import SessionResource
+from app.shared.models.resource_file import ResourceFile
 
 
 class SessionResourceRepository:
@@ -23,6 +24,14 @@ class SessionResourceRepository:
     def get_session_resources(self, session_id: UUID) -> List[SessionResource]:
         return (
             self.db.query(SessionResource)
+            .filter(SessionResource.session_id == session_id)
+            .all()
+        )
+
+    def get_resources_by_session_id(self, session_id: UUID) -> List[ResourceFile]:
+        return (
+            self.db.query(ResourceFile)
+            .join(SessionResource, SessionResource.resource_id == ResourceFile.id)
             .filter(SessionResource.session_id == session_id)
             .all()
         )
