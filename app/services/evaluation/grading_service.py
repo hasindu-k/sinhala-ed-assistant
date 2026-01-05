@@ -49,7 +49,7 @@ class GradingService:
     # ----------------------------------------------------------
     # PUBLIC ENTRY
     # ----------------------------------------------------------
-    def grade_answer_document(self, answer_doc_id: UUID, user_id: UUID):
+    def grade_answer_document(self, answer_doc_id: UUID, user_id: UUID, progress_callback=None):
         answer_doc = (
             self.db.query(AnswerDocument)
             .filter(AnswerDocument.id == answer_doc_id)
@@ -57,6 +57,9 @@ class GradingService:
         )
         if not answer_doc or not answer_doc.mapped_answers:
             raise ValueError("Answer document not ready for grading")
+
+        if progress_callback:
+            progress_callback("initializing_grading", "Preparing grading context...")
 
         from app.shared.models.evaluation_session import EvaluationSession
         eval_session = (
@@ -113,7 +116,19 @@ class GradingService:
         # ------------------------------------------------------
         # MAIN GRADING LOOP
         # ------------------------------------------------------
+        total_questions = len(answer_doc.mapped_answers)
+        processed_count = 0
+
+        if progress_callback:
+            progress_callback("evaluating_answers", f"Grading {total_questions} answers...")
+
         for key, student_text in answer_doc.mapped_answers.items():
+            processed_count += 1
+            if progress_callback:
+                # Calculate percentage for this stage
+                pct = int((processed_count / total_questions) * 100)
+                progress_callback("evaluating_answers", f"Grading question {key}...", percent=pct)
+
             target = self._find_matching_question(key, question_map)
             if not target:
                 logger.error(f"UNRESOLVED mapping key: {key}")
@@ -167,14 +182,23 @@ class GradingService:
 
         self.db.flush()
 
+        if progress_callback:
+            progress_callback("calculating_marks", "Calculating final score...")
+
         eval_result.total_score = sum(
             qs.awarded_marks for qs in self.db.query(QuestionScore)
             .filter(QuestionScore.evaluation_result_id == eval_result.id)
         )
 
+        if progress_callback:
+            progress_callback("generating_feedback", "Generating overall feedback...")
+
         eval_result.overall_feedback = self._generate_overall_feedback(
             total_score, eval_result.id
         )
+
+        if progress_callback:
+            progress_callback("preparing_report", "Finalizing report...")
 
         self.db.commit()
         return eval_result
