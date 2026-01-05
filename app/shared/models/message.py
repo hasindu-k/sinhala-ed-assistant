@@ -31,6 +31,7 @@ class Message(Base):
     prompt_tokens = Column(Integer, nullable=True)
     completion_tokens = Column(Integer, nullable=True)
     total_tokens = Column(Integer, nullable=True)
+    parent_msg_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     session = relationship(

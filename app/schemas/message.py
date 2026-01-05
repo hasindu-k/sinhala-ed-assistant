@@ -57,6 +57,12 @@ class MessageUpdate(BaseModel):
     attachments: Optional[List[MessageAttachment]] = None
 
 
+class MessageSafetySummary(BaseModel):
+    overall_severity: Optional[str] = None
+    confidence_score: Optional[float] = None
+    reliability: Optional[str] = None
+
+
 class MessageResponse(BaseModel):
     id: UUID
     session_id: UUID
@@ -69,6 +75,8 @@ class MessageResponse(BaseModel):
     audio_duration_sec: Optional[Decimal] = None
     created_at: datetime
     resource_ids: list[UUID] = []
+    parent_msg_id: Optional[UUID] = None
+    safety_summary: Optional[MessageSafetySummary] = None
 
     class Config:
         from_attributes = True
@@ -174,9 +182,9 @@ class MessageSafetyReportCreate(BaseModel):
 class MessageSafetyReportResponse(BaseModel):
     id: UUID
     message_id: UUID
-    missing_concepts: Optional[str] = None
-    extra_concepts: Optional[str] = None
-    flagged_sentences: Optional[str] = None
+    missing_concepts: Optional[List[str]] = None
+    extra_concepts: Optional[List[str]] = None
+    flagged_sentences: Optional[List[Any]] = None
     reasoning: Optional[str] = None
     created_at: datetime
 

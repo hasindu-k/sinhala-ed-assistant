@@ -83,6 +83,46 @@ class ResourceService:
                     pass
             raise
 
+    def only_upload_resource_from_file(
+        self,
+        user_id: UUID,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        *,
+        commit: bool = True,
+    ):
+        """Handle complete file upload process with validation."""
+        # Validate
+        self.validate_file_upload(filename, content_type, content)
+        
+        # Save to disk
+        try:
+            file_path = self.save_file_to_disk(user_id, filename, content)
+        except Exception as e:
+            raise ValueError(f"Failed to save file: {e}")
+        
+        # Create database record
+        try:
+            resource = self.repository.upload_resource(
+                user_id=user_id,
+                original_filename=filename,
+                storage_path=str(file_path),
+                mime_type=content_type,
+                size_bytes=len(content),
+                source_type="user_upload",
+                commit=commit,
+            )
+            return resource
+        except Exception as e:
+            # Cleanup file if database save failed
+            if file_path.exists():
+                try:
+                    file_path.unlink()
+                except Exception:
+                    pass
+            raise
+
     def upload_resource(
         self,
         user_id: UUID,

@@ -33,6 +33,9 @@ from app.core.security import get_current_user
 from app.shared.models.user import User
 from app.shared.models.message import Message
 from typing import List
+from app.services.safety_summary_service import SafetySummaryService
+from fastapi import status
+from app.schemas.safety_summary import SafetySummaryResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -522,6 +525,20 @@ def generate_ai_response(
             user_id=current_user.id,
             resource_ids=resource_ids,
         )
+
+        # Attach safety summary to generated assistant message
+        try:
+            summary_service = SafetySummaryService(db)
+            summary = summary_service.build_summary(assistant_message.id)
+            if summary:  # Only create dict if summary exists
+                assistant_message.safety_summary = {
+                    "overall_severity": summary.get("overall_severity"),
+                    "confidence_score": summary.get("confidence_score"),
+                    "reliability": summary.get("reliability"),
+                }
+        except Exception as e:
+            logger.debug(f"No safety summary for generated message {assistant_message.id}: {e}")
+
         logger.info(f"AI response generated for message {message_id} by user {current_user.id}")
         return assistant_message
         
@@ -574,10 +591,24 @@ def get_message_history(
         message_service = MessageService(db)
         messages = message_service.list_session_messages_with_attachments(session_id)
 
-        # Build response including resource_ids per message
+        # Build response including resource_ids and safety summary per message
+        summary_service = SafetySummaryService(db)
         response_messages = []
         for message in messages:
             resource_ids = [att.resource_id for att in getattr(message, "attachments", [])]
+
+            safety_summary = None
+            if getattr(message, "role", None) == "assistant":
+                try:
+                    summary = summary_service.build_summary(message.id)
+                    if summary:  # Only create dict if summary exists
+                        safety_summary = {
+                            "overall_severity": summary.get("overall_severity"),
+                            "confidence_score": summary.get("confidence_score"),
+                            "reliability": summary.get("reliability"),
+                        }
+                except Exception as e:
+                    logger.debug(f"No safety summary for message {message.id}: {e}")
 
             response_messages.append({
                 "id": message.id,
@@ -591,6 +622,8 @@ def get_message_history(
                 "audio_duration_sec": message.audio_duration_sec,
                 "created_at": message.created_at,
                 "resource_ids": resource_ids,
+                "parent_msg_id": message.parent_msg_id,
+                "safety_summary": safety_summary,
             })
         
         logger.debug(f"Retrieved {len(messages)} messages with attachments for session {session_id} by user {current_user.id}")
@@ -821,4 +854,53 @@ def get_message_safety_report(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve safety report"
+        )
+
+@router.get(
+    "/{message_id}/safety-summary",
+    response_model=SafetySummaryResponse
+)
+def get_message_safety_summary(
+    message_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get a user-facing safety summary for an assistant message.
+
+    This endpoint provides a high-level risk assessment without
+    exposing raw hallucination details.
+    """
+    try:
+        # Ownership check (reuse existing logic)
+        message_service = MessageService(db)
+        message_service.get_message_with_ownership_check(
+            message_id, current_user.id
+        )
+
+        summary_service = SafetySummaryService(db)
+        summary = summary_service.build_summary(message_id)
+
+        return summary
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error retrieving safety summary for message {message_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve safety summary",
         )
