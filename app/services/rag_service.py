@@ -222,7 +222,9 @@ class RAGService:
             is_valid = len(missing) == 0 and len(extra) == 0
 
             flagged = detect_misconceptions(generated, context)
+            logging.info("Detected %d flagged misconceptions", len(flagged))
             flagged = attach_evidence(flagged, context)
+            logging.info("Attached evidence to flagged misconceptions")
 
             # ---- High-level summary ----
             logger.info(
