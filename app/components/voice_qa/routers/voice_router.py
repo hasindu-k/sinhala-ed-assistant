@@ -10,12 +10,21 @@ from app.core.database import get_db
 import subprocess
 import os
 
-
+from app.services.safety_summary_service import SafetySummaryService
 from app.components.voice_qa.services.hybrid_retrieval import retrieve_top_k
 from app.components.voice_qa.services.whisper_service import (
     VoiceService,
     VoiceQAService,
 )
+import logging
+
+from app.utils.sinhala_safety_engine import (
+    concept_map_check,
+    detect_misconceptions,
+    attach_evidence,
+)
+from app.services.safety_summary_service import SafetySummaryService
+from app.services.message_safety_service import MessageSafetyService
 from app.services.audio_storage import upload_audio_to_firebase
 from app.services.chat_service import save_chat_message
 from app.components.voice_qa.services.context_service import get_allowed_resource_ids
@@ -30,6 +39,8 @@ from app.services.session_resource_service import SessionResourceService
 
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 # @router.get("/health")
 # async def health_check():
@@ -64,14 +75,14 @@ async def qa_from_voice(
     audio: UploadFile = File(...),
     session_id: Optional[str] = Form(None),
     resource_ids: Optional[str] = Form(None),  # comma-separated UUIDs
-    top_k: int = 3,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     chat_session_service = ChatSessionService(db)
+    message_service = MessageService(db)
 
     # ----------------------------------------------------
-    # 1️⃣ ENSURE SESSION EXISTS (voice-first fix)
+    # 1️⃣ ENSURE SESSION EXISTS
     # ----------------------------------------------------
     if session_id in ("undefined", "null", "", None):
         session = chat_session_service.create_session(
@@ -97,17 +108,15 @@ async def qa_from_voice(
     audio_url = upload_audio_to_firebase(temp_path)
 
     # ----------------------------------------------------
-    # 4️⃣ TRANSCRIBE
+    # 4️⃣ TRANSCRIBE + NORMALIZE
     # ----------------------------------------------------
     raw_text = VoiceService.transcribe_audio(temp_path)
-    normalized, standard = VoiceService.standardize_southern_sinhala(raw_text)
+    _, standard = VoiceService.standardize_southern_sinhala(raw_text)
     question_text = standard
 
     # ----------------------------------------------------
     # 5️⃣ SAVE USER MESSAGE (VOICE)
     # ----------------------------------------------------
-    message_service = MessageService(db)
-
     user_message = message_service.create_user_message_with_validation(
         session_id=parsed_session_id,
         user_id=current_user.id,
@@ -118,7 +127,7 @@ async def qa_from_voice(
     )
 
     # ----------------------------------------------------
-    # 6️⃣ ATTACH RESOURCES (IF ANY)
+    # 6️⃣ ATTACH RESOURCES (IF PROVIDED)
     # ----------------------------------------------------
     ids = []
     if resource_ids:
@@ -148,31 +157,35 @@ async def qa_from_voice(
     )
 
     # ----------------------------------------------------
-    # 8️⃣ RAG
+    # 8️⃣ GENERATE ANSWER (DELEGATE TO TEXT RAG)
     # ----------------------------------------------------
-    top_chunks = retrieve_top_k(
-        query=question_text,
+    assistant_msg = message_service.generate_ai_response(
+        message_id=user_message.id,
+        user_id=current_user.id,
         resource_ids=allowed_resource_ids,
-        top_k=top_k,
     )
 
-    prompt = VoiceQAService.build_prompt(question_text, top_chunks)
-    answer = VoiceQAService.llm_generate(prompt)
-
-    # ----------------------------------------------------
-    # 9️⃣ SAVE ASSISTANT MESSAGE
-    # ----------------------------------------------------
-    message_service.create_assistant_message(
-        session_id=parsed_session_id,
-        content=answer,
+    logger.info(
+        "Voice QA completed | session=%s | user=%s | assistant_msg=%s",
+        parsed_session_id,
+        current_user.id,
+        assistant_msg.id,
     )
 
     # ----------------------------------------------------
     # 🔟 RESPONSE
     # ----------------------------------------------------
+    summary_service = SafetySummaryService(db)
+    summary = summary_service.build_summary(assistant_msg.id)
+    
     return {
-        "session_id": str(parsed_session_id),  # ✅ frontend needs this
-        "question": question_text,
-        "answer": answer,
-        "retrieved_chunks": top_chunks,
+    "session_id": str(parsed_session_id),
+    "question": question_text,
+    "answer": assistant_msg.content,
+    "assistant_message_id": str(assistant_msg.id),
+    "safety_summary": {
+        "overall_severity": summary.get("overall_severity"),
+        "confidence_score": summary.get("confidence_score"),
+        "reliability": summary.get("reliability"),
+    } if summary else None,
     }

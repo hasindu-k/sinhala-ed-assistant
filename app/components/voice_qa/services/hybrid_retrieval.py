@@ -1,3 +1,4 @@
+#app/components/voice_qa/services/hybrid_retrieval.py
 """
 Hybrid retrieval pipeline scoped by allowed resource_ids.
 

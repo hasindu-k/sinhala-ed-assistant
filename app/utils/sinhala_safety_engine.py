@@ -1,6 +1,9 @@
 # app/utils/sinhala_safety_engine.py
  
+import logging
 import re
+
+logger = logging.getLogger(__name__)
  
 STOPWORDS = {
     "කරන", "යන්න", "සඳහන්", "පිළිබඳ", "කෙරෙයි", "වන්නේ", "ඇත", "වැනි", 
@@ -41,23 +44,32 @@ def detect_misconceptions(generated: str, source: str):
           }
         ]
     """
+    logger.info("paramtered sources %s", source)
     src_concepts = extract_concepts(source)
     flagged = []
-
+    
+    logger.info("Source concepts extracted: %d", len(src_concepts))
+    
     for sentence in re.split(r"[.!?]", generated):
         sentence = sentence.strip()
+        
+        logger.info("Analyzing sentence: %s", sentence)
+        
         if not sentence:
             continue
 
         sent_concepts = extract_concepts(sentence)
 
+        logger.info("Extracted concepts: %d", len(sent_concepts))
         # Skip very short or trivial sentences
         if len(sent_concepts) < 6:
             continue
 
         unseen = sent_concepts - src_concepts
         unseen_ratio = len(unseen) / len(sent_concepts)
-
+        
+        logger.info("Sentence: %s | Unseen ratio: %.2f", sentence, unseen_ratio)
+        
         # Only flag when majority is unsupported
         if unseen_ratio >= 0.5:
             if unseen_ratio >= 0.75:
