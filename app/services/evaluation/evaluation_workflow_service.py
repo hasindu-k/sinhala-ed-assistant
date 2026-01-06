@@ -171,6 +171,253 @@ class EvaluationWorkflowService:
             logger.error(f"Critical error in background evaluation: {e}")
             self.sessions.update_evaluation_session(session_id, status="failed")
 
+    def execute_evaluation_process_generator(self, session_id: UUID, answer_resource_ids: List[UUID], user_id: UUID):
+        """
+        Generator that yields progress updates for evaluation process.
+        Yields JSON strings formatted for SSE.
+        """
+        import json
+        
+        total_docs = len(answer_resource_ids)
+        current_doc_index = 0
+        
+        def make_event(msg, progress=None, status="processing", detail=None, stage="initializing"):
+            nonlocal current_doc_index
+            if progress is None:
+                # Calculate progress based on completed docs + current step estimate
+                # This is a rough estimate
+                base_progress = int((current_doc_index / total_docs) * 100) if total_docs > 0 else 0
+                progress = base_progress
+            
+            data = {
+                "progress": progress,
+                "message": msg,
+                "status": status,
+                "stage": stage,
+                "detail": detail
+            }
+            return json.dumps(data, default=str) + "\n"
+
+        # Callback function to be passed down
+        def progress_callback(stage, message, percent=None):
+            # We can map internal stages to frontend stages if needed
+            # For now, pass through
+            # Calculate overall progress if percent is given for the sub-task
+            overall_progress = None
+            if percent is not None and total_docs > 0:
+                doc_progress = percent / 100.0
+                overall_progress = int(((current_doc_index + doc_progress) / total_docs) * 100)
+            
+            # We can't yield from here directly because this is a callback called by synchronous code.
+            # But wait! We can't yield from a callback in a synchronous function.
+            # This is the tricky part. 
+            # Since `evaluate_answer` is synchronous, we can't stream OUT of it easily unless we use a queue or similar,
+            # OR we just accept that we can't stream granular updates from within the sync function 
+            # unless we change the architecture to be async or use a shared queue.
+            
+            # However, for a generator, we can't just "yield" from a nested function call.
+            # The standard way in Python without async is to pass a queue or just log it.
+            # But we want to stream it to the client.
+            
+            # Given the constraints and the synchronous nature of `evaluate_answer`, 
+            # we might not be able to get granular updates *out* of the generator loop easily 
+            # without refactoring `evaluate_answer` to be a generator itself.
+            pass 
+
+        # REFACTOR: To support streaming from deep within, we need `evaluate_answer` to yield or use a queue.
+        # Since I cannot easily change `evaluate_answer` to a generator everywhere (it might break other callers),
+        # I will use a queue-based approach or just accept stage-level updates for now.
+        
+        # BUT, since I am editing the code, I CAN change `evaluate_answer` to accept a callback 
+        # that writes to a queue, and have a separate thread consume it? 
+        # No, that's too complex for this context.
+        
+        # Alternative: Just yield stage updates from the top level loop, 
+        # and maybe break down `evaluate_answer` in the loop if possible.
+        # But `evaluate_answer` does a lot.
+        
+        # Let's try to make `evaluate_answer` a generator? 
+        # If I change it to `yield`, I break the return value for other callers.
+        
+        # Let's stick to the plan: I added `progress_callback` to `evaluate_answer`.
+        # But I can't use it to yield from the outer generator.
+        # I can use a simple trick: The callback updates a shared state, but the generator is blocked!
+        # The generator is blocked while `evaluate_answer` runs. So no yields will happen until it returns.
+        
+        # So, `evaluate_answer` MUST yield or be broken down.
+        # I will create a new method `evaluate_answer_generator` that yields progress, 
+        # and `evaluate_answer` can just consume it and return the final result.
+        
+        yield make_event("Starting evaluation process...", progress=0, stage="initializing")
+        logger.info(f"Stream: Starting evaluation for session {session_id}")
+
+        try:
+            for resource_id in answer_resource_ids:
+                
+                # Find the answer document
+                ad = self.answers.get_answer_document_by_session_and_resource(session_id, resource_id)
+                if not ad:
+                    yield make_event(f"Answer document for resource {resource_id} not found, skipping.", status="warning", stage="processing_documents")
+                    continue
+
+                try:
+                    yield make_event(f"Evaluating answer document {current_doc_index + 1}/{total_docs}...", status="processing", stage="processing_documents")
+                    logger.info(f"Stream: Evaluating answer document {ad.id}...")
+                    
+                    # Call the generator version of evaluate_answer
+                    # I need to implement `evaluate_answer_generator`
+                    for update in self.evaluate_answer_generator(ad.id, user_id):
+                        # update is (stage, message, percent)
+                        stage, msg, pct = update
+                        
+                        # Calculate overall progress
+                        overall_progress = int(((current_doc_index + (pct/100.0 if pct else 0)) / total_docs) * 100)
+                        yield make_event(msg, progress=overall_progress, stage=stage)
+                    
+                    current_doc_index += 1
+                    yield make_event(f"Completed evaluation for document {current_doc_index}/{total_docs}", status="success", stage="completed")
+                    logger.info(f"Stream: Evaluation finished for answer document {ad.id}.")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to evaluate answer {ad.id}: {e}")
+                    yield make_event(f"Failed to evaluate document {current_doc_index + 1}: {str(e)}", status="error", stage="failed")
+                    current_doc_index += 1
+            
+            self.sessions.update_evaluation_session(session_id, status="completed")
+            yield make_event("Evaluation process completed successfully.", progress=100, status="completed", stage="completed")
+            logger.info(f"Stream: Evaluation completed for session {session_id}")
+            
+        except Exception as e:
+            logger.error(f"Critical error in evaluation stream: {e}")
+            self.sessions.update_evaluation_session(session_id, status="failed")
+            yield make_event(f"Evaluation process failed: {str(e)}", status="failed", stage="failed")
+
+    def evaluate_answer_generator(self, answer_id: UUID, user_id: UUID):
+        """
+        Generator version of evaluate_answer.
+        Yields (stage, message, percent) tuples.
+        """
+        # This duplicates logic from evaluate_answer but yields updates.
+        # Ideally we refactor evaluate_answer to use this, but for safety I'll keep them separate or make evaluate_answer consume this.
+        
+        answer_doc = self._ensure_answer_owner(answer_id, user_id)
+        
+        yield ("processing_documents", "Checking answer resource...", 5)
+
+        # Get the answer document with OCR text
+        answer_resource = self.resource_files.get_resource(answer_doc.resource_id)
+        if not answer_resource:
+            raise ValueError("Answer resource not found")
+
+        # OCR
+        if not answer_resource.extracted_text:
+            yield ("processing_documents", "Extracting text from answer script (OCR)...", 10)
+            ocr_text, _ = extract_and_clean_text_from_file(answer_resource.storage_path)
+            self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
+        else:
+            ocr_text = answer_resource.extracted_text
+        
+        yield ("processing_documents", "Loading evaluation context...", 20)
+        
+        # Context loading
+        eval_session = self.sessions.get_evaluation_session(answer_doc.evaluation_session_id)
+        if not eval_session: raise ValueError("Evaluation session not found")
+
+        question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
+        if not question_papers: raise ValueError("Question paper not found")
+        question_paper = question_papers[0]
+        questions = self.question_papers.get_questions_by_paper(question_paper.id)
+
+        # Fix OCR / Map
+        if answer_doc.mapped_answers:
+            yield ("processing_documents", "Using existing answer mapping...", 30)
+            answer_mapping = answer_doc.mapped_answers
+            if not answer_resource.extracted_text:
+                 cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+            else:
+                 cleaned_answer_text = answer_resource.extracted_text
+        else:
+            yield ("processing_documents", "Correcting OCR errors...", 30)
+            cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+            
+            yield ("processing_documents", "Mapping answers to questions...", 40)
+            answer_mapping = map_student_answers(cleaned_answer_text, questions)
+            self.answers.update_mapped_answers(answer_id, answer_mapping)
+        
+        # Grading
+        yield ("evaluating_answers", "Starting grading process...", 50)
+        
+        from app.services.evaluation.grading_service import GradingService
+        grader = GradingService(self.db)
+        
+        # We need to hook into grading service too. 
+        # Since I added progress_callback to grade_answer_document, I can use it!
+        
+        def internal_callback(stage, msg, percent=None):
+            # Map internal grading stages to our generator yields
+            # Base progress for grading is 50% to 100%
+            base = 50
+            if percent:
+                adjusted = base + (percent / 2) # Scale 0-100 to 50-100 range roughly
+            else:
+                adjusted = base
+            
+            # We can't yield from here directly (callback).
+            # So we need a way to pass this out.
+            # Since we are inside a generator `evaluate_answer_generator`, we can't yield from a callback.
+            # This is the same problem.
+            pass
+
+        # Actually, I can't easily stream from `grader.grade_answer_document` unless I change IT to a generator too.
+        # Or I use a queue.
+        # Given the complexity, I will just yield major steps here and NOT use the callback for now, 
+        # OR I will just accept that `grade_answer_document` is a black box that takes time.
+        
+        # BUT the user specifically asked for "steps on the backend terminal... to frontend".
+        # The logs show "Grading question X...".
+        
+        # I will make `grade_answer_document` a generator? No, it returns a value.
+        # I will use a queue to communicate from the callback to this generator.
+        import queue
+        q = queue.Queue()
+        
+        def queue_callback(stage, msg, percent=None):
+            q.put((stage, msg, percent))
+            
+        import threading
+        
+        # Run grading in a separate thread so we can consume the queue in this generator
+        result_container = {}
+        error_container = {}
+        
+        def run_grading():
+            try:
+                result_container['result'] = grader.grade_answer_document(answer_id, user_id, queue_callback)
+            except Exception as e:
+                error_container['error'] = e
+            finally:
+                q.put(None) # Sentinel
+        
+        t = threading.Thread(target=run_grading)
+        t.start()
+        
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            stage, msg, percent = item
+            # Scale progress: 50 + (percent/2)
+            p = 50 + (percent / 2) if percent is not None else None
+            yield (stage, msg, p)
+            
+        t.join()
+        
+        if 'error' in error_container:
+            raise error_container['error']
+            
+        yield ("completed", "Evaluation completed.", 100)
+        return result_container.get('result')
+
     def list_sessions(self, user_id: UUID, session_id: Optional[UUID] = None) -> List:
         if session_id:
             self._ensure_chat_session_owner(session_id, user_id)
@@ -1069,7 +1316,7 @@ class EvaluationWorkflowService:
             "extracted_text": resource.extracted_text
         }
 
-    def evaluate_answer(self, answer_id: UUID, user_id: UUID):
+    def evaluate_answer(self, answer_id: UUID, user_id: UUID, progress_callback=None):
         """Evaluate answer with recursive sub-question support."""
         answer_doc = self._ensure_answer_owner(answer_id, user_id)
 
@@ -1080,14 +1327,11 @@ class EvaluationWorkflowService:
         # if existing:
         #    return existing
         
-        # If existing result exists, delete it to allow re-evaluation (since we changed logic)
-        existing = self.answers.get_evaluation_result_by_answer_document(answer_id)
-        if existing:
-            logger.info(f"Deleting existing evaluation result {existing.id} for re-evaluation")
-            # Manually delete related QuestionScores first to avoid FK violation
-            self.db.query(QuestionScore).filter(QuestionScore.evaluation_result_id == existing.id).delete()
-            self.db.delete(existing)
-            self.db.commit()
+        # If existing result exists, we will handle it in GradingService (update instead of delete)
+        # This avoids potential FK issues with delete/create cycles in the same flow.
+
+        if progress_callback:
+            progress_callback("processing_documents", "Checking answer resource...")
 
         # Get the answer document with OCR text
         answer_resource = self.resource_files.get_resource(answer_doc.resource_id)
@@ -1096,6 +1340,8 @@ class EvaluationWorkflowService:
 
         # OCR the answer script if not already done
         if not answer_resource.extracted_text:
+            if progress_callback:
+                progress_callback("processing_documents", "Extracting text from answer script (OCR)...")
             ocr_text, _ = extract_and_clean_text_from_file(answer_resource.storage_path)
             # Update the resource with extracted text
             self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
@@ -1131,10 +1377,14 @@ class EvaluationWorkflowService:
             else:
                  cleaned_answer_text = answer_resource.extracted_text
         else:
+            if progress_callback:
+                progress_callback("processing_documents", "Correcting OCR errors...")
             logger.info("Running AI correction on student answer script...")
             cleaned_answer_text = fix_sinhala_ocr(ocr_text)
             
             # 2. Map answers to questions using AI
+            if progress_callback:
+                progress_callback("processing_documents", "Mapping answers to questions...")
             logger.info("Mapping student answers to questions...")
             answer_mapping = map_student_answers(cleaned_answer_text, questions)
             
@@ -1146,10 +1396,12 @@ class EvaluationWorkflowService:
         logger.debug(f"Answer Mapping: {answer_mapping}")
 
         # 3. Perform Grading
+        if progress_callback:
+            progress_callback("evaluating_answers", "Starting grading process...")
         logger.info("Starting grading process...")
         from app.services.evaluation.grading_service import GradingService
         grader = GradingService(self.db)
-        result = grader.grade_answer_document(answer_id, user_id)
+        result = grader.grade_answer_document(answer_id, user_id, progress_callback)
         logger.info(f"Grading completed for answer document {answer_id}.")
         return result
 
