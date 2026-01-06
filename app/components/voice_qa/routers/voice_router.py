@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, UploadFile, File, Form
 from uuid import UUID
+from jiwer import wer
 
 from typing import Optional
 from fastapi import Depends
@@ -66,7 +67,24 @@ async def transcribe(audio: UploadFile = File(...)):
         "standard": standard,
     }
 
+@router.post("/evaluate-wer")
+async def evaluate_wer(
+    audio: UploadFile = File(...),
+    reference_text: str = Form(...)
+):
+    temp_path = "temp.wav"
+    with open(temp_path, "wb") as f:
+        f.write(await audio.read())
 
+    predicted = VoiceService.transcribe_audio(temp_path)
+
+    error_rate = wer(reference_text, predicted)
+
+    return {
+        "prediction": predicted,
+        "reference": reference_text,
+        "wer": round(error_rate, 4)
+    }
 # The heavier pipeline helpers live in `VoiceQAService` (in whisper_service.py).
 
 
