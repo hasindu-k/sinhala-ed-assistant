@@ -44,3 +44,32 @@ class SessionResourceRepository:
         )
         self.db.commit()
         return rows
+
+    def delete_resources_for_session_by_label(self, session_id: UUID, label: str) -> int:
+        rows = (
+            self.db.query(SessionResource)
+            .filter(
+                SessionResource.session_id == session_id,
+                SessionResource.label == label,
+            )
+            .delete()
+        )
+        self.db.commit()
+        return rows
+
+    def delete_session_resource(
+        self,
+        session_id: UUID,
+        resource_id: UUID,
+        label: str | None = None,
+    ) -> int:
+        query = self.db.query(SessionResource).filter(
+            SessionResource.session_id == session_id,
+            SessionResource.resource_id == resource_id,
+        )
+        if label is not None:
+            query = query.filter(SessionResource.label == label)
+
+        rows = query.delete()
+        self.db.commit()
+        return rows

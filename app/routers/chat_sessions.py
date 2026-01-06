@@ -329,6 +329,116 @@ def get_session_resources(
         return resources
     except HTTPException:
         raise
+
+
+@router.delete("/sessions/{session_id}/rubric", status_code=status.HTTP_200_OK)
+def detach_rubric_from_session(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Detach the rubric from a chat session (does not delete the rubric)."""
+    try:
+        chat_service = ChatSessionService(db)
+        session = chat_service.get_session_with_ownership_check(session_id, current_user.id)
+        session.rubric_id = None
+        db.commit()
+        return {"detail": "Rubric detached"}
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            f"Error detaching rubric from session {session_id} for user {current_user.id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to detach rubric",
+        )
+
+
+@router.delete("/sessions/{session_id}/resources/{role}", status_code=status.HTTP_200_OK)
+def detach_resource_from_session(
+    session_id: UUID,
+    role: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Detach a role-based resource (syllabus/question_paper) from a chat session (does not delete the resource)."""
+    if role not in {"syllabus", "question_paper", "answer_script"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid role. Must be 'syllabus', 'question_paper', or 'answer_script'",
+        )
+
+    try:
+        chat_service = ChatSessionService(db)
+        chat_service.get_session_with_ownership_check(session_id, current_user.id)
+
+        session_resources_service = SessionResourceService(db)
+        deleted = session_resources_service.detach_resources_by_label(session_id, role)
+        return {"detail": f"{role} detached", "detached_count": deleted}
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            f"Error detaching {role} from session {session_id} for user {current_user.id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to detach resource from session",
+        )
+
+
+@router.delete("/sessions/{session_id}/answer-sheets/{resource_id}", status_code=status.HTTP_200_OK)
+def detach_answer_sheet_from_session(
+    session_id: UUID,
+    resource_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Detach a single answer sheet (label 'answer_script') from a chat session (does not delete the resource)."""
+    try:
+        chat_service = ChatSessionService(db)
+        chat_service.get_session_with_ownership_check(session_id, current_user.id)
+
+        session_resources_service = SessionResourceService(db)
+        deleted = session_resources_service.detach_resource(
+            session_id=session_id,
+            resource_id=resource_id,
+            label="answer_script",
+        )
+
+        if deleted == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Answer sheet not attached to this session",
+            )
+
+        return {"detail": "Answer sheet detached", "detached_count": deleted}
+    except HTTPException:
+        raise
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            f"Error detaching answer sheet {resource_id} from session {session_id} for user {current_user.id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to detach answer sheet",
+        )
     except Exception as e:
         logger.error(f"Error fetching resources for session {session_id}: {e}", exc_info=True)
         raise HTTPException(

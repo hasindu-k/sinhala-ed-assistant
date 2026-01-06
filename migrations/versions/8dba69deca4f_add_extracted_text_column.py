@@ -17,11 +17,32 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "resource_files",
-        sa.Column("extracted_text", sa.Text(), nullable=True),
-    )
+    # This migration may be applied against databases where the column was added
+    # manually or via earlier experiments. Make it idempotent.
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.execute(
+            "ALTER TABLE resource_files ADD COLUMN IF NOT EXISTS extracted_text TEXT"
+        )
+    else:
+        # Fallback for other dialects (best-effort).
+        inspector = sa.inspect(bind)
+        existing = {col["name"] for col in inspector.get_columns("resource_files")}
+        if "extracted_text" not in existing:
+            op.add_column(
+                "resource_files",
+                sa.Column("extracted_text", sa.Text(), nullable=True),
+            )
 
 
 def downgrade() -> None:
-    op.drop_column("resource_files", "extracted_text")
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.execute(
+            "ALTER TABLE resource_files DROP COLUMN IF EXISTS extracted_text"
+        )
+    else:
+        inspector = sa.inspect(bind)
+        existing = {col["name"] for col in inspector.get_columns("resource_files")}
+        if "extracted_text" in existing:
+            op.drop_column("resource_files", "extracted_text")
