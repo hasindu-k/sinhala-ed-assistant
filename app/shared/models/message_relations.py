@@ -5,6 +5,7 @@ from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Numeric, B
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.database import Base
 
@@ -51,10 +52,17 @@ class MessageSafetyReport(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=False, index=True)
-    missing_concepts = Column(String, nullable=True)  # JSONB stored as string
-    extra_concepts = Column(String, nullable=True)  # JSONB stored as string
-    flagged_sentences = Column(String, nullable=True)  # JSONB stored as string
-    reasoning = Column(String, nullable=True)  # JSONB stored as string
+    
+    missing_concepts = Column(JSONB, nullable=True)  # JSONB stored as string
+    extra_concepts = Column(JSONB, nullable=True)  # JSONB stored as string
+    flagged_sentences = Column(JSONB, nullable=True)  # JSONB stored as string
+    reasoning = Column(JSONB, nullable=True)  # JSONB stored as string
+
+    # Cached computed summary values (for performance)
+    computed_severity = Column(String, nullable=True)  # "low", "medium", "high"
+    computed_confidence_score = Column(Numeric, nullable=True)  # 0.0 - 1.0
+    computed_reliability = Column(String, nullable=True)  # "fully_supported", "partially_supported", "likely_unsupported"
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     message = relationship(

@@ -19,5 +19,8 @@ class SessionResourceService:
     def get_session_resources(self, session_id: UUID) -> List:
         return self.repository.get_session_resources(session_id)
 
+    def get_resources_by_session_id(self, session_id: UUID) -> List:
+        return self.repository.get_resources_by_session_id(session_id)
+
     def detach_all_resources(self, session_id: UUID) -> int:
         return self.repository.delete_resources_for_session(session_id)
