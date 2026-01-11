@@ -1,4 +1,4 @@
-# SinLearn - Sinhala Ed Assistant 📚🇱🇰
+# SinhalaLearn - Sinhala Ed Assistant 📚🇱🇰
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.123.x-green)](https://fastapi.tiangolo.com/) [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/) [![Docker](https://img.shields.io/badge/Docker-Compose-informational)](https://docs.docker.com/compose/) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.x-blue)](https://www.postgresql.org/) [![Qdrant](https://img.shields.io/badge/Qdrant-1.12.x-orange)](https://qdrant.tech/)
 
 ## Table of Contents
@@ -510,16 +510,27 @@ Features include:
 
 ---
 
-# ** Technologies Used**
+# *⚙️ Technologies Used*
 
-### **Mobile**
+### *Mobile*
 
+- Flutter
+- Provider / Riverpod
+- Firebase (future enhancement)
 
-### **Backend**
+### *Backend*
 
+- FastAPI
+- Python
+- Tesseract OCR
+- Whisper ASR
+- SinBERT / XLM-R embeddings
+- Qdrant / FAISS (vector search)
 
-### **Infrastructure**
+### *Infrastructure*
 
+- Docker
+- Docker Compose
 
 ### **Other Libraries**
 - pdf2image, pdfplumber, pytesseract, torch, numpy, rank-bm25, passlib, python-jose, alembic, dotenv, pydantic_settings, psycopg2, librosa
@@ -630,8 +641,12 @@ They are **not** stored inside this repository to keep the codebase light and or
 
 ---
 
-# ** Authors**
+# *👤 Authors*
 
+- Sinhala Document Processing: *Ranaweera P.H.K (IT22233452)*
+- RAG Q&A Module: *Jayananda L.V.O.R (IT22161406)*
+- Voice Q&A Module: *Sathsara T.T.D (IT22362476)*
+- Automatic Answer Evaluation: *Lokuhewage M .M (IT22003478)*
 
 ---
 For questions or contributions, please open an issue or contact the authors.
