@@ -1469,13 +1469,24 @@ class EvaluationWorkflowService:
                 "max_marks": q_info.get("marks")
             })
             
-        # Sort by question number (simple sort)
-        def natural_sort_key(item):
-            import re
+        # Sort by question number (handles numbers and subparts like 10(a), 10(b), etc.)
+        import re
+        def question_sort_key(item):
             text = item["question_number"] or ""
-            return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
+            # Split into number and optional subpart, e.g., '10(a)' -> [10, 'a']
+            match = re.match(r"(\d+)(?:[. ]*\(?([a-zA-Z0-9]+)\)?)?", text)
+            if match:
+                num = int(match.group(1))
+                sub = match.group(2) or ""
+                # Try to convert sub to int if possible, else keep as string
+                try:
+                    sub_val = int(sub)
+                except (TypeError, ValueError):
+                    sub_val = sub.lower()
+                return (num, sub_val)
+            return (float('inf'), text)
 
-        details.sort(key=natural_sort_key)
+        details.sort(key=question_sort_key)
         
         return details
 

@@ -28,7 +28,70 @@ from app.schemas.evaluation import (
     StartEvaluationRequest,
     ProcessDocumentsRequest,
     ProcessDocumentsResponse,
+    EvaluationResultResponse,
 )
+
+from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
+from app.services.evaluation.user_context_service import UserContextService
+from app.core.database import get_db
+from app.core.security import get_current_user
+from app.shared.models.user import User
+
+# ...existing code...
+
+router = APIRouter()
+logger = logging.getLogger(__name__)
+
+@router.get("/sessions/{evaluation_id}/results", response_model=List[Dict[str, Any]])
+def list_evaluation_results(
+    evaluation_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get evaluation results for all answer documents in a session.
+    Returns actual and percentage scores for each answer sheet.
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        answer_docs = service.list_answer_documents(evaluation_id, current_user.id)
+        results = []
+        for ad in answer_docs:
+            result = service.get_evaluation_result(ad.id, current_user.id)
+            if result:
+                # Calculate percentage score if possible
+                total_score = result.total_score if result.total_score is not None else 0
+                # Try to get max marks from question scores
+                max_marks = sum([qs.max_marks or 0 for qs in getattr(ad, 'question_scores', [])])
+                # If not available, fallback to None
+                percent = None
+                if hasattr(result, 'question_scores') and result.question_scores:
+                    max_marks = sum([qs.awarded_marks or 0 for qs in result.question_scores])
+                if max_marks:
+                    percent = float(total_score) / float(max_marks) * 100 if max_marks else None
+                results.append({
+                    "answer_document_id": ad.id,
+                    "student_identifier": getattr(ad, 'student_identifier', None),
+                    "total_score": float(total_score),
+                    "percentage_score": round(percent, 2) if percent is not None else None,
+                    "overall_feedback": getattr(result, 'overall_feedback', None),
+                    "evaluated_at": getattr(result, 'evaluated_at', None),
+                })
+            else:
+                results.append({
+                    "answer_document_id": ad.id,
+                    "student_identifier": getattr(ad, 'student_identifier', None),
+                    "total_score": None,
+                    "percentage_score": None,
+                    "overall_feedback": None,
+                    "evaluated_at": None,
+                })
+        return results
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to list evaluation results for session {evaluation_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to list evaluation results")
 from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
 from app.services.evaluation.user_context_service import UserContextService
 from app.core.database import get_db
