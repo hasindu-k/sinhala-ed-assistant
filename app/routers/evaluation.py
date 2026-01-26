@@ -54,52 +54,46 @@ def list_evaluation_results(
     """
     service = EvaluationWorkflowService(db)
     try:
+        logger = logging.getLogger(__name__)
         answer_docs = service.list_answer_documents(evaluation_id, current_user.id)
+        logger.debug(f"Session {evaluation_id}: Found {len(answer_docs)} answer documents.")
         results = []
         for ad in answer_docs:
+            logger.debug(f"Processing answer document: {ad.id} (student_identifier={getattr(ad, 'student_identifier', None)})")
             result = service.get_evaluation_result(ad.id, current_user.id)
+            logger.debug(f"Result for answer document {ad.id}: {result}")
+            entry = {
+                "answer_document_id": ad.id,
+                "student_identifier": getattr(ad, 'student_identifier', None),
+                "total_score": None,
+                "percentage_score": None,
+                "overall_feedback": None,
+                "evaluated_at": None,
+            }
             if result:
-                # Calculate percentage score if possible
-                total_score = result.total_score if result.total_score is not None else 0
-                # Try to get max marks from question scores
-                max_marks = sum([qs.max_marks or 0 for qs in getattr(ad, 'question_scores', [])])
-                # If not available, fallback to None
+                total_score = result.get("total_score", 0)
+                max_marks = 0
                 percent = None
-                if hasattr(result, 'question_scores') and result.question_scores:
-                    max_marks = sum([qs.awarded_marks or 0 for qs in result.question_scores])
-                if max_marks:
-                    percent = float(total_score) / float(max_marks) * 100 if max_marks else None
-                results.append({
-                    "answer_document_id": ad.id,
-                    "student_identifier": getattr(ad, 'student_identifier', None),
+                # Try to get max marks from question scores if available
+                if "question_scores" in result and result["question_scores"]:
+                    max_marks = sum([qs.get("max_marks", 0) for qs in result["question_scores"]])
+                    if max_marks:
+                        percent = float(total_score) / float(max_marks) * 100 if max_marks else None
+                entry.update({
                     "total_score": float(total_score),
                     "percentage_score": round(percent, 2) if percent is not None else None,
-                    "overall_feedback": getattr(result, 'overall_feedback', None),
-                    "evaluated_at": getattr(result, 'evaluated_at', None),
+                    "overall_feedback": result.get("overall_feedback", None),
+                    "evaluated_at": result.get("evaluated_at", None),
                 })
-            else:
-                results.append({
-                    "answer_document_id": ad.id,
-                    "student_identifier": getattr(ad, 'student_identifier', None),
-                    "total_score": None,
-                    "percentage_score": None,
-                    "overall_feedback": None,
-                    "evaluated_at": None,
-                })
+            results.append(entry)
+        logger.debug(f"Returning results for session {evaluation_id}: {results}")
         return results
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except Exception as exc:
         logger.error(f"Failed to list evaluation results for session {evaluation_id}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to list evaluation results")
-from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
-from app.services.evaluation.user_context_service import UserContextService
-from app.core.database import get_db
-from app.core.security import get_current_user
-from app.shared.models.user import User
 
-router = APIRouter()
-logger = logging.getLogger(__name__)
 
 
 @router.post("/context/paper-config", response_model=UserEvaluationContextResponse)
