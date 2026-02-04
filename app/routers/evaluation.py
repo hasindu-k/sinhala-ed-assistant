@@ -1,10 +1,8 @@
-# app/routers/evaluation.py
 
 import logging
+from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
-
-from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -37,9 +35,47 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
 
-# ...existing code...
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+@router.get("/answers/{answer_id}/score", response_model=Dict[str, Any])
+def get_answer_score(
+    answer_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get only the evaluated score for a given answer document.
+    """
+    service = EvaluationWorkflowService(db)
+    result = service.get_evaluation_result(answer_id, current_user.id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluation result not found")
+    return {
+        "answer_document_id": answer_id,
+        "total_score": result.get("total_score"),
+        "percentage_score": result.get("percentage_score"),
+    }
+
+@router.get("/answers/{answer_id}/feedback", response_model=Dict[str, Any])
+def get_answer_feedback(
+    answer_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get only the feedback for a given answer document.
+    """
+    service = EvaluationWorkflowService(db)
+    result = service.get_evaluation_result(answer_id, current_user.id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluation result not found")
+    return {
+        "answer_document_id": answer_id,
+        "overall_feedback": result.get("overall_feedback"),
+        "evaluated_at": result.get("evaluated_at"),
+    }
 logger = logging.getLogger(__name__)
 
 @router.get("/sessions/{evaluation_id}/results", response_model=List[Dict[str, Any]])
@@ -189,6 +225,7 @@ def start_evaluation(
         # Offload processing to background
         background_tasks.add_task(
             run_evaluation_background_task,
+# --- New endpoints for score and feedback only ---
             session.id,
             payload.answer_resource_ids,
             current_user.id
