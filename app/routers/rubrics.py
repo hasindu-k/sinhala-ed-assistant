@@ -72,7 +72,6 @@ def create_rubric(
             current_user.id,
             payload.name,
             payload.description,
-            payload.rubric_type,
             payload.criteria,
         )
         

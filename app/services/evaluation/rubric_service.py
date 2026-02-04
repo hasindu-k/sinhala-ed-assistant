@@ -38,7 +38,6 @@ class RubricService:
         user_id: UUID,
         name: str,
         description: Optional[str] = None,
-        rubric_type: Optional[str] = None,
         criteria: Optional[List[RubricCriterionCreate]] = None,
     ):
         """Create a new rubric with exactly 3 criteria: semantic, coverage, relevance."""
@@ -61,7 +60,6 @@ class RubricService:
             created_by=user_id,
             name=name,
             description=description,
-            rubric_type=rubric_type or "evaluation",
         )
         if criteria:
             for criterion_data in criteria:
