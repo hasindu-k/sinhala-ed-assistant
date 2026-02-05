@@ -1,9 +1,9 @@
 # app/components/document_processing/services/classifier_service.py
 
-from google import generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import json
 import logging
+from app.shared.ai.gemini_client import gemini_generate
+
 logger = logging.getLogger(__name__)
 
 # Define prompts and constants
@@ -25,20 +25,9 @@ def classify_document(text: str) -> str:
     if not text or not text.strip():
         return "unknown"
     
-    model = genai.GenerativeModel("gemini-3-flash-preview")
-    
     try:
-        response = model.generate_content(
-            CLASSIFY_PROMPT.format(content=text[:8000]),
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-        )
+        output = gemini_generate(CLASSIFY_PROMPT.format(content=text[:8000])).strip().lower()
         
-        output = response.text.strip().lower()
         allowed = {
             "term_test", "teacher_guide", "student_notes",
             "past_paper", "answer_scheme", "textbook"
@@ -186,23 +175,18 @@ def separate_paper_content(text: str):
     if not text or not text.strip():
         return {}
 
-    # Initialize model (ensure api_key is configured elsewhere)
-    model = genai.GenerativeModel("gemini-3-flash-preview") # Updated to latest flash model for better speed/cost
-
     try:
         logger.info("Starting Sinhala structure extraction.")
-        response = model.generate_content(
+        response_text = gemini_generate(
             SINHALA_STRUCTURE_PROMPT.format(content=text[:20000]),
-            generation_config={"response_mime_type": "application/json"},
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
+            json_mode=True
         )
 
-        result = json.loads(response.text)
+        if not response_text:
+            logger.error("Empty response from Gemini.")
+            return {}
+
+        result = json.loads(response_text)
         logger.info("Sinhala structure extraction completed successfully.")
 
         paper_structure = result.get("PaperStructure", {
@@ -237,8 +221,6 @@ def fix_sinhala_ocr(text: str) -> str:
     if not text or not text.strip():
         return text
 
-    model = genai.GenerativeModel("gemini-3-flash-preview")
-
     prompt = f"""
     You are a Sinhala OCR text corrector.
     Fix OCR errors such as:
@@ -254,12 +236,11 @@ def fix_sinhala_ocr(text: str) -> str:
     """
 
     try:
-        response = model.generate_content(prompt)
-        corrected = response.text.strip()
+        corrected = gemini_generate(prompt).strip()
+        return corrected if corrected else text
 
-        return corrected
     except Exception as e:
-        print("Error in Sinhala OCR correction:", e)
+        logger.error(f"Error in Sinhala OCR correction: {e}")
         return text
 
 COMBINED_EXAM_PROMPT = """
@@ -376,23 +357,15 @@ def extract_complete_exam_data(text: str):
     if not text or not text.strip():
         return {}
 
-    # Initialize model
-    model = genai.GenerativeModel("gemini-3-flash-preview") 
-
     try:
         logger.info("Starting combined exam extraction.")
-        response = model.generate_content(
-            COMBINED_EXAM_PROMPT.format(content=text[:30000]), # Increased char limit slightly for full papers
-            generation_config={"response_mime_type": "application/json"},
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
+
+        response_text = gemini_generate(
+            COMBINED_EXAM_PROMPT.format(content=text[:30000]),
+            json_mode=True
         )
 
-        result = json.loads(response.text)
+        result = json.loads(response_text)
         logger.info("Combined exam extraction completed successfully.")
         
         # 🔒 Defensive Normalization
@@ -472,31 +445,40 @@ def map_student_answers(answer_text: str, question_structure: dict) -> dict:
     if not answer_text or not answer_text.strip():
         return {}
 
-    model = genai.GenerativeModel("gemini-3-flash-preview")
-
     try:
         logger.info("Starting student answer mapping.")
         # Convert structure to a simplified format for the prompt to save tokens
         simplified_structure = _simplify_structure_for_prompt(question_structure)
         
-        response = model.generate_content(
+        response_text = gemini_generate(
             ANSWER_MAPPING_PROMPT.format(
-                structure=json.dumps(simplified_structure, indent=2, ensure_ascii=False),
-                answer_text=answer_text[:30000]
+                structure=json.dumps(
+                    simplified_structure,
+                    ensure_ascii=False,
+                    indent=2
+                ),
+                answer_text=answer_text[:30000],
             ),
-            generation_config={"response_mime_type": "application/json"},
-             safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
+            json_mode=True,
         )
 
-        result = json.loads(response.text)
-        logger.info(f"Mapped {len(result)} answers successfully.")
+        if not response_text:
+            logger.error("Empty response from Gemini.")
+            return {}
+
+        result = json.loads(response_text)
+
+        if not isinstance(result, dict):
+            logger.error("Mapping output is not a JSON object.")
+            return {}
+        
+        logger.info("Mapped %d answers successfully.", len(result))
         return result
 
+    except json.JSONDecodeError:
+        logger.error("❌ Model output was not valid JSON.")
+        return {}
+    
     except Exception as e:
         logger.error(f"❌ Error in answer mapping: {e}")
         return {}

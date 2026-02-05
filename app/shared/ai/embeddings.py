@@ -1,57 +1,51 @@
 # app/shared/ai/embeddings.py
 
-import google.generativeai as genai
-from config.settings import settings
+from app.core.gemini_client import GeminiClient
+from google.genai import types
 from sentence_transformers import SentenceTransformer, util
 
-# Load once globally
+# Load local semantic model once
 xlmr = SentenceTransformer(
     "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
 )
 
-# Configure once
-genai.configure(api_key=settings.EMBEDDING_API_KEY)
+client = GeminiClient.get_client()
 
-# Gemini embedding model
-EMBED_MODEL = "models/text-embedding-004"
+EMBED_MODEL = "gemini-embedding-001"
+EMBED_DIM = 768
 
 
 def generate_embedding(text: str) -> list[float]:
     """
-    Generates an embedding using Gemini text-embedding-004.
-    This is the central shared function used by all services.
+    Generate a 768-dim embedding using Gemini.
     """
-
     if not text or not text.strip():
         return []
 
     try:
-        response = genai.embed_content(
+        result = client.models.embed_content(
             model=EMBED_MODEL,
-            content=text,
+            contents=text,
+            config=types.EmbedContentConfig(
+                output_dimensionality=EMBED_DIM
+            )
         )
+
+        if result.embeddings:
+            return result.embeddings[0].values
+
+        return []
+
     except Exception as e:
-        # Log and return empty to avoid hard crashes
-        print(f"[ERROR] Embedding failed: {e}")
+        print(f"[ERROR] Gemini Embedding failed: {e}")
         return []
 
-    # Gemini returns: { "embedding": [...] }
-    embedding = response.get("embedding")
-    if not embedding:
-        print("[WARN] No embedding returned from Gemini.")
-        return []
-
-    return embedding
-
-def model_list():
-    print("Available models:")
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            print(m.name)
-            
 
 def semantic_similarity(a: str, b: str) -> float:
-    """Compute cosine similarity with safe fallbacks."""
+    """
+    Compute cosine similarity using local XLM-R
+    (fast, offline, safe fallback).
+    """
     if not a.strip() or not b.strip():
         return 0.0
 
@@ -60,5 +54,7 @@ def semantic_similarity(a: str, b: str) -> float:
         b_vec = xlmr.encode(b, convert_to_tensor=True)
         sim = float(util.cos_sim(a_vec, b_vec))
         return min(sim * 1.2, 1.0)
-    except:
+
+    except Exception as e:
+        print(f"[ERROR] Semantic similarity failed: {e}")
         return 0.5
