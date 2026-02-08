@@ -1,43 +1,46 @@
 # app/core/gemini_client.py
-import google.generativeai as genai
+
+from google import genai
 from app.core.config import settings
 
+_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+MODEL_NAME = "gemini-3-flash-preview"
 
 class GeminiClient:
-    _model = None
-
     @classmethod
-    def load(cls):
-        if cls._model is None:
-            print("DEBUG: GOOGLE_API_KEY =", settings.GOOGLE_API_KEY)
+    def get_client(cls):
+        """Return shared Gemini client"""
+        return _client
 
-            genai.configure(api_key=settings.GOOGLE_API_KEY)
-
-            cls._model = genai.GenerativeModel("gemini-3-flash-preview")
-
-        return cls._model
-    
     @classmethod
     def generate_content(cls, prompt: str) -> dict:
         """
-        Generate content from Gemini
+        Generate content from Gemini and return text + token usage
         """
-        model = cls.load()
-        # Count tokens using the model's count_tokens method
-        token_count_response = model.count_tokens(prompt)
-        prompt_tokens = token_count_response.total_tokens
-        response = model.generate_content(prompt)
+        client = cls.get_client()
 
-        if hasattr(response, "usage_metadata") and hasattr(response.usage_metadata, "candidates_token_count"):
-            completion_tokens = response.usage_metadata.candidates_token_count
-        else:
-            # fallback to rough estimate
-            completion_tokens = len(response.text) // 4
+        # ✅ Count prompt tokens
+        token_resp = client.models.count_tokens(
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        prompt_tokens = token_resp.total_tokens
+
+        # ✅ Generate content
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt
+        )
+
+        text = response.text or ""
+
+        # ✅ Completion token estimation (SDK does not expose exact value yet)
+        completion_tokens = max(len(text) // 4, 1)
 
         total_tokens = prompt_tokens + completion_tokens
 
         return {
-            "text": response.text,
+            "text": text,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens
