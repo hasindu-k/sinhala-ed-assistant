@@ -1,5 +1,5 @@
 # app/core/gemini_client.py
-
+import os
 from google import genai
 from app.core.config import settings
 

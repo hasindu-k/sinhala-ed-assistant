@@ -50,4 +50,4 @@ api_router.include_router(voice_router, prefix="/voice", tags=["Voice Q&A"])
 # api_router.include_router(evaluation_router, prefix="/evaluation", tags=["Evaluation"])
 
 
-print("✓ API Router configured with all components")
+print("API Router configured with all components")

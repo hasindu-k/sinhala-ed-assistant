@@ -110,6 +110,7 @@ class EvaluationResourceResponse(BaseModel):
 # Paper Config Schemas
 class PaperConfigCreate(BaseModel):
     paper_part: Optional[str] = None
+    question_type: Optional[str] = None  # e.g., 'short', 'essay'
     subject_name: Optional[str] = None
     medium: Optional[str] = None
     total_marks: Optional[int] = None
@@ -118,9 +119,24 @@ class PaperConfigCreate(BaseModel):
     selection_rules: Optional[Dict[str, Any]] = None
     is_confirmed: Optional[bool] = False
 
+    def get_question_type(self):
+        # Default: Paper/Part I = mcq, II = short, III = essay
+        if self.question_type:
+            return self.question_type
+        if self.paper_part:
+            part = self.paper_part.strip().lower()
+            if part in ["part i", "paper i"]:
+                return "mcq"
+            if part in ["part ii", "paper ii"]:
+                return "short"
+            if part in ["part iii", "paper iii"]:
+                return "essay"
+        return None
+
 
 class PaperConfigUpdate(BaseModel):
     paper_part: Optional[str] = None
+    question_type: Optional[str] = None
     subject_name: Optional[str] = None
     medium: Optional[str] = None
     total_marks: Optional[int] = None
@@ -135,6 +151,7 @@ class PaperConfigResponse(BaseModel):
     chat_session_id: Optional[UUID] = None
     evaluation_session_id: Optional[UUID] = None
     paper_part: Optional[str] = None
+    question_type: Optional[str] = None  # e.g., 'mcq', 'short', 'essay'
     subject_name: Optional[str] = None
     medium: Optional[str] = None
     total_marks: Optional[int] = None
@@ -143,6 +160,20 @@ class PaperConfigResponse(BaseModel):
     selection_rules: Optional[Dict[str, Any]] = None
     is_confirmed: Optional[bool] = None
     created_at: datetime
+
+    def get_question_type(self):
+        # Default: Paper/Part I = mcq, II = short, III = essay
+        if self.question_type:
+            return self.question_type
+        if self.paper_part:
+            part = self.paper_part.strip().lower()
+            if part in ["part i", "paper i"]:
+                return "mcq"
+            if part in ["part ii", "paper ii"]:
+                return "short"
+            if part in ["part iii", "paper iii"]:
+                return "essay"
+        return None
 
     class Config:
         from_attributes = True
@@ -187,6 +218,8 @@ class SubQuestionCreate(BaseModel):
     label: Optional[str] = None
     sub_question_text: Optional[str] = None
     max_marks: Optional[int] = None
+    question_type: Optional[str] = None  # e.g., 'essay', 'short', 'mcq'
+    correct_answer: Optional[str] = None  # For MCQ/short answer
 
 
 class SubQuestionResponse(BaseModel):
@@ -196,6 +229,8 @@ class SubQuestionResponse(BaseModel):
     label: Optional[str] = None
     sub_question_text: Optional[str] = None
     max_marks: Optional[int] = None
+    question_type: Optional[str] = None  # e.g., 'essay', 'short', 'mcq'
+    correct_answer: Optional[str] = None  # For MCQ/short answer
     children: List['SubQuestionResponse'] = []
 
     class Config:
@@ -207,6 +242,8 @@ class QuestionCreate(BaseModel):
     question_number: Optional[str] = None
     question_text: Optional[str] = None
     max_marks: Optional[int] = None
+    question_type: Optional[str] = None  # e.g., 'essay', 'short', 'mcq'
+    correct_answer: Optional[str] = None  # For MCQ/short answer
 
 
 class QuestionResponse(BaseModel):
@@ -215,6 +252,8 @@ class QuestionResponse(BaseModel):
     question_number: Optional[str] = None
     question_text: Optional[str] = None
     max_marks: Optional[int] = None
+    question_type: Optional[str] = None  # e.g., 'essay', 'short', 'mcq'
+    correct_answer: Optional[str] = None  # For MCQ/short answer
     sub_questions: List[SubQuestionResponse] = Field(default=[], validation_alias="root_sub_questions")
 
     class Config:
@@ -261,12 +300,14 @@ class QuestionScoreResponse(BaseModel):
 
 # Combined Evaluation Result with Details
 class EvaluationResultDetail(BaseModel):
+
     id: UUID
     answer_document_id: UUID
     total_score: Optional[Decimal] = None
-    overall_feedback: Optional[str] = None
+    grade: Optional[str] = None
+    feedback: Optional[dict] = None  # {overall_feedback, missing_concepts, improvement_points}
     evaluated_at: datetime
-    question_scores: list[QuestionScoreResponse] = []
+    question_feedbacks: list[QuestionScoreResponse] = []
 
     class Config:
         from_attributes = True
