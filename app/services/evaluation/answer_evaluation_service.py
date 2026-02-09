@@ -239,20 +239,13 @@ class AnswerEvaluationService:
                 return "F"
 
         # Extract missed concepts and improvement points from question feedbacks
-        missing_concepts = []
         improvement_points = []
         for score in scores:
             fb = score.feedback or ""
-            # Missed concepts: look for phrases indicating missing points
-            if any(kw in fb.lower() for kw in ["missing", "should mention", "need to mention", "not mentioned", "should include", "not included", "අඩංගු විය යුතුය", "සඳහන් කළ යුතුය", "පැහැදිලි කළ යුතුය"]):
-                # Extract the sentence(s) mentioning missing concepts
+            # Combine both missing concepts and improvement points
+            if any(kw in fb.lower() for kw in ["missing", "should mention", "need to mention", "not mentioned", "should include", "not included", "අඩංගු විය යුතුය", "සඳහන් කළ යුතුය", "පැහැදිලි කළ යුතුය", "improve", "clarify", "writing style", "description", "elaborate", "expand", "unclear", "not clear", "not detailed", "කෙටි", "විස්තර", "සවිස්තර"]):
                 for sent in re.split(r'[.\n]', fb):
-                    if any(kw in sent.lower() for kw in ["missing", "should mention", "need to mention", "not mentioned", "should include", "not included", "අඩංගු විය යුතුය", "සඳහන් කළ යුතුය", "පැහැදිලි කළ යුතුය"]):
-                        missing_concepts.append(sent.strip())
-            # Improvement points: look for writing/clarity suggestions
-            if any(kw in fb.lower() for kw in ["improve", "clarify", "writing style", "description", "elaborate", "expand", "unclear", "not clear", "not detailed", "කෙටි", "විස්තර", "සවිස්තර"]):
-                for sent in re.split(r'[.\n]', fb):
-                    if any(kw in sent.lower() for kw in ["improve", "clarify", "writing style", "description", "elaborate", "expand", "unclear", "not clear", "not detailed", "කෙටි", "විස්තර", "සවිස්තර"]):
+                    if any(kw in sent.lower() for kw in ["missing", "should mention", "need to mention", "not mentioned", "should include", "not included", "අඩංගු විය යුතුය", "සඳහන් කළ යුතුය", "පැහැදිලි කළ යුතුය", "improve", "clarify", "writing style", "description", "elaborate", "expand", "unclear", "not clear", "not detailed", "කෙටි", "විස්තර", "සවිස්තර"]):
                         improvement_points.append(sent.strip())
         # Add generic suggestions if none found
         if not improvement_points:
@@ -260,7 +253,6 @@ class AnswerEvaluationService:
 
         feedback_obj = {
             "overall_feedback": result.overall_feedback,
-            "missing_concepts": missing_concepts,
             "improvement_points": improvement_points
         }
 

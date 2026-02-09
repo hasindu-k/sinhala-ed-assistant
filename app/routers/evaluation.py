@@ -71,9 +71,13 @@ def get_answer_feedback(
     result = service.get_evaluation_result(answer_id, current_user.id)
     if not result:
         raise HTTPException(status_code=404, detail="Evaluation result not found")
+    feedback_obj = result.get("feedback", {})
+    overall_feedback = feedback_obj.get("overall_feedback")
+    improvement_points = feedback_obj.get("improvement_points", [])
     return {
         "answer_document_id": answer_id,
-        "overall_feedback": result.get("overall_feedback"),
+        "overall_feedback": overall_feedback,
+        "improvement_points": improvement_points,
         "evaluated_at": result.get("evaluated_at"),
     }
 logger = logging.getLogger(__name__)
