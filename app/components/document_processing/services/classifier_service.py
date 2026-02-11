@@ -251,31 +251,33 @@ Your task is to extract BOTH the **grading configuration** and the **question st
 SECTION 1: CONFIGURATION RULES
 ========================
 Analyze the text to determine how the paper should be graded.
-1. **Paper Identification:** Detect if text contains Paper I (MCQ), Paper II (Structured), or both.
-2. **Total Marks:** - Paper I: Usually 1 mark per question (e.g., 40 qs = 40 marks).
-   - Paper II: Look for "Total Marks" or sum the sub-question marks.
-3. **Selection Rules:** Read instructions (e.g., "Answer 4 questions").
-   - If "Answer all": return {{{{"mode": "all"}}}}
-   - If "Answer 4 from Part A and 1 from Part B": return {{{{"Part_A": 4, "Part_B": 1}}}}
-   - If "Question 1 compulsory, select 4 others": return {{{{"compulsory": [1], "choose_any": 4}}}}
+1. **Paper Identification:** Detect if text contains Paper I (Part 1), Paper II (Part 2), or both.
+   - Look for headers like "කොටස I" (Part I), "කොටස II" (Part II), "I කොටස", "II කොටස".
+   - DO NOT assume Paper I is always MCQ. It can contain structured questions too.
+2. **Total Marks:** 
+   - Look for "මුළු ලකුණු" (Total Marks) for each section.
+   - For Paper I: If MCQs, usually 1 mark each. If structured, look for explicit marks.
+   - For Paper II: Look for "Total Marks" or sum the sub-question marks.
+3. **Selection Rules:** Read instructions (e.g., "Answer 3 from 5").
+   - If "Answer all": {{"mode": "all"}}
+   - If "Answer any X": {{"mode": "any", "count": X}}
+   - If "Partially compulsory": {{"compulsory": [1, 2], "choose_any": 3}}
 
 ========================
 SECTION 2: QUESTION STRUCTURE RULES
 ========================
-**Paper I (MCQ):**
-- Questions 1-40 (typically).
-- Format: Question text + Options list.
-- If multiple MCQs share common instructions or data:
-  - Attach the shared information to the first question using "shared_stem"
-  - Subsequent questions reference it using "inherits_shared_stem_from"
-- Only use "shared_stem" when two or more consecutive MCQs clearly depend on the same instruction, paragraph, diagram, or data.
-- Options: (1)..(4), (A)..(D), (අ)..(ඊ).
-- Marks: Usually 1 or null.
+**Question Detection:**
+- Identify main questions (1, 2, 3...) and sub-questions (a, b, c or i, ii, iii).
+- Preserve the exact question numbering and mapping from the paper.
 
-**Paper II (Structured):**
-- Main Questions: 1, 2, 3...
-- Sub-questions: Use lowercase letters 'a', 'b', 'c'... as keys (convert roman numerals i, ii, iii to a, b, c if necessary).
-- Marks: Extract specific marks like "(05 marks)", "(10)", "ලකුණු 05".
+**MCQ Structure:**
+- Detect MCQs by options like (1)(2)(3)(4) or (A)(B)(C)(D).
+- If multiple MCQs share a "shared_stem", attach it to the first and use "inherits_shared_stem_from" for others.
+
+**Structured Structure:**
+- Use "type": "structured".
+- Sub-questions: Map labels (අ, ආ, ඉ or a, b, c) to "sub_questions" dictionary.
+- Marks: Extract from "(ලකුණු 05)", "(5 marks)", "20 කි".
 - **Rule:** Never assign 0 marks. Use null if unknown.
 
 ========================
@@ -290,45 +292,27 @@ If a paper is missing, set it to null.
       "subject_detected": "History",
       "medium": "Sinhala", 
       "total_marks": 40,
-      "total_questions_available": 40,
+      "total_questions_available": 9,
       "suggested_weightage": 40,
-      "selection_rules": {{{{"mode": "all"}}}}
+      "selection_rules": {{"mode": "all"}}
     }},
     "questions": {{
       "1": {{
-        "type": "mcq",
+        "type": "structured",
         "text": "Question text here",
-        "options": ["Op1", "Op2", "Op3", "Op4"],
-        "marks": 1
+        "marks": 5
       }},
-      "2": {{
-        "type": "mcq",
-        "shared_stem": "Common instruction / paragraph here",
-        "text": "Next question text",
-        "options": ["Op1", "Op2", "Op3", "Op4"],
-        "marks": 1
-      }},
-      "3": {{
-          "type": "mcq",
-          "inherits_shared_stem_from": 2,
-          "text": "Next question text",
-          "options": ["Op1", "Op2", "Op3", "Op4"],
-          "marks": 1
-      }},
-      "4": {{ ... }}
+      "2": {{ "..." }}
     }}
   }},
   "Paper_II": {{
     "config": {{
       "subject_detected": "History",
       "medium": "Sinhala",
-      "total_marks": 100,
-      "total_questions_available": 7,
+      "total_marks": 60,
+      "total_questions_available": 5,
       "suggested_weightage": 60,
-      "selection_rules": {{
-        "compulsory": [1],
-        "choose_any": 4
-      }}
+      "selection_rules": {{"mode": "any", "count": 3}}
     }},
     "questions": {{
       "1": {{
@@ -336,8 +320,8 @@ If a paper is missing, set it to null.
         "text": "Main question text",
         "marks": 20,
         "sub_questions": {{
-          "a": {{{{"text": "Sub Q text", "marks": 5}}}},
-          "b": {{{{"text": "Sub Q text", "marks": 15}}}}
+          "a": {{"text": "Sub Q text", "marks": 5}},
+          "b": {{"text": "Sub Q text", "marks": 5}}
         }}
       }}
     }}
