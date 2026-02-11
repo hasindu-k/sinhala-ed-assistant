@@ -624,6 +624,40 @@ def get_answer_mapping_details(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get answer mapping details")
 
 
+@router.post("/answers/{answer_id}/evaluate/stream")
+def evaluate_answer_stream(
+    answer_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Evaluate an answer document and stream progress updates (SSE).
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        def sse_generator():
+            generator = service.evaluate_answer_generator(answer_id, current_user.id)
+            import json
+            for stage, message, percent in generator:
+                data = {
+                    "progress": int(percent) if percent is not None else None,
+                    "message": message,
+                    "stage": stage,
+                    "status": "processing"
+                }
+                yield json.dumps(data) + "\n"
+        
+        return StreamingResponse(sse_generator(), media_type="text/event-stream")
+
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to stream evaluation for answer {answer_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start evaluation stream")
+
+
 @router.post("/answers/{answer_id}/evaluate")
 def evaluate_answer(
     answer_id: UUID,
