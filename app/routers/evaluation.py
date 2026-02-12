@@ -1,10 +1,8 @@
-# app/routers/evaluation.py
 
 import logging
+from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
-
-from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -28,15 +26,114 @@ from app.schemas.evaluation import (
     StartEvaluationRequest,
     ProcessDocumentsRequest,
     ProcessDocumentsResponse,
+    EvaluationResultResponse,
 )
+
 from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
 from app.services.evaluation.user_context_service import UserContextService
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
 
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+@router.get("/answers/{answer_id}/score", response_model=Dict[str, Any])
+def get_answer_score(
+    answer_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get only the evaluated score for a given answer document.
+    """
+    service = EvaluationWorkflowService(db)
+    result = service.get_evaluation_result(answer_id, current_user.id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluation result not found")
+    return {
+        "answer_document_id": answer_id,
+        "total_score": result.get("total_score"),
+        "percentage_score": result.get("percentage_score"),
+    }
+
+@router.get("/answers/{answer_id}/feedback", response_model=Dict[str, Any])
+def get_answer_feedback(
+    answer_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get only the feedback for a given answer document.
+    """
+    service = EvaluationWorkflowService(db)
+    result = service.get_evaluation_result(answer_id, current_user.id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluation result not found")
+    feedback_obj = result.get("feedback", {})
+    overall_feedback = feedback_obj.get("overall_feedback")
+    improvement_points = feedback_obj.get("improvement_points", [])
+    return {
+        "answer_document_id": answer_id,
+        "overall_feedback": overall_feedback,
+        "improvement_points": improvement_points,
+        "evaluated_at": result.get("evaluated_at"),
+    }
+logger = logging.getLogger(__name__)
+
+@router.get("/sessions/{evaluation_id}/results", response_model=List[Dict[str, Any]])
+def list_evaluation_results(
+    evaluation_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get evaluation results for all answer documents in a session.
+    Returns actual and percentage scores for each answer sheet.
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        logger = logging.getLogger(__name__)
+        answer_docs = service.list_answer_documents(evaluation_id, current_user.id)
+        logger.debug(f"Session {evaluation_id}: Found {len(answer_docs)} answer documents.")
+        results = []
+        for ad in answer_docs:
+            logger.debug(f"Processing answer document: {ad.id} (student_identifier={getattr(ad, 'student_identifier', None)})")
+            result = service.get_evaluation_result(ad.id, current_user.id)
+            logger.debug(f"Result for answer document {ad.id}: {result}")
+            entry = {
+                "answer_document_id": ad.id,
+                "student_identifier": getattr(ad, 'student_identifier', None),
+                "total_score": None,
+                "percentage_score": None,
+                "overall_feedback": None,
+                "evaluated_at": None,
+            }
+            if result:
+                total_score = result.get("total_score", 0)
+                max_marks = 0
+                percent = None
+                # Try to get max marks from question scores if available
+                if "question_scores" in result and result["question_scores"]:
+                    max_marks = sum([qs.get("max_marks", 0) for qs in result["question_scores"]])
+                    if max_marks:
+                        percent = float(total_score) / float(max_marks) * 100 if max_marks else None
+                entry.update({
+                    "total_score": float(total_score),
+                    "percentage_score": round(percent, 2) if percent is not None else None,
+                    "overall_feedback": result.get("overall_feedback", None),
+                    "evaluated_at": result.get("evaluated_at", None),
+                })
+            results.append(entry)
+        logger.debug(f"Returning results for session {evaluation_id}: {results}")
+        return results
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to list evaluation results for session {evaluation_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to list evaluation results")
+
 
 
 @router.post("/context/paper-config", response_model=UserEvaluationContextResponse)
@@ -132,6 +229,7 @@ def start_evaluation(
         # Offload processing to background
         background_tasks.add_task(
             run_evaluation_background_task,
+# --- New endpoints for score and feedback only ---
             session.id,
             payload.answer_resource_ids,
             current_user.id
@@ -524,6 +622,40 @@ def get_answer_mapping_details(
     except Exception as exc:
         logger.error(f"Failed to get answer mapping details: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get answer mapping details")
+
+
+@router.post("/answers/{answer_id}/evaluate/stream")
+def evaluate_answer_stream(
+    answer_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Evaluate an answer document and stream progress updates (SSE).
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        def sse_generator():
+            generator = service.evaluate_answer_generator(answer_id, current_user.id)
+            import json
+            for stage, message, percent in generator:
+                data = {
+                    "progress": int(percent) if percent is not None else None,
+                    "message": message,
+                    "stage": stage,
+                    "status": "processing"
+                }
+                yield json.dumps(data) + "\n"
+        
+        return StreamingResponse(sse_generator(), media_type="text/event-stream")
+
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to stream evaluation for answer {answer_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to start evaluation stream")
 
 
 @router.post("/answers/{answer_id}/evaluate")
