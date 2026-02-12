@@ -14,11 +14,6 @@ from app.routers import (
 
 from app.components.voice_qa.routers.voice_router import router as voice_router
 
-# Import routers from components
-# from app.components.document_processing.routers.ocr_router import router as ocr_router
-# from app.components.document_processing.routers.embedding_router import (
-#     router as embedding_router,
-# )
 # from app.components.evaluation.routers.evaluation_router import (
 #     router as evaluation_router,
 # )
@@ -40,11 +35,6 @@ api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 api_router.include_router(temporary_evaluation_router, prefix="/temporary-evaluation", tags=["Temporary Evaluation"])
 
 api_router.include_router(voice_router, prefix="/voice", tags=["Voice Q&A"])
-# Document Processing
-# api_router.include_router(ocr_router, prefix="/document", tags=["Document Processing"])
-# api_router.include_router(
-#     embedding_router, prefix="/document", tags=["Document Embeddings"]
-# )
 
 # # Evaluation
 # api_router.include_router(evaluation_router, prefix="/evaluation", tags=["Evaluation"])
