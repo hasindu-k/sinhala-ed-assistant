@@ -98,6 +98,7 @@ class ResourceProcessorService:
                 # If initial hint was unknown, infer from extracted text
                 inferred_lang = detect_language_from_text(cleaned_text)
                 final_lang = lang_hint if lang_hint != "unknown" else inferred_lang
+                logger.info(f"Final detected language for PDF: {final_lang} (inferred from text: {inferred_lang})")
                 return cleaned_text, page_count, final_lang
             else:
                 # For images, classify first
@@ -110,6 +111,7 @@ class ResourceProcessorService:
                 cleaned_text = basic_clean(extracted_text)
 
                 inferred_lang = detect_language_from_text(cleaned_text)
+                logger.info(f"Detected language for image: {inferred_lang}")
                 return cleaned_text, page_count, inferred_lang
         except Exception as e:
             logger.error(f"Failed to extract text from {file_path}: {e}")
@@ -163,7 +165,6 @@ class ResourceProcessorService:
 
             self.db.add(chunk)
         
-        self.db.commit()
         logger.info("Saved %d chunks for resource %s", len(chunks), resource_id)
 
     def _create_document_embedding(self, text: str, resource_id: str) -> Optional[List[float]]:
@@ -202,7 +203,7 @@ class ResourceProcessorService:
             chunk_count = self.db.query(ResourceChunk).filter(
                 ResourceChunk.resource_id == resource.id
             ).count()
-            
+
             if chunk_count > 0:
                 logger.info("Resource %s already processed with %d chunks", resource.id, chunk_count)
                 return {
@@ -212,6 +213,8 @@ class ResourceProcessorService:
                     "chunks_created": chunk_count,
                     "message": "Resource already processed, skipping"
                 }
+            else:
+                logger.info("Resource %s has extracted text but no chunks, reprocessing", resource.id)
         
         # Validate resource
         self._validate_resource_file(resource)
@@ -220,32 +223,36 @@ class ResourceProcessorService:
         
         # Extract text via OCR
         extracted_text, page_count, detected_language = self._extract_text(resource.storage_path)
-        
+
         if not extracted_text.strip():
             raise ValueError("No text could be extracted from the document")
         
         logger.info("Extracted %d characters from %d pages", len(extracted_text), page_count)
-        
-        # Generate document-level embedding (for fast filtering)
-        from app.shared.ai.embeddings import EMBED_MODEL
-        
-        document_embedding = self._create_document_embedding(extracted_text, str(resource.id))
-        if document_embedding:
-            resource.document_embedding = document_embedding
-            resource.embedding_model = EMBED_MODEL
-        
-        # Save extracted text
-        resource.extracted_text = extracted_text
-        # Save detected language (sinhala/english/mixed/unknown)
-        resource.language = detected_language
-        self.db.commit()
 
-        # Create chunks with embeddings (for detailed retrieval)
-        chunks = self._create_chunks(extracted_text, str(resource.id))
-        
-        # Save chunks to database
-        self._save_chunks_to_db(chunks, str(resource.id))
-        
+        try:
+            # Save extracted text & language
+            resource.extracted_text = extracted_text
+            resource.language = detected_language
+
+            # Document embedding
+            if not resource.document_embedding:
+                logger.info("Generating document embedding for resource %s", resource.id)
+
+                from app.shared.ai.embeddings import EMBED_MODEL
+                document_embedding = self._create_document_embedding(extracted_text, str(resource.id))
+                if document_embedding:
+                    resource.document_embedding = document_embedding
+                    resource.embedding_model = EMBED_MODEL
+
+            # Create chunks
+            chunks = self._create_chunks(extracted_text, str(resource.id))
+            self._save_chunks_to_db(chunks, resource.id)
+            self.db.commit()
+
+        except Exception:
+            self.db.rollback()
+            raise
+
         return {
             "resource_id": str(resource.id),
             "status": "completed",
