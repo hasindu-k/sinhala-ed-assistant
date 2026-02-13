@@ -33,8 +33,11 @@ class Question(Base):
     shared_stem = Column(Text, nullable=True)
     inherits_shared_stem_from = Column(String, nullable=True)
 
+    question_type = Column(String, nullable=True)  # e.g., 'essay', 'short', 'mcq', 'structured'
+    correct_answer = Column(String, nullable=True)  # For MCQ/short answer
+
     sub_questions = relationship("SubQuestion", back_populates="question", cascade="all, delete-orphan")
-    
+
     root_sub_questions = relationship(
         "SubQuestion",
         primaryjoin="and_(Question.id==SubQuestion.question_id, SubQuestion.parent_sub_question_id.is_(None))",
@@ -65,9 +68,11 @@ class SubQuestion(Base):
     label = Column(String, nullable=True)          # a, b, i, ii
     sub_question_text = Column(Text, nullable=True)
     max_marks = Column(Integer, nullable=True)
+    question_type = Column(String, nullable=True)  # e.g., 'essay', 'short', 'mcq', 'structured'
+    correct_answer = Column(String, nullable=True)  # For MCQ/short answer
 
     question = relationship("Question", back_populates="sub_questions")
-    
+
     children = relationship("SubQuestion", 
         backref=backref("parent", remote_side=[id]),
         cascade="all, delete-orphan"

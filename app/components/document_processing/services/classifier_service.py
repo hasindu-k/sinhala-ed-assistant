@@ -1,9 +1,9 @@
 # app/components/document_processing/services/classifier_service.py
 
-from google import generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import json
 import logging
+from app.shared.ai.gemini_client import gemini_generate
+
 logger = logging.getLogger(__name__)
 
 # Define prompts and constants
@@ -25,20 +25,9 @@ def classify_document(text: str) -> str:
     if not text or not text.strip():
         return "unknown"
     
-    model = genai.GenerativeModel("gemini-3-flash-preview")
-    
     try:
-        response = model.generate_content(
-            CLASSIFY_PROMPT.format(content=text[:8000]),
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-        )
+        output = gemini_generate(CLASSIFY_PROMPT.format(content=text[:8000])).strip().lower()
         
-        output = response.text.strip().lower()
         allowed = {
             "term_test", "teacher_guide", "student_notes",
             "past_paper", "answer_scheme", "textbook"
@@ -186,23 +175,18 @@ def separate_paper_content(text: str):
     if not text or not text.strip():
         return {}
 
-    # Initialize model (ensure api_key is configured elsewhere)
-    model = genai.GenerativeModel("gemini-3-flash-preview") # Updated to latest flash model for better speed/cost
-
     try:
         logger.info("Starting Sinhala structure extraction.")
-        response = model.generate_content(
+        response_text = gemini_generate(
             SINHALA_STRUCTURE_PROMPT.format(content=text[:20000]),
-            generation_config={"response_mime_type": "application/json"},
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
+            json_mode=True
         )
 
-        result = json.loads(response.text)
+        if not response_text:
+            logger.error("Empty response from Gemini.")
+            return {}
+
+        result = json.loads(response_text)
         logger.info("Sinhala structure extraction completed successfully.")
 
         paper_structure = result.get("PaperStructure", {
@@ -237,8 +221,6 @@ def fix_sinhala_ocr(text: str) -> str:
     if not text or not text.strip():
         return text
 
-    model = genai.GenerativeModel("gemini-3-flash-preview")
-
     prompt = f"""
     You are a Sinhala OCR text corrector.
     Fix OCR errors such as:
@@ -254,12 +236,11 @@ def fix_sinhala_ocr(text: str) -> str:
     """
 
     try:
-        response = model.generate_content(prompt)
-        corrected = response.text.strip()
+        corrected = gemini_generate(prompt).strip()
+        return corrected if corrected else text
 
-        return corrected
     except Exception as e:
-        print("Error in Sinhala OCR correction:", e)
+        logger.error(f"Error in Sinhala OCR correction: {e}")
         return text
 
 COMBINED_EXAM_PROMPT = """
@@ -270,31 +251,33 @@ Your task is to extract BOTH the **grading configuration** and the **question st
 SECTION 1: CONFIGURATION RULES
 ========================
 Analyze the text to determine how the paper should be graded.
-1. **Paper Identification:** Detect if text contains Paper I (MCQ), Paper II (Structured), or both.
-2. **Total Marks:** - Paper I: Usually 1 mark per question (e.g., 40 qs = 40 marks).
-   - Paper II: Look for "Total Marks" or sum the sub-question marks.
-3. **Selection Rules:** Read instructions (e.g., "Answer 4 questions").
-   - If "Answer all": return {{{{"mode": "all"}}}}
-   - If "Answer 4 from Part A and 1 from Part B": return {{{{"Part_A": 4, "Part_B": 1}}}}
-   - If "Question 1 compulsory, select 4 others": return {{{{"compulsory": [1], "choose_any": 4}}}}
+1. **Paper Identification:** Detect if text contains Paper I (Part 1), Paper II (Part 2), or both.
+   - Look for headers like "කොටස I" (Part I), "කොටස II" (Part II), "I කොටස", "II කොටස".
+   - DO NOT assume Paper I is always MCQ. It can contain structured questions too.
+2. **Total Marks:** 
+   - Look for "මුළු ලකුණු" (Total Marks) for each section.
+   - For Paper I: If MCQs, usually 1 mark each. If structured, look for explicit marks.
+   - For Paper II: Look for "Total Marks" or sum the sub-question marks.
+3. **Selection Rules:** Read instructions (e.g., "Answer 3 from 5").
+   - If "Answer all": {{"mode": "all"}}
+   - If "Answer any X": {{"mode": "any", "count": X}}
+   - If "Partially compulsory": {{"compulsory": [1, 2], "choose_any": 3}}
 
 ========================
 SECTION 2: QUESTION STRUCTURE RULES
 ========================
-**Paper I (MCQ):**
-- Questions 1-40 (typically).
-- Format: Question text + Options list.
-- If multiple MCQs share common instructions or data:
-  - Attach the shared information to the first question using "shared_stem"
-  - Subsequent questions reference it using "inherits_shared_stem_from"
-- Only use "shared_stem" when two or more consecutive MCQs clearly depend on the same instruction, paragraph, diagram, or data.
-- Options: (1)..(4), (A)..(D), (අ)..(ඊ).
-- Marks: Usually 1 or null.
+**Question Detection:**
+- Identify main questions (1, 2, 3...) and sub-questions (a, b, c or i, ii, iii).
+- Preserve the exact question numbering and mapping from the paper.
 
-**Paper II (Structured):**
-- Main Questions: 1, 2, 3...
-- Sub-questions: Use lowercase letters 'a', 'b', 'c'... as keys (convert roman numerals i, ii, iii to a, b, c if necessary).
-- Marks: Extract specific marks like "(05 marks)", "(10)", "ලකුණු 05".
+**MCQ Structure:**
+- Detect MCQs by options like (1)(2)(3)(4) or (A)(B)(C)(D).
+- If multiple MCQs share a "shared_stem", attach it to the first and use "inherits_shared_stem_from" for others.
+
+**Structured Structure:**
+- Use "type": "structured".
+- Sub-questions: Map labels (අ, ආ, ඉ or a, b, c) to "sub_questions" dictionary.
+- Marks: Extract from "(ලකුණු 05)", "(5 marks)", "20 කි".
 - **Rule:** Never assign 0 marks. Use null if unknown.
 
 ========================
@@ -309,45 +292,27 @@ If a paper is missing, set it to null.
       "subject_detected": "History",
       "medium": "Sinhala", 
       "total_marks": 40,
-      "total_questions_available": 40,
+      "total_questions_available": 9,
       "suggested_weightage": 40,
-      "selection_rules": {{{{"mode": "all"}}}}
+      "selection_rules": {{"mode": "all"}}
     }},
     "questions": {{
       "1": {{
-        "type": "mcq",
+        "type": "structured",
         "text": "Question text here",
-        "options": ["Op1", "Op2", "Op3", "Op4"],
-        "marks": 1
+        "marks": 5
       }},
-      "2": {{
-        "type": "mcq",
-        "shared_stem": "Common instruction / paragraph here",
-        "text": "Next question text",
-        "options": ["Op1", "Op2", "Op3", "Op4"],
-        "marks": 1
-      }},
-      "3": {{
-          "type": "mcq",
-          "inherits_shared_stem_from": 2,
-          "text": "Next question text",
-          "options": ["Op1", "Op2", "Op3", "Op4"],
-          "marks": 1
-      }},
-      "4": {{ ... }}
+      "2": {{ "..." }}
     }}
   }},
   "Paper_II": {{
     "config": {{
       "subject_detected": "History",
       "medium": "Sinhala",
-      "total_marks": 100,
-      "total_questions_available": 7,
+      "total_marks": 60,
+      "total_questions_available": 5,
       "suggested_weightage": 60,
-      "selection_rules": {{
-        "compulsory": [1],
-        "choose_any": 4
-      }}
+      "selection_rules": {{"mode": "any", "count": 3}}
     }},
     "questions": {{
       "1": {{
@@ -355,8 +320,8 @@ If a paper is missing, set it to null.
         "text": "Main question text",
         "marks": 20,
         "sub_questions": {{
-          "a": {{{{"text": "Sub Q text", "marks": 5}}}},
-          "b": {{{{"text": "Sub Q text", "marks": 15}}}}
+          "a": {{"text": "Sub Q text", "marks": 5}},
+          "b": {{"text": "Sub Q text", "marks": 5}}
         }}
       }}
     }}
@@ -376,23 +341,15 @@ def extract_complete_exam_data(text: str):
     if not text or not text.strip():
         return {}
 
-    # Initialize model
-    model = genai.GenerativeModel("gemini-3-flash-preview") 
-
     try:
         logger.info("Starting combined exam extraction.")
-        response = model.generate_content(
-            COMBINED_EXAM_PROMPT.format(content=text[:30000]), # Increased char limit slightly for full papers
-            generation_config={"response_mime_type": "application/json"},
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
+
+        response_text = gemini_generate(
+            COMBINED_EXAM_PROMPT.format(content=text[:30000]),
+            json_mode=True
         )
 
-        result = json.loads(response.text)
+        result = json.loads(response_text)
         logger.info("Combined exam extraction completed successfully.")
         
         # 🔒 Defensive Normalization
@@ -472,31 +429,40 @@ def map_student_answers(answer_text: str, question_structure: dict) -> dict:
     if not answer_text or not answer_text.strip():
         return {}
 
-    model = genai.GenerativeModel("gemini-3-flash-preview")
-
     try:
         logger.info("Starting student answer mapping.")
         # Convert structure to a simplified format for the prompt to save tokens
         simplified_structure = _simplify_structure_for_prompt(question_structure)
         
-        response = model.generate_content(
+        response_text = gemini_generate(
             ANSWER_MAPPING_PROMPT.format(
-                structure=json.dumps(simplified_structure, indent=2, ensure_ascii=False),
-                answer_text=answer_text[:30000]
+                structure=json.dumps(
+                    simplified_structure,
+                    ensure_ascii=False,
+                    indent=2
+                ),
+                answer_text=answer_text[:30000],
             ),
-            generation_config={"response_mime_type": "application/json"},
-             safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
+            json_mode=True,
         )
 
-        result = json.loads(response.text)
-        logger.info(f"Mapped {len(result)} answers successfully.")
+        if not response_text:
+            logger.error("Empty response from Gemini.")
+            return {}
+
+        result = json.loads(response_text)
+
+        if not isinstance(result, dict):
+            logger.error("Mapping output is not a JSON object.")
+            return {}
+        
+        logger.info("Mapped %d answers successfully.", len(result))
         return result
 
+    except json.JSONDecodeError:
+        logger.error("❌ Model output was not valid JSON.")
+        return {}
+    
     except Exception as e:
         logger.error(f"❌ Error in answer mapping: {e}")
         return {}

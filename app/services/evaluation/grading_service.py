@@ -21,6 +21,7 @@ from app.shared.models.session_resources import SessionResource
 from app.shared.models.resource_file import ResourceFile
 from app.shared.ai.embeddings import xlmr
 from app.core.gemini_client import GeminiClient
+from app.shared.models.rubrics import Rubric, RubricCriterion
 
 logger = logging.getLogger(__name__)
 
@@ -140,20 +141,29 @@ class GradingService:
                 target, syllabus_text, rubric_text
             )
 
-            # Use Gemini for both scoring and feedback
-            gemini_result = self._grade_with_gemini(
+            # --- NEW SCORING FLOW ---
+            # 1. Fetch rubric weights
+            rubric_weights = self._get_rubric_weights(eval_session)
+            
+            # 2. Calculate system score (XLM-R based)
+            system_score_ratio = self._calculate_system_score(
+                student_text=student_text,
+                reference_text=reference_text,
+                weights=rubric_weights
+            )
+            
+            awarded_marks = Decimal(str(system_score_ratio * max_marks)).quantize(Decimal("0.01"))
+            
+            # 3. Get feedback from Gemini
+            display_number = self._resolve_display_number(target, key)
+            feedback = self._get_feedback_from_gemini(
                 student_text=student_text,
                 reference_text=reference_text,
                 question=target,
+                awarded_marks=float(awarded_marks),
                 max_marks=max_marks,
-                q_number=key
+                display_number=display_number
             )
-            
-            awarded_marks = Decimal(str(gemini_result.get("score", 0))).quantize(Decimal("0.01"))
-            feedback = gemini_result.get("feedback", "Feedback unavailable.")
-            
-            # Fallback if Gemini returns 0 but text similarity is high (safety net)
-            # But user said scoring is "all the way wrong", so trust Gemini more.
             
             total_score += awarded_marks
 
@@ -233,11 +243,22 @@ class GradingService:
         return "essay"
 
     def _semantic_similarity(self, student_text: str, reference_text: str) -> float:
-        if not reference_text:
+        if not reference_text or not student_text:
             return 0.0
         emb1 = xlmr.encode(student_text, convert_to_tensor=True)
         emb2 = xlmr.encode(reference_text, convert_to_tensor=True)
-        return max(0.0, min(1.0, util.cos_sim(emb1, emb2).item()))
+        raw_sim = util.cos_sim(emb1, emb2).item()
+        
+        # Apply 1.2x boost and clamp
+        boosted = min(1.0, max(0.0, raw_sim * 1.2))
+        
+        # Nonlinear mapping for human-like grading
+        # (e.g., 0.65 raw -> 0.8+ score)
+        if boosted > 0.60:
+            # Scale 0.6 -> 1.0 range into 0.75 -> 1.0 range
+            return 0.75 + (boosted - 0.60) * (0.25 / 0.40)
+        
+        return boosted
 
     # ----------------------------------------------------------
     # MARKING BANDS (CRITICAL FIX)
@@ -276,7 +297,9 @@ class GradingService:
             chunks = [c.strip() for c in source.split("\n") if c.strip()]
 
         bm25 = BM25Okapi([c.split() for c in chunks])
-        return bm25.get_top_n(q_text.split(), chunks, n=1)[0]
+        # Retrieve top 3 chunks for richer context
+        top_chunks = bm25.get_top_n(q_text.split(), chunks, n=3)
+        return "\n\n".join(top_chunks)
 
     def _calculate_coverage_score(self, student_text, reference_text, max_marks):
         if not reference_text:
@@ -292,10 +315,12 @@ class GradingService:
             sim = util.cos_sim(
                 student_emb, xlmr.encode(s, convert_to_tensor=True)
             ).item()
-            if sim >= 0.55:
+            # Lower threshold for Sinhala linguistic variation
+            if sim >= 0.45:
                 hits += 1
 
-        ratio = hits / max(1, len(sentences))
+        # Use 70% threshold for full coverage marks
+        ratio = hits / max(1, len(sentences) * 0.7)
         return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
 
     # ----------------------------------------------------------
@@ -350,31 +375,108 @@ class GradingService:
         return ""
 
     # ----------------------------------------------------------
+    # SYSTEM SCORING & RUBRIC WEIGHTS
+    # ----------------------------------------------------------
+    def _get_rubric_weights(self, eval_session) -> Dict[str, float]:
+        """Fetch weights for semantic, coverage, and relevance from the session's rubric."""
+        default_weights = {"semantic": 0.6, "coverage": 0.2, "relevance": 0.2}
+        
+        if not eval_session.rubric_id:
+            logger.warning(f"No rubric_id for session {eval_session.id}, using default weights")
+            return default_weights
+            
+        criteria = (
+            self.db.query(RubricCriterion)
+            .filter(RubricCriterion.rubric_id == eval_session.rubric_id)
+            .all()
+        )
+        
+        if not criteria:
+            logger.warning(f"No criteria found for rubric {eval_session.rubric_id}, using defaults")
+            return default_weights
+            
+        weights = {c.criterion.lower(): c.weight_percentage for c in criteria}
+        
+        # Ensure all key criteria exist
+        for key in default_weights:
+            if key not in weights:
+                weights[key] = default_weights[key]
+                
+        return weights
+
+    def _calculate_system_score(self, student_text: str, reference_text: str, weights: Dict[str, float]) -> float:
+        """Calculate score based on rubrics, using XLM-R for semantic similarity."""
+        if not reference_text or not student_text:
+            return 0.0
+            
+        # 1. Semantic Score (XLM-R)
+        semantic = self._semantic_similarity(student_text, reference_text)
+        
+        # 2. Coverage Score
+        coverage, _ = self._calculate_coverage_score(student_text, reference_text, 1) # max_marks dummy
+        
+        # 3. Relevance Score (Word overlap / alignment)
+        relevance = self._calculate_relevance_score(student_text, reference_text)
+        
+        # Combined Score
+        total = (
+            weights.get("semantic", 0.6) * semantic +
+            weights.get("coverage", 0.2) * coverage +
+            weights.get("relevance", 0.2) * relevance
+        )
+        
+        return max(0.0, min(1.0, total))
+
+    def _calculate_relevance_score(self, student_text: str, reference_text: str) -> float:
+        """Calculate relevance using keyword recall with lenient filtering."""
+        if not reference_text or not student_text:
+            return 0.0
+            
+        def get_keywords(text):
+            # Simple keyword filter: length > 3 characters (avoid particles)
+            words = re.findall(r'\w+', text.lower())
+            return set([w for w in words if len(w) > 3])
+            
+        student_words = get_keywords(student_text)
+        ref_words = get_keywords(reference_text)
+        
+        if not ref_words:
+            return 1.0 # If no keywords in ref, assume relevant
+            
+        overlap = len(student_words & ref_words)
+        # Recall: how many ref keywords matched?
+        # Target: matching 50% of reference keywords is usually 100% relevant
+        recall = overlap / (len(ref_words) * 0.5)
+        
+        return min(1.0, recall)
+
+    def _resolve_display_number(self, question, q_number: str) -> str:
+        """Resolve a human-readable question number."""
+        if hasattr(question, "question_number") and question.question_number:
+            return str(question.question_number)
+        elif hasattr(question, "label") and question.label:
+             if hasattr(question, "question") and question.question and question.question.question_number:
+                 return f"{question.question.question_number}({question.label})"
+             else:
+                 return str(question.label)
+        return q_number
+
+    # ----------------------------------------------------------
     # GEMINI FEEDBACK
     # ----------------------------------------------------------
-    def _grade_with_gemini(
-        self, student_text, reference_text, question, max_marks, q_number
-    ) -> Dict[str, Any]:
+    def _get_feedback_from_gemini(
+        self, student_text, reference_text, question, awarded_marks, max_marks, display_number
+    ) -> str:
         try:
             q_text = getattr(question, "question_text", "") or getattr(
                 question, "sub_question_text", ""
             )
             
-            # Try to get a human-readable number if possible
-            display_number = q_number
-            if hasattr(question, "question_number") and question.question_number:
-                display_number = question.question_number
-            elif hasattr(question, "label") and question.label:
-                 # It's a subquestion, try to find parent
-                 if hasattr(question, "question") and question.question and question.question.question_number:
-                     display_number = f"{question.question.question_number}({question.label})"
-                 else:
-                     display_number = question.label
-
             prompt = f"""
-You are an expert teacher grading a student's answer.
+You are an expert teacher in Sri Lanka. A system has already graded a student's answer.
 Question {display_number}: {q_text}
 Max Marks: {max_marks}
+System Awarded Marks: {awarded_marks}
 
 Reference/Rubric:
 {reference_text}
@@ -383,36 +485,24 @@ Student Answer:
 {student_text}
 
 Task:
-1. Compare the student's answer with the reference.
-2. Award marks based on accuracy and completeness.
-3. Provide short, helpful feedback in Sinhala.
+Provide short, helpful feedback in Sinhala explaining why the student received {awarded_marks} out of {max_marks}.
+Highlight what was good and what could be improved based on the reference.
+Be encouraging but accurate.
 
-Output JSON ONLY:
-{{
-    "score": <float_marks_awarded>,
-    "feedback": "<feedback_string>"
-}}
+Output ONLY the feedback text in Sinhala.
 """
             response = self.gemini.generate_content(prompt).get("text", "")
+            feedback_text = response.strip()
             
-            # Clean up response to ensure valid JSON
-            cleaned_response = response.strip()
-            if cleaned_response.startswith("```json"):
-                cleaned_response = cleaned_response[7:]
-            if cleaned_response.endswith("```"):
-                cleaned_response = cleaned_response[:-3]
-            
-            data = json.loads(cleaned_response.strip())
-            
-            # Ensure feedback has the question number prefix
-            feedback_text = data.get("feedback", "")
-            data["feedback"] = f"**Question {display_number}**\n\n{feedback_text}"
-            
-            return data
+            return f"**Question {display_number}**\n\n{feedback_text}"
             
         except Exception as e:
-            logger.error(f"Gemini grading failed for {q_number}: {e}")
-            return {"score": 0.0, "feedback": f"**Question {q_number}**\nGrading unavailable."}
+            logger.error(f"Gemini feedback failed for {display_number}: {e}")
+            return f"**Question {display_number}**\n(Feedback unavailable. Score: {awarded_marks}/{max_marks})"
+
+    def _grade_with_gemini(self, *args, **kwargs):
+        """Deprecated: Use _get_feedback_from_gemini for hybrid flow."""
+        pass
 
     def _generate_overall_feedback(self, total_score, result_id):
         try:
