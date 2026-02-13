@@ -157,12 +157,47 @@ class ResourceProcessorService:
         return text_type
     
     def _sniff_pdf_language(self, file_path, detect_language_from_text):
+        """
+        Try to detect language from embedded PDF text.
+        Detect and reject legacy-encoded Sinhala (FMAbhaya-style).
+        """
+
+        def looks_like_legacy_sinhala(text: str) -> bool:
+            """
+            Detect common legacy Sinhala font patterns.
+            These appear as ASCII junk like 'YS%', ',xld', 'ud;d', etc.
+            """
+            if not text:
+                return False
+
+            legacy_markers = [
+                "YS%", ",xld", "ud;d", "kfuda", "wm ",
+                ";", "%", "`", "/`", "Tn fõ"
+            ]
+
+            # If too many ASCII letters but no Sinhala Unicode range
+            has_unicode_sinhala = any('\u0D80' <= ch <= '\u0DFF' for ch in text)
+            ascii_ratio = sum(ch.isascii() for ch in text) / max(len(text), 1)
+
+            if not has_unicode_sinhala and ascii_ratio > 0.8:
+                # Check known patterns
+                if any(marker in text for marker in legacy_markers):
+                    return True
+
+            return False
+
         try:
             import pdfplumber
 
             with pdfplumber.open(file_path) as pdf:
                 if pdf.pages:
                     sample_text = pdf.pages[0].extract_text() or ""
+
+                    # 🔥 If legacy Sinhala detected → force OCR
+                    if looks_like_legacy_sinhala(sample_text):
+                        logger.info("Detected legacy-encoded Sinhala in PDF. Forcing OCR.")
+                        return "unknown"
+
                     lang = detect_language_from_text(sample_text)
                     logger.info(f"Detected script from PDF text sample: {lang}")
                     return lang
