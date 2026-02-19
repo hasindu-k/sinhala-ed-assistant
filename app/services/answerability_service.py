@@ -1,6 +1,9 @@
 # app/services/answerability_service.py
+import logging
 import re
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 class AnswerabilityService:
     """
@@ -26,6 +29,13 @@ class AnswerabilityService:
         A question is answerable if at least one key term
         appears in the retrieved context.
         """
+        greeting_terms = {"හායි", "හලෝ", "ආයුබෝවන්", "hello", "hi", "hey","good morning", "good afternoon", "good evening"}
+        logging.info(f"Checking answerability for question: '{question}' with context length {len(context)}")
+
+        normalized = question.lower().strip()
+        if normalized in greeting_terms:
+            return True
+        
         key_terms = AnswerabilityService.extract_key_terms(question)
 
         if not key_terms:

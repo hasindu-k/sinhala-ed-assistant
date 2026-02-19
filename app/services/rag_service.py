@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 class RAGService:
     """RAG orchestration with hybrid retrieval, grounded generation, and safety checks."""
+    GREETING_ONLY = ["hello", "hi", "hey", "හායි", "හලෝ", "ආයුබෝවන්", "කොහොමද", "ගුඩ් මෝනින්", "good morning", "good afternoon", "good evening"] 
 
     def __init__(self, db: Session):
         self.db = db
@@ -42,25 +43,64 @@ class RAGService:
     ) -> Dict:
         """Hybrid retrieval → grounded generation → safety checks → logging"""
 
+        # cleaned = user_query.lower().strip()
+
+        # if not resource_ids and cleaned in self.GREETING_ONLY:
+        #     greeting_text = "ආයුබෝවන්! මට ඔබට උදව් කළ හැකිය. කරුණාකර ඔබගේ ප්‍රශ්නය අසන්න."
+        #     assistant_msg = self.message_service.create_assistant_message(
+        #         session_id=session_id,
+        #         content=greeting_text,
+        #         model_info={"model_name": "rule-based"},
+        #         parent_msg_id=user_message_id
+        #     )
+        #     logger.info("Greeting detected, returning simple response without RAG")
+        #     return {
+        #         "assistant_message_id": assistant_msg.id,
+        #         "content": greeting_text,
+        #         "sources": [],
+        #         "retrieval_metadata": {"intent": "greeting", "used_chunks": 0},
+        #     }
+
         # -----------------------------
         # 0. Check for greetings/chit-chat (no RAG needed)
         # -----------------------------
+
         intent = IntentDetectionService.detect_intent(user_query)
+
         if intent == "greeting":
             greeting_text = "ආයුබෝවන්! මට ඔබට උදව් කළ හැකිය. කරුණාකර ඔබගේ ප්‍රශ්නය අසන්න."
+
             assistant_msg = self.message_service.create_assistant_message(
                 session_id=session_id,
                 content=greeting_text,
                 model_info={"model_name": "rule-based"},
                 parent_msg_id=user_message_id
             )
-            logger.info("Greeting detected, returning simple response without RAG")
+
+            logger.info("Greeting detected early — skipping RAG pipeline")
+
             return {
                 "assistant_message_id": assistant_msg.id,
                 "content": greeting_text,
                 "sources": [],
                 "retrieval_metadata": {"intent": "greeting", "used_chunks": 0},
             }
+
+        # if intent == "greeting":
+        #     greeting_text = "ආයුබෝවන්! මට ඔබට උදව් කළ හැකිය. කරුණාකර ඔබගේ ප්‍රශ්නය අසන්න."
+        #     assistant_msg = self.message_service.create_assistant_message(
+        #         session_id=session_id,
+        #         content=greeting_text,
+        #         model_info={"model_name": "rule-based"},
+        #         parent_msg_id=user_message_id
+        #     )
+        #     logger.info("Greeting detected, returning simple response without RAG")
+        #     return {
+        #         "assistant_message_id": assistant_msg.id,
+        #         "content": greeting_text,
+        #         "sources": [],
+        #         "retrieval_metadata": {"intent": "greeting", "used_chunks": 0},
+        #     }
 
         if not query_embedding:
             raise ValueError("Query embedding is required for hybrid retrieval")
@@ -120,7 +160,10 @@ class RAGService:
         # -----------------------------
         # ANSWERABILITY GUARD (CRITICAL)
         # -----------------------------
-        is_unanswerable = not AnswerabilityService.is_answerable(user_query, context)
+        if intent in ["summary", "qa_generate"]:
+            is_unanswerable = False
+        else:
+            is_unanswerable = not AnswerabilityService.is_answerable(user_query, context)
         
         if is_unanswerable:
             logger.warning("Unanswerable question detected: %s", user_query)
@@ -180,9 +223,10 @@ class RAGService:
             elif intent == "explanation":
                 prompt = build_direct_answer_prompt(
                     context=context,
+                    grade_level=grade_level,
                     query=user_query
                 )
-                message_grade_level = None
+                message_grade_level = grade_level
 
             # 🔴 Safe fallback
             else:
@@ -225,6 +269,7 @@ class RAGService:
             logging.info("Detected %d flagged misconceptions", len(flagged))
             flagged = attach_evidence(flagged, context)
             logging.info("Attached evidence to flagged misconceptions")
+            
 
             # ---- High-level summary ----
             logger.info(
@@ -258,6 +303,7 @@ class RAGService:
         # -----------------------------
         # 7. Save assistant message
         # -----------------------------
+        
         assistant_msg = self.message_service.create_assistant_message(
             session_id=session_id,
             content=generated,
