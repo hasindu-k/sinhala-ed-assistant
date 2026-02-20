@@ -8,8 +8,20 @@ from app.components.document_processing.services.table_detection import detect_t
 import logging
 logger = logging.getLogger(__name__)
 
-from ultralytics import YOLO
-layout_model = YOLO("utils/yolov8m-doclaynet.pt")
+try:
+    from ultralytics import YOLO
+    ULTRALYTICS_AVAILABLE = True
+except Exception as e:
+    logger.warning(f"Ultralytics YOLO not available: {e}")
+    YOLO = None
+    ULTRALYTICS_AVAILABLE = False
+layout_model = None
+if ULTRALYTICS_AVAILABLE:
+    try:
+        layout_model = YOLO("utils/yolov8m-doclaynet.pt")
+    except Exception as e:
+        logger.error(f"Failed to load layout YOLO model: {e}")
+        layout_model = None
 
 lang = "sin+eng"  # Tesseract language setting for Sinhala and English
 
