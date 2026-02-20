@@ -1,7 +1,7 @@
 # app/services/evaluation/evaluation_workflow_service.py
 
 import re
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Tuple, Dict
 from uuid import UUID
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,8 @@ from app.services.evaluation.evaluation_resource_service import EvaluationResour
 from app.services.evaluation.question_paper_service import QuestionPaperService
 from app.services.evaluation.paper_config_service import PaperConfigService
 from app.services.evaluation.answer_evaluation_service import AnswerEvaluationService
+from app.shared.models.question_papers import Question, SubQuestion
+from app.shared.models.evaluation_session import EvaluationSession
 from app.services.chat_session_service import ChatSessionService
 from app.services.resource_service import ResourceService
 from app.components.document_processing.services.classifier_service import extract_complete_exam_data, fix_sinhala_ocr, map_student_answers
@@ -177,7 +179,7 @@ class EvaluationWorkflowService:
                 from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
                 worker_service = EvaluationWorkflowService(thread_db)
                 logger.info(f"[Thread] Evaluating answer document {answer_doc_id}...")
-                worker_service.evaluate_answer(answer_doc_id, user_id)
+                worker_service.evaluate_answer(answer_doc_id, user_id, include_feedback=False)
                 logger.info(f"[Thread] Finished answer document {answer_doc_id}.")
                 return answer_doc_id, None
             except Exception as exc:
@@ -324,7 +326,7 @@ class EvaluationWorkflowService:
             self.sessions.update_evaluation_session(session_id, status="failed")
             yield make_event(f"Evaluation process failed: {str(e)}", status="failed", stage="failed")
 
-    def evaluate_answer_generator(self, answer_id: UUID, user_id: UUID):
+    def evaluate_answer_generator(self, answer_id: UUID, user_id: UUID, include_feedback: bool = False):
         """
         Generator version of evaluate_answer.
         Yields (stage, message, percent) tuples.
@@ -355,10 +357,8 @@ class EvaluationWorkflowService:
         eval_session = self.sessions.get_evaluation_session(answer_doc.evaluation_session_id)
         if not eval_session: raise ValueError("Evaluation session not found")
 
-        question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
-        if not question_papers: raise ValueError("Question paper not found")
-        question_paper = question_papers[0]
-        questions = self.question_papers.get_questions_by_paper(question_paper.id)
+        syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
+        question_map = self._build_question_map_helper(questions)
 
         # Fix OCR / Map
         if answer_doc.mapped_answers:
@@ -424,7 +424,16 @@ class EvaluationWorkflowService:
         
         def run_grading():
             try:
-                result_container['result'] = grader.grade_answer_document(answer_id, user_id, queue_callback)
+                result_container['result'] = grader.grade_answer_document(
+                    answer_doc_id=answer_id,
+                    user_id=user_id,
+                    eval_session_id=eval_session.id,
+                    syllabus_text=syllabus_text,
+                    rubric_text=rubric_text,
+                    question_map=question_map,
+                    progress_callback=queue_callback,
+                    include_feedback=include_feedback
+                )
             except Exception as e:
                 error_container['error'] = e
             finally:
@@ -1348,7 +1357,7 @@ class EvaluationWorkflowService:
             "extracted_text": resource.extracted_text
         }
 
-    def evaluate_answer(self, answer_id: UUID, user_id: UUID, progress_callback=None):
+    def evaluate_answer(self, answer_id: UUID, user_id: UUID, progress_callback=None, include_feedback: bool = False):
         """Evaluate answer with recursive sub-question support."""
         answer_doc = self._ensure_answer_owner(answer_id, user_id)
 
@@ -1385,17 +1394,9 @@ class EvaluationWorkflowService:
         if not eval_session:
             raise ValueError("Evaluation session not found")
 
-        # Get question paper hierarchy from Chat Session
-        question_papers = self.question_papers.get_question_papers_by_chat_session(
-            eval_session.session_id
-        )
-        if not question_papers:
-            raise ValueError("Question paper not found for this chat session")
-
-        question_paper = question_papers[0]  # Take the first question paper
-        
-        # Get full question objects for the prompt
-        questions = self.question_papers.get_questions_by_paper(question_paper.id)
+        # Get Evaluation Context (Syllabus, Rubric, Questions)
+        syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
+        question_map = self._build_question_map_helper(questions)
 
         # 1. Fix OCR errors in student answer
         if answer_doc.mapped_answers:
@@ -1433,9 +1434,60 @@ class EvaluationWorkflowService:
         logger.info("Starting grading process...")
         from app.services.evaluation.grading_service import GradingService
         grader = GradingService(self.db)
-        result = grader.grade_answer_document(answer_id, user_id, progress_callback)
+        result = grader.grade_answer_document(
+            answer_doc_id=answer_id,
+            user_id=user_id,
+            eval_session_id=eval_session.id,
+            syllabus_text=syllabus_text,
+            rubric_text=rubric_text,
+            question_map=question_map,
+            progress_callback=progress_callback,
+            include_feedback=include_feedback
+        )
         logger.info(f"Grading completed for answer document {answer_id}.")
         return result
+
+    def _get_evaluation_context(self, eval_session_id: UUID) -> Tuple[str, str, List[Question]]:
+        """Helper to load all context required for evaluation."""
+        eval_session = self.sessions.get_evaluation_session(eval_session_id)
+        if not eval_session:
+            raise ValueError("Evaluation session not found")
+
+        rubric_text = self.answers._load_rubric_text(eval_session)
+        syllabus_text = self.answers._load_syllabus_text(eval_session)
+
+        question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
+        if not question_papers:
+            raise ValueError("Question paper not found")
+        
+        questions = []
+        for qp in question_papers:
+            questions.extend(self.question_papers.get_questions_by_paper(qp.id))
+        
+        return syllabus_text, rubric_text, questions
+
+    def _build_question_map_helper(self, questions: List[Question]) -> Dict:
+        """Helper to build a map for quick question lookup."""
+        q_map = {}
+        for q in questions:
+            # Index by question number
+            q_map[str(q.question_number)] = q
+            # Index by ID
+            q_map[str(q.id)] = q
+            
+            for sq in getattr(q, "sub_questions", []) or []:
+                # Index by combination
+                key = f"{q.question_number}{sq.label}"
+                q_map[key] = sq
+                # Index by ID
+                q_map[str(sq.id)] = sq
+        return q_map
+
+    def generate_feedback(self, answer_id: UUID, user_id: UUID):
+        """On-demand feedback generation trigger."""
+        from app.services.evaluation.grading_service import GradingService
+        grader = GradingService(self.db)
+        return grader.generate_feedback_for_result(answer_id, user_id)
 
 
     def get_evaluation_result(self, answer_id: UUID, user_id: UUID):

@@ -5,7 +5,7 @@ import re
 import json
 import time
 from uuid import UUID
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional, Callable
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -22,6 +22,7 @@ from app.shared.models.answer_evaluation import (
 )
 from app.shared.models.question_papers import Question, SubQuestion
 from app.shared.models.session_resources import SessionResource
+from app.shared.models.evaluation_session import EvaluationSession
 from app.shared.models.resource_file import ResourceFile
 from app.shared.models.rubrics import Rubric, RubricCriterion
 from app.shared.ai.embeddings import xlmr, ml_semaphore
@@ -57,7 +58,17 @@ class GradingService:
     # ----------------------------------------------------------
     # PUBLIC ENTRY
     # ----------------------------------------------------------
-    def grade_answer_document(self, answer_doc_id: UUID, user_id: UUID, progress_callback=None):
+    def grade_answer_document(
+        self,
+        answer_doc_id: UUID,
+        user_id: UUID,
+        eval_session_id: UUID,
+        syllabus_text: str,
+        rubric_text: str,
+        question_map: Dict,
+        progress_callback: Optional[Callable[[str, str, Optional[int]], None]] = None,
+        include_feedback: bool = True,
+    ) -> EvaluationResult:
         answer_doc = (
             self.db.query(AnswerDocument)
             .filter(AnswerDocument.id == answer_doc_id)
@@ -68,27 +79,6 @@ class GradingService:
 
         if progress_callback:
             progress_callback("initializing_grading", "Preparing grading context...")
-
-        from app.shared.models.evaluation_session import EvaluationSession
-        eval_session = (
-            self.db.query(EvaluationSession)
-            .filter(EvaluationSession.id == answer_doc.evaluation_session_id)
-            .first()
-        )
-
-        rubric_text = self._load_rubric_text(eval_session)
-        syllabus_text = self._load_syllabus_text(eval_session)
-
-        from app.services.evaluation.question_paper_service import QuestionPaperService
-        qp_service = QuestionPaperService(self.db)
-
-        question_papers = qp_service.get_question_papers_by_chat_session(
-            eval_session.session_id
-        )
-
-        questions: List[Question] = []
-        for qp in question_papers:
-            questions.extend(qp_service.get_questions_by_paper(qp.id))
 
         # Check for existing evaluation result
         existing_result = (
@@ -116,10 +106,9 @@ class GradingService:
         self.db.commit()
         self.db.refresh(eval_result)
 
-        question_map = self._build_question_map(questions)
-
         # ---- HOIST LOOP-INVARIANT WORK ----
         # Fetch rubric weights once for the entire document (not per-question)
+        eval_session = self.db.query(EvaluationSession).filter(EvaluationSession.id == eval_session_id).first()
         rubric_weights = self._get_rubric_weights(eval_session)
 
         total_questions = len(answer_doc.mapped_answers)
@@ -196,35 +185,20 @@ class GradingService:
 
 
         # -------------------------------------------------------
-        # PHASE 2: Parallel Gemini feedback (I/O-bound — safe to parallelize)
+        # PHASE 2: Batch Gemini feedback (Reduced API calls from N to 1)
         # -------------------------------------------------------
-        if progress_callback:
-            progress_callback("generating_feedback", "Generating feedback in parallel...", percent=70)
-
-        def _fetch_feedback(item: Dict) -> Tuple[str, str]:
-            """Returns (key, feedback_text)"""
-            feedback = self._get_feedback_from_gemini(
-                student_text=item["student_text"],
-                reference_text=item["reference_text"],
-                question=item["target"],
-                awarded_marks=float(item["awarded_marks"]),
-                max_marks=item["max_marks"],
-                display_number=item["display_number"],
-            )
-            return item["key"], feedback
-
         feedback_map: Dict[str, str] = {}
-        max_workers = min(10, len(scored_items)) if scored_items else 1
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_fetch_feedback, item): item["key"] for item in scored_items}
-            done_count = 0
-            for future in as_completed(futures):
-                key, feedback = future.result()
-                feedback_map[key] = feedback
-                done_count += 1
-                if progress_callback:
-                    pct = 70 + int((done_count / len(scored_items)) * 25)  # feedback = 70-95%
-                    progress_callback("generating_feedback", f"Feedback done {done_count}/{len(scored_items)}...", percent=pct)
+        if include_feedback:
+            if progress_callback:
+                progress_callback("generating_feedback", "Generating feedback in batch...", percent=70)
+
+            feedback_map = self._get_batch_feedback_from_gemini(scored_items)
+
+            if progress_callback:
+                progress_callback("generating_feedback", "Feedback batch completed.", percent=95)
+        else:
+            if progress_callback:
+                progress_callback("generating_feedback", "Skipping feedback for now (scoring only).", percent=95)
 
         # -------------------------------------------------------
         # PHASE 3: Persist QuestionScore rows
@@ -234,7 +208,7 @@ class GradingService:
             key = item["key"]
             target = item["target"]
             awarded_marks = item["awarded_marks"]
-            feedback = feedback_map.get(key, f"**Question {item['display_number']}**\n(Feedback unavailable)")
+            feedback = feedback_map.get(key)  # May be None if include_feedback=False
 
             total_score += awarded_marks
 
@@ -268,18 +242,112 @@ class GradingService:
             .filter(QuestionScore.evaluation_result_id == eval_result.id)
         )
 
-        if progress_callback:
-            progress_callback("generating_feedback", "Generating overall feedback...", percent=98)
+        if include_feedback:
+            if progress_callback:
+                progress_callback("generating_feedback", "Generating overall feedback...", percent=98)
 
-        eval_result.overall_feedback = self._generate_overall_feedback(
-            total_score, eval_result.id
-        )
+            eval_result.overall_feedback = self._generate_overall_feedback(
+                total_score, eval_result.id
+            )
 
         if progress_callback:
             progress_callback("preparing_report", "Finalizing report...", percent=99)
 
         self.db.commit()
         return eval_result
+
+    def generate_feedback_for_result(self, answer_doc_id: UUID, user_id: UUID) -> Optional[EvaluationResult]:
+        """
+        Generate Gemini feedback for an existing evaluation result.
+        """
+        # 1. Fetch existing result
+        result = self.db.query(EvaluationResult).filter(EvaluationResult.answer_document_id == answer_doc_id).first()
+        if not result:
+            logger.error(f"Cannot generate feedback: No evaluation result for {answer_doc_id}")
+            return None
+
+        # 2. Fetch answer document and session details to rebuild context
+        answer_doc = (
+            self.db.query(AnswerDocument)
+            .filter(AnswerDocument.id == answer_doc_id)
+            .first()
+        )
+        if not answer_doc:
+            return None
+
+        eval_session = (
+            self.db.query(EvaluationSession)
+            .filter(EvaluationSession.id == answer_doc.evaluation_session_id)
+            .first()
+        )
+        if not eval_session:
+            return None
+
+        # 3. Get context (Rubric, Question Map)
+        from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
+        workflow = EvaluationWorkflowService(self.db)
+        
+        syllabus_text, rubric_text, questions = workflow._get_evaluation_context(eval_session.id)
+        question_map = workflow._build_question_map_helper(questions)
+
+        # 4. Fetch existing scores to get display numbers and texts
+        scores = self.db.query(QuestionScore).filter(QuestionScore.evaluation_result_id == result.id).all()
+        
+        # Reconstruct scored_items for the batch feedback method
+        scored_items = []
+        for qs in scores:
+            target = None
+            if qs.sub_question_id:
+                target = qs.sub_question
+            elif qs.question_id:
+                target = qs.question
+            
+            if not target:
+                continue
+
+            # Find the key in mapped_answers
+            key = None
+            for k, val in answer_doc.mapped_answers.items():
+                if str(target.id) in str(val) or k == str(target.id): 
+                    key = k
+                    break
+            
+            if not key:
+                key = str(target.id)
+
+            display_number = self._resolve_display_number(target, key)
+            reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
+            
+            scored_items.append({
+                "key": key,
+                "student_text": answer_doc.mapped_answers.get(key, ""),
+                "reference_text": reference_text,
+                "target": target,
+                "max_marks": self._resolve_max_marks(target),
+                "awarded_marks": qs.awarded_marks,
+                "display_number": display_number,
+                "db_score_obj": qs
+            })
+
+        if not scored_items:
+            return result
+
+        # 5. Generate Batch Feedback
+        logger.info(f"Generating on-demand batch feedback for result {result.id}")
+        feedback_map = self._get_batch_feedback_from_gemini(scored_items)
+
+        # 6. Update individual scores
+        for item in scored_items:
+            qs = item["db_score_obj"]
+            feedback = feedback_map.get(item["key"])
+            if feedback:
+                qs.feedback = feedback
+
+        # 7. Generate overall feedback
+        result.overall_feedback = self._generate_overall_feedback(result.total_score, result.id)
+        
+        self.db.commit()
+        return result
 
     # ----------------------------------------------------------
     # SCORING LOGIC
@@ -426,33 +494,23 @@ class GradingService:
     # ----------------------------------------------------------
     # LOADERS
     # ----------------------------------------------------------
-    def _load_rubric_text(self, eval_session):
-        res = (
-            self.db.query(SessionResource)
-            .filter(
-                SessionResource.session_id == eval_session.session_id,
-                SessionResource.label == "rubric",
-            )
-            .first()
-        )
-        if res:
-            rf = self.db.query(ResourceFile).filter(ResourceFile.id == res.resource_id).first()
-            return rf.extracted_text if rf else ""
-        return ""
+    # These methods are now in AnswerEvaluationService and are no longer needed here.
+    
+    def _build_question_map(self, questions: List[Question]) -> Dict[str, Any]:
+        """Backward compatibility for building question map."""
+        q_map = {}
+        for q in questions:
+            q_num = str(q.question_number).lower().replace(".", "")
+            # Composite keys for AI mapping strings
+            q_map[q_num] = q
+            # Direct ID keys for precise mapping
+            q_map[str(q.id)] = q
 
-    def _load_syllabus_text(self, eval_session):
-        res = (
-            self.db.query(SessionResource)
-            .filter(
-                SessionResource.session_id == eval_session.session_id,
-                SessionResource.label == "syllabus",
-            )
-            .first()
-        )
-        if res:
-            rf = self.db.query(ResourceFile).filter(ResourceFile.id == res.resource_id).first()
-            return rf.extracted_text if rf else ""
-        return ""
+            for sq in getattr(q, "sub_questions", []) or []:
+                key = f"{q_num}{sq.label}".replace("(", "").replace(")", "")
+                q_map[key] = sq
+                q_map[str(sq.id)] = sq
+        return q_map
 
     # ----------------------------------------------------------
     # SYSTEM SCORING & RUBRIC WEIGHTS
@@ -540,45 +598,64 @@ class GradingService:
     # ----------------------------------------------------------
     # GEMINI FEEDBACK
     # ----------------------------------------------------------
-    def _get_feedback_from_gemini(
-        self, student_text, reference_text, question, awarded_marks, max_marks, display_number
-    ) -> str:
-        try:
-            q_text = getattr(question, "question_text", "") or getattr(
-                question, "sub_question_text", ""
-            )
+    def _get_batch_feedback_from_gemini(self, items: List[Dict]) -> Dict[str, str]:
+        """
+        Request feedback for multiple questions in a single Gemini call.
+        Returns map of key -> feedback text.
+        """
+        if not items:
+            return {}
 
-            prompt = f"""
-You are an expert teacher in Sri Lanka. A system has already graded a student's answer.
-Question {display_number}: {q_text}
-Max Marks: {max_marks}
-System Awarded Marks: {awarded_marks}
-
-Reference/Rubric:
-{reference_text}
-
-Student Answer:
-{student_text}
-
-Task:
-Provide short, helpful feedback in Sinhala explaining why the student received {awarded_marks} out of {max_marks}.
+        batch_prompt = """
+You are an expert teacher in Sri Lanka. A system has already graded several student answers.
+Provide short, helpful feedback in Sinhala for each question, explaining why the student received the awarded marks.
 Highlight what was good and what could be improved based on the reference.
 Be encouraging but accurate.
 
-Output ONLY the feedback text in Sinhala.
-"""
-            response = self.gemini.generate_content(prompt).get("text", "")
-            feedback_text = response.strip()
+Return the results as a JSON object where names are the question keys and values are the feedback text.
+Example format:
+{
+  "1": "ඔබේ පිළිතුර නිවැරදි නමුත් තවත් පැහැදිලි කිරීමක් අවශ්‍යයි...",
+  "2අ": "හොඳ උත්සාහයක්! නමුත් ප්‍රධාන කරුණු කිහිපයක් මඟ හැරී ඇත..."
+}
 
-            return f"**Question {display_number}**\n\n{feedback_text}"
+Questions to evaluate:
+"""
+        for item in items:
+            q_text = getattr(item["target"], "question_text", "") or getattr(
+                item["target"], "sub_question_text", ""
+            )
+            batch_prompt += f"\n--- Key: {item['key']} ---\n"
+            batch_prompt += f"Question Number: {item['display_number']}\n"
+            batch_prompt += f"Question: {q_text}\n"
+            batch_prompt += f"Max Marks: {item['max_marks']}\n"
+            batch_prompt += f"Awarded Marks: {item['awarded_marks']}\n"
+            batch_prompt += f"Student Answer: {item['student_text']}\n"
+            batch_prompt += f"Reference: {item['reference_text']}\n"
+
+        try:
+            # Use JSON mode for reliable parsing
+            response_json = self.gemini.generate_content(batch_prompt, json_mode=True).get("text", "{}")
+            try:
+                # Clean the response often Gemini wraps in ```json
+                clean_json = re.sub(r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE)
+                feedback_data = json.loads(clean_json)
+            except Exception as e:
+                logger.error(f"Failed to parse batched feedback JSON: {e}. Raw: {response_json}")
+                feedback_data = {}
+
+            # Wrap feedback with question identifiers
+            final_map = {}
+            for item in items:
+                key = item["key"]
+                feedback = feedback_data.get(key, "(ප්‍රතිපෝෂණ ලබා ගත නොහැක)")
+                final_map[key] = f"**ප්‍රශ්නය {item['display_number']}**\n\n{feedback}"
+            
+            return final_map
 
         except Exception as e:
-            logger.error(f"Gemini feedback failed for {display_number}: {e}")
-            return f"**Question {display_number}**\n(Feedback unavailable. Score: {awarded_marks}/{max_marks})"
-
-    def _grade_with_gemini(self, *args, **kwargs):
-        """Deprecated: Use _get_feedback_from_gemini for hybrid flow."""
-        pass
+            logger.error(f"Batch Gemini feedback failed: {e}")
+            return {item["key"]: f"**ප්‍රශ්නය {item['display_number']}**\n(ප්‍රතිපෝෂණ තාවකාලිකව ලබා ගත නොහැක)" for item in items}
 
     def _generate_overall_feedback(self, total_score, result_id):
         try:

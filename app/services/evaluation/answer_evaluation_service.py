@@ -14,6 +14,9 @@ import re
 from sqlalchemy.orm import Session
 
 from app.repositories.evaluation.answer_evaluation_repository import AnswerEvaluationRepository
+from app.shared.models.session_resources import SessionResource
+from app.shared.models.resource_file import ResourceFile
+from app.shared.models.question_papers import Question
 
 
 class AnswerEvaluationService:
@@ -259,7 +262,7 @@ class AnswerEvaluationService:
         return {
             "id": result.id,
             "answer_document_id": result.answer_document_id,
-            "total_score": float(result.total_score) if result.total_score else None,
+            "total_score": float(result.total_score) if result.total_score is not None else None,
             "grade": calc_grade(result.total_score),
             "feedback": feedback_obj,
             "evaluated_at": result.evaluated_at,
@@ -275,3 +278,31 @@ class AnswerEvaluationService:
                 for score in scores
             ]
         }
+
+    def _load_rubric_text(self, eval_session):
+        res = (
+            self.repository.db.query(SessionResource)
+            .filter(
+                SessionResource.session_id == eval_session.session_id,
+                SessionResource.label == "rubric",
+            )
+            .first()
+        )
+        if res:
+            rf = self.repository.db.query(ResourceFile).filter(ResourceFile.id == res.resource_id).first()
+            return rf.extracted_text if rf else ""
+        return ""
+
+    def _load_syllabus_text(self, eval_session):
+        res = (
+            self.repository.db.query(SessionResource)
+            .filter(
+                SessionResource.session_id == eval_session.session_id,
+                SessionResource.label == "syllabus",
+            )
+            .first()
+        )
+        if res:
+            rf = self.repository.db.query(ResourceFile).filter(ResourceFile.id == res.resource_id).first()
+            return rf.extracted_text if rf else ""
+        return ""

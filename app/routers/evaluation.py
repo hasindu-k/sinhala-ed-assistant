@@ -111,7 +111,7 @@ def list_evaluation_results(
                 "evaluated_at": None,
             }
             if result:
-                total_score = result.get("total_score", 0)
+                total_score = result.get("total_score") or 0
                 max_marks = 0
                 percent = None
                 # Try to get max marks from question scores if available
@@ -682,6 +682,30 @@ def evaluate_answer(
     except Exception as exc:
         logger.error(f"Failed to evaluate answer {answer_id}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to evaluate answer")
+
+
+@router.post("/answers/{answer_id}/generate-feedback", response_model=Dict[str, Any])
+def generate_feedback(
+    answer_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Trigger on-demand feedback generation for an answer document.
+    """
+    service = EvaluationWorkflowService(db)
+    try:
+        result = service.generate_feedback(answer_id, current_user.id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Evaluation result not found or generation failed")
+        return {"message": "Feedback generated successfully", "evaluation_result_id": result.id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to generate feedback for answer {answer_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate feedback")
 
 
 @router.get("/answers/{answer_id}/result", response_model=EvaluationResultDetail)

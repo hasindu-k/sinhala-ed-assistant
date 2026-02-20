@@ -12,7 +12,8 @@ _client = genai.Client(api_key=settings.GOOGLE_API_KEY)
 MODEL_NAME = "gemini-2.0-flash"
 
 # Increased from 5 → 10 to support parallel per-question Gemini feedback calls
-_ai_semaphore = threading.Semaphore(10)
+# REVERTED: Reduce 10 → 5 to prevent aggressive 429 Resource Exhausted errors
+_ai_semaphore = threading.Semaphore(5)
 
 class GeminiClient:
     @classmethod
@@ -21,7 +22,7 @@ class GeminiClient:
         return _client
 
     @classmethod
-    def generate_content(cls, prompt: str, max_retries: int = 3, safety_settings: list = None, json_mode: bool = False) -> dict:
+    def generate_content(cls, prompt: str, max_retries: int = 10, safety_settings: list = None, json_mode: bool = False) -> dict:
         """
         Generate content from Gemini and return text + token usage.
         Includes rate limiting (semaphore) and retry logic (exponential backoff).
@@ -66,11 +67,14 @@ class GeminiClient:
                 is_overloaded = "503" in error_msg or "overloaded" in error_msg or "deadline exceeded" in error_msg
 
                 if (is_rate_limit or is_overloaded) and attempt < max_retries:
-                    # Exponential backoff: 2^attempt + jitter
-                    wait_time = (2 ** attempt) + random.uniform(0, 5)
+                    # Exponential backoff: base_wait * (attempt+1) + jitter
+                    # capped to avoid huge wait times that frustrate users
+                    base_wait = 3 if is_rate_limit else 2
+                    wait_time = min(30, (base_wait * (attempt + 1)) + random.uniform(1, 5))
+                    
                     logger.warning(
-                        f"Gemini API rate limited/overloaded (Attempt {attempt+1}/{max_retries+1}). "
-                        f"Retrying in {wait_time:.2f}s... Error: {e}"
+                        f"Gemini API {'rate limited' if is_rate_limit else 'overloaded'} (Attempt {attempt+1}/{max_retries+1}). "
+                        f"Retrying in {wait_time:.2f}s (Capped at 30s)... Error: {e}"
                     )
                     time.sleep(wait_time)
                     continue
