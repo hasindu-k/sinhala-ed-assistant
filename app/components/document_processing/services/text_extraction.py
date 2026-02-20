@@ -8,6 +8,9 @@ from app.components.document_processing.services.table_detection import detect_t
 import logging
 logger = logging.getLogger(__name__)
 
+from ultralytics import YOLO
+layout_model = YOLO("yolov8m-doclaynet.pt")
+
 def classify_text_type(image_path: str) -> Literal["handwritten", "printed", "unknown"]:
     try:
         img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -106,14 +109,12 @@ def extract_text_from_pdf(file_path: str) -> tuple:
 
 def process_ocr_for_images_with_tables(images) -> tuple:
     """
-    OCR pipeline with YOLO table masking.
-
-    Flow:
-    1. Detect tables
-    2. Mask table regions
-    3. OCR non-table regions
-    4. OCR tables separately
-    5. Merge cleanly
+    OCR pipeline with:
+    - Table detection
+    - Layout detection (DocLayNet)
+    - Column clustering
+    - Reading order reconstruction
+    - Block-wise OCR
     """
 
     extracted_text = ""
@@ -132,34 +133,46 @@ def process_ocr_for_images_with_tables(images) -> tuple:
         )
 
         # -------------------------------------
-        # 1️⃣ Detect tables using YOLO
+        # 1️⃣ Detect tables
         # -------------------------------------
         table_coords, num_tables = detect_tables_with_yolo(img)
-
         logger.info(f"Page {page_count}: Detected {num_tables} tables.")
 
         # -------------------------------------
-        # 2️⃣ Mask table regions
+        # 2️⃣ Detect layout excluding tables
         # -------------------------------------
-        mask = np.ones(gray.shape, dtype=np.uint8) * 255
-
-        for coords in table_coords:
-            x1, y1, x2, y2 = coords["x1"], coords["y1"], coords["x2"], coords["y2"]
-            mask[y1:y2, x1:x2] = 0
-
-        non_table_img = cv2.bitwise_and(gray, gray, mask=mask)
+        text_regions = detect_layout_excluding_tables(img, table_coords)
 
         # -------------------------------------
-        # 3️⃣ OCR non-table content
+        # 3️⃣ Column clustering
         # -------------------------------------
-        text_non_table = pytesseract.image_to_string(
-            non_table_img,
-            lang="sin+eng",
-            config=tess_config
-        )
+        columns = detect_columns(text_regions, img.shape[1])
 
         # -------------------------------------
-        # 4️⃣ OCR tables separately
+        # 4️⃣ Reading order reconstruction
+        # -------------------------------------
+        reading_order = sort_regions_by_reading_order(columns)
+
+        # -------------------------------------
+        # 5️⃣ OCR TEXT BLOCKS IN ORDER
+        # -------------------------------------
+        page_text = ""
+
+        for box in reading_order:
+            x1, y1, x2, y2 = box
+
+            crop = gray[y1:y2, x1:x2]
+
+            text = pytesseract.image_to_string(
+                crop,
+                lang="sin+eng",
+                config=tess_config
+            )
+
+            page_text += text.strip() + "\n\n"
+
+        # -------------------------------------
+        # 6️⃣ OCR TABLES SEPARATELY
         # -------------------------------------
         table_texts = []
 
@@ -182,18 +195,129 @@ def process_ocr_for_images_with_tables(images) -> tuple:
             )
 
             table_texts.append(
-                f"\n\n--- TABLE {t_idx + 1} (Page {page_count}) ---\n{t_text}"
+                f"\n\n--- TABLE {t_idx + 1} (Page {page_count}) ---\n{t_text.strip()}"
             )
 
         # -------------------------------------
-        # 5️⃣ Merge page result
+        # 7️⃣ Merge page result
         # -------------------------------------
         page_output = (
             f"\n\n--- PAGE {page_count} ---\n"
-            + text_non_table
+            + page_text
             + "\n".join(table_texts)
         )
 
         extracted_text += page_output
 
     return extracted_text, page_count
+
+def detect_layout_excluding_tables(img, table_coords, conf_threshold=0.6):
+    """
+    Detect layout regions (Text, Title, Section-header)
+    excluding areas overlapping with already detected tables.
+    """
+
+    results = layout_model(img, imgsz=1024)
+
+    text_regions = []
+
+    def overlaps(box, table):
+        x1, y1, x2, y2 = box
+        tx1, ty1, tx2, ty2 = table
+        return not (x2 < tx1 or x1 > tx2 or y2 < ty1 or y1 > ty2)
+
+    # Convert table coords format
+    formatted_tables = [
+        (t["x1"], t["y1"], t["x2"], t["y2"])
+        for t in table_coords
+    ]
+
+    for r in results:
+        for box in r.boxes:
+            cls_id = int(box.cls[0])
+            class_name = layout_model.names[cls_id]
+            conf = float(box.conf[0])
+
+            if conf < conf_threshold:
+                continue
+
+            xyxy = list(map(int, box.xyxy[0].tolist()))
+
+            if class_name in ["Text", "Title", "Section-header"]:
+
+                # Exclude if overlapping with table
+                if any(overlaps(xyxy, t) for t in formatted_tables):
+                    continue
+
+                text_regions.append(xyxy)
+
+    return text_regions
+
+def detect_columns(text_blocks, image_width):
+    """
+    Cluster text blocks into columns using horizontal CENTER distance.
+    More stable than x_min clustering.
+    """
+
+    if not text_blocks:
+        return []
+
+    # Sort by horizontal center
+    text_blocks = sorted(
+        text_blocks,
+        key=lambda b: (b[0] + b[2]) / 2
+    )
+
+    columns = []
+
+    # Slightly larger threshold for robustness
+    column_threshold = image_width * 0.12
+
+    for box in text_blocks:
+        box_center = (box[0] + box[2]) / 2
+        placed = False
+
+        for col in columns:
+            if abs(box_center - col["center"]) < column_threshold:
+                col["boxes"].append(box)
+
+                # Update column center using box centers
+                col["center"] = np.mean(
+                    [(b[0] + b[2]) / 2 for b in col["boxes"]]
+                )
+
+                placed = True
+                break
+
+        if not placed:
+            columns.append({
+                "center": box_center,
+                "boxes": [box]
+            })
+
+    logger.info(
+        f"Clustered {len(text_blocks)} text blocks into {len(columns)} columns."
+    )
+
+    return columns
+
+def sort_regions_by_reading_order(columns):
+    """
+    Sort columns left-to-right,
+    then blocks top-to-bottom within each column.
+    """
+
+    if not columns:
+        return []
+
+    # Sort columns by horizontal position
+    columns = sorted(columns, key=lambda c: c["center"])
+
+    reading_order = []
+
+    for col in columns:
+        sorted_boxes = sorted(col["boxes"], key=lambda b: b[1])
+        reading_order.extend(sorted_boxes)
+
+    logger.info(f"Sorted {len(reading_order)} text regions into reading order.")
+    return reading_order

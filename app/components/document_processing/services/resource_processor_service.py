@@ -342,7 +342,7 @@ class ResourceProcessorService:
             resource.language = detected_language
 
             # Document embedding
-            if not resource.document_embedding:
+            if resource.document_embedding is None:
                 logger.info("Generating document embedding for resource %s", resource.id)
 
                 from app.shared.ai.embeddings import EMBED_MODEL
