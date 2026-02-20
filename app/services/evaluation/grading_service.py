@@ -10,6 +10,7 @@ from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
+import torch
 from rank_bm25 import BM25Okapi
 from sentence_transformers import util
 from sqlalchemy.orm import Session
@@ -22,9 +23,9 @@ from app.shared.models.answer_evaluation import (
 from app.shared.models.question_papers import Question, SubQuestion
 from app.shared.models.session_resources import SessionResource
 from app.shared.models.resource_file import ResourceFile
-from app.shared.ai.embeddings import xlmr
-from app.core.gemini_client import GeminiClient
 from app.shared.models.rubrics import Rubric, RubricCriterion
+from app.shared.ai.embeddings import xlmr, ml_semaphore
+from app.core.gemini_client import GeminiClient
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ class GradingService:
     def __init__(self, db: Session):
         self.db = db
         self.gemini = GeminiClient()
+        self._sentence_cache = {} # Map sentence string -> embedding tensor
+
 
     # ----------------------------------------------------------
     # MARK RESOLUTION
@@ -126,9 +129,10 @@ class GradingService:
             progress_callback("evaluating_answers", f"Scoring {total_questions} answers...")
 
         # -------------------------------------------------------
-        # PHASE 1: Parallel system scoring (XLM-R — CPU-bound)
+        # PHASE 1: System scoring (XLM-R — CPU-bound)
         # -------------------------------------------------------
-        # Collect all scoring work items first
+        # 1.0 Gather all work items
+        # -------------------------------------------------------
         score_inputs: List[Tuple] = []  # (key, student_text, target, max_marks, reference_text)
         for key, student_text in answer_doc.mapped_answers.items():
             target = self._find_matching_question(key, question_map)
@@ -140,18 +144,41 @@ class GradingService:
             reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
             score_inputs.append((key, student_text, target, max_marks, reference_text))
 
-        # Run system scoring synchronously (XLM-R shares a single GPU/CPU process — not safe to parallelize)
+        # 1.1 Collect and Batch Encode all texts for the document
+        # -------------------------------------------------------
+        all_student_texts = [item[1] for item in score_inputs]
+        all_ref_texts = list(set([item[4] for item in score_inputs if item[4]]))
+        
+        if progress_callback:
+            progress_callback("evaluating_answers", "Batch encoding document content...", percent=5)
+
+        with ml_semaphore:
+            # Batch encode student answers
+            student_embs = xlmr.encode(all_student_texts, batch_size=32, convert_to_tensor=True) if all_student_texts else []
+            # Batch encode deduplicated reference contexts
+            ref_embs_list = xlmr.encode(all_ref_texts, batch_size=32, convert_to_tensor=True) if all_ref_texts else []
+        
+        # Maps for quick lookup: text -> embedding tensor
+        student_emb_map = {text: student_embs[i] for i, text in enumerate(all_student_texts)}
+        ref_emb_map = {text: ref_embs_list[i] for i, text in enumerate(all_ref_texts)}
+
         scored_items: List[Dict] = []
         for idx, (key, student_text, target, max_marks, reference_text) in enumerate(score_inputs):
             processed_count += 1
             if progress_callback:
-                pct = int((processed_count / total_questions) * 70)  # scoring = 0-70%
+                pct = 5 + int((processed_count / total_questions) * 65)  # scoring = 5-70%
                 progress_callback("evaluating_answers", f"Scoring question {key}...", percent=pct)
+
+            # Pass cached embeddings to avoid re-encoding
+            s_emb = student_emb_map.get(student_text)
+            r_emb = ref_emb_map.get(reference_text)
 
             system_score_ratio = self._calculate_system_score(
                 student_text=student_text,
                 reference_text=reference_text,
-                weights=rubric_weights
+                weights=rubric_weights,
+                student_emb=s_emb,
+                reference_emb=r_emb
             )
             awarded_marks = Decimal(str(system_score_ratio * max_marks)).quantize(Decimal("0.01"))
             display_number = self._resolve_display_number(target, key)
@@ -164,7 +191,9 @@ class GradingService:
                 "max_marks": max_marks,
                 "awarded_marks": awarded_marks,
                 "display_number": display_number,
+                "student_emb": s_emb # Pass for coverage scoring
             })
+
 
         # -------------------------------------------------------
         # PHASE 2: Parallel Gemini feedback (I/O-bound — safe to parallelize)
@@ -274,11 +303,14 @@ class GradingService:
             return "structured"
         return "essay"
 
-    def _semantic_similarity(self, student_text: str, reference_text: str) -> float:
+    def _semantic_similarity(self, student_text: str, reference_text: str, student_emb=None, reference_emb=None) -> float:
         if not reference_text or not student_text:
             return 0.0
-        emb1 = xlmr.encode(student_text, convert_to_tensor=True)
-        emb2 = xlmr.encode(reference_text, convert_to_tensor=True)
+            
+        # Use cached embeddings if provided
+        emb1 = student_emb if student_emb is not None else xlmr.encode(student_text, convert_to_tensor=True)
+        emb2 = reference_emb if reference_emb is not None else xlmr.encode(reference_text, convert_to_tensor=True)
+        
         raw_sim = util.cos_sim(emb1, emb2).item()
 
         boosted = min(1.0, max(0.0, raw_sim * 1.2))
@@ -287,6 +319,7 @@ class GradingService:
             return 0.75 + (boosted - 0.60) * (0.25 / 0.40)
 
         return boosted
+
 
     # ----------------------------------------------------------
     # MARKING BANDS
@@ -328,7 +361,7 @@ class GradingService:
         top_chunks = bm25.get_top_n(q_text.split(), chunks, n=3)
         return "\n\n".join(top_chunks)
 
-    def _calculate_coverage_score(self, student_text: str, reference_text: str, max_marks: int):
+    def _calculate_coverage_score(self, student_text: str, reference_text: str, max_marks: int, student_emb=None):
         """
         Optimized: batch-encodes all reference sentences in a single XLM-R forward pass
         instead of one pass per sentence.
@@ -337,24 +370,38 @@ class GradingService:
             return 0.0, "No reference"
 
         sentences = re.split(r"(?<=[.!?])\s+", reference_text)
-        sentences = [s for s in sentences if len(s.strip()) > 10]
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
 
         if not sentences:
             return 0.0, "No reference sentences"
 
-        # Encode student text once
-        student_emb = xlmr.encode(student_text, convert_to_tensor=True)
+        # Use cached student embedding if provided
+        s_emb = student_emb if student_emb is not None else xlmr.encode(student_text, convert_to_tensor=True)
 
-        # Batch-encode ALL reference sentences in one forward pass (major speedup)
-        sentence_embs = xlmr.encode(sentences, batch_size=32, convert_to_tensor=True)
+        # -------------------------------------------------------
+        # Identify sentences not yet in the cache
+        # -------------------------------------------------------
+        missing_sentences = [s for s in sentences if s not in self._sentence_cache]
+        
+        if missing_sentences:
+            with ml_semaphore:
+                # Batch encode only the new sentences
+                new_embs = xlmr.encode(missing_sentences, batch_size=32, convert_to_tensor=True)
+                for i, s in enumerate(missing_sentences):
+                    self._sentence_cache[s] = new_embs[i]
+
+        # Assemble the full matrix of embeddings for THIS question
+        sentence_embs = torch.stack([self._sentence_cache[s] for s in sentences])
 
         # Cosine similarities in one matrix operation
-        sims = util.cos_sim(student_emb, sentence_embs)[0]  # shape: (num_sentences,)
+        sims = util.cos_sim(s_emb, sentence_embs)[0]  # shape: (num_sentences,)
 
         hits = int((sims >= 0.45).sum().item())
 
         ratio = hits / max(1, len(sentences) * 0.7)
         return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
+
+
 
     # ----------------------------------------------------------
     # QUESTION MAPPING
@@ -436,16 +483,16 @@ class GradingService:
 
         return weights
 
-    def _calculate_system_score(self, student_text: str, reference_text: str, weights: Dict[str, float]) -> float:
+    def _calculate_system_score(self, student_text: str, reference_text: str, weights: Dict[str, float], student_emb=None, reference_emb=None) -> float:
         """Calculate score based on rubrics, using XLM-R for semantic similarity."""
         if not reference_text or not student_text:
             return 0.0
 
         # 1. Semantic Score (XLM-R)
-        semantic = self._semantic_similarity(student_text, reference_text)
+        semantic = self._semantic_similarity(student_text, reference_text, student_emb, reference_emb)
 
         # 2. Coverage Score (uses batched XLM-R encoding)
-        coverage, _ = self._calculate_coverage_score(student_text, reference_text, 1)
+        coverage, _ = self._calculate_coverage_score(student_text, reference_text, 1, student_emb)
 
         # 3. Relevance Score (word overlap — fast)
         relevance = self._calculate_relevance_score(student_text, reference_text)
@@ -457,6 +504,7 @@ class GradingService:
         )
 
         return max(0.0, min(1.0, total))
+
 
     def _calculate_relevance_score(self, student_text: str, reference_text: str) -> float:
         """Calculate relevance using keyword recall with lenient filtering."""
