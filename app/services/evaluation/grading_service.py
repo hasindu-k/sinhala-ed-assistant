@@ -134,7 +134,15 @@ class GradingService:
                 continue  
 
             max_marks = self._resolve_max_marks(target)
-            reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
+            
+            # Phase 3 Optimization: Check shared_cache for pre-calculated reference text
+            reference_text = ""
+            if shared_cache and "reference_texts" in shared_cache:
+                reference_text = shared_cache["reference_texts"].get(str(target.id), "")
+            
+            if not reference_text:
+                reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
+                
             rubric_weights = self._get_rubric_weights(eval_session)
             display_number = self._resolve_display_number(target, key)
             
@@ -316,7 +324,7 @@ class GradingService:
     # ----------------------------------------------------------
     # CONTEXT & COVERAGE
     # ----------------------------------------------------------
-    def _get_reference_context(self, question, syllabus_text: str, rubric_text: str) -> str:
+    def _get_reference_context(self, question, syllabus_text: str, rubric_text: str, bm25_index=None, chunks=None) -> str:
         q_text = getattr(question, "question_text", "") or getattr(
             question, "sub_question_text", ""
         )
@@ -324,11 +332,19 @@ class GradingService:
         if not source:
             return ""
 
-        chunks = [c.strip() for c in source.split("\n\n") if c.strip()]
         if not chunks:
-            chunks = [c.strip() for c in source.split("\n") if c.strip()]
+            chunks = [c.strip() for c in source.split("\n\n") if c.strip()]
+            if not chunks:
+                chunks = [c.strip() for c in source.split("\n") if c.strip()]
 
-        bm25 = BM25Okapi([c.split() for c in chunks])
+        if not chunks:
+            return ""
+
+        if bm25_index:
+             bm25 = bm25_index
+        else:
+             bm25 = BM25Okapi([c.split() for c in chunks])
+             
         # Retrieve top 3 chunks for richer context
         top_chunks = bm25.get_top_n(q_text.split(), chunks, n=3)
         return "\n\n".join(top_chunks)

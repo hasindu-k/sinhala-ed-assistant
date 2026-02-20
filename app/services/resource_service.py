@@ -264,3 +264,13 @@ class ResourceService:
     def list_resources_by_ids(self, resource_ids: List[UUID]) -> List:
         """List resources by their IDs."""
         return self.repository.list_resources_by_ids(resource_ids)
+
+    def update_resource_extracted_text(self, resource_id: UUID, extracted_text: str):
+        """Update the extracted text for a resource."""
+        resource = self.repository.get_resource(resource_id)
+        if not resource:
+            raise ValueError("Resource not found")
+        
+        resource.extracted_text = extracted_text
+        self.db.commit()
+        return resource
