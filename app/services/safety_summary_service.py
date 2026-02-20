@@ -1,3 +1,4 @@
+#app/services/safety_summary_service.py
 from typing import Dict
 from app.services.message_safety_service import MessageSafetyService
 import logging
@@ -148,6 +149,7 @@ class SafetySummaryService:
                 severities.append("high")
         
         total = len(severities)
+        logger.info("Computing safety summary from %d flagged sentences", total)
         high_count = severities.count("high")
         medium_count = severities.count("medium")
         high_ratio = high_count / total if total > 0 else 0

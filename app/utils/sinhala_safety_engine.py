@@ -44,7 +44,7 @@ def detect_misconceptions(generated: str, source: str):
           }
         ]
     """
-    logger.info("paramtered sources %s", source)
+    # logger.info("paramtered sources %s", source)
     src_concepts = extract_concepts(source)
     flagged = []
     

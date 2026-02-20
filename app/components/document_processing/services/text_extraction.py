@@ -3,6 +3,7 @@ import pytesseract
 import cv2
 import numpy as np
 from typing import Literal
+from app.components.document_processing.services.table_detection import detect_tables_with_yolo
 
 import logging
 logger = logging.getLogger(__name__)
@@ -103,23 +104,96 @@ def extract_text_from_pdf(file_path: str) -> tuple:
             text += f"\n\n--- PAGE {page_num} ---\n{page_text}"
     return text, len(pdf.pages)
 
-def process_ocr_for_images(images) -> tuple:
+def process_ocr_for_images_with_tables(images) -> tuple:
+    """
+    OCR pipeline with YOLO table masking.
+
+    Flow:
+    1. Detect tables
+    2. Mask table regions
+    3. OCR non-table regions
+    4. OCR tables separately
+    5. Merge cleanly
+    """
+
     extracted_text = ""
     page_count = 0
-    for pil_img in images:
+
+    for idx, pil_img in enumerate(images):
         page_count += 1
+
         img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-        processed = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
         tess_config = (
             "--oem 1 "
             "--psm 6 "
             "-c preserve_interword_spaces=1 "
         )
 
-        text = pytesseract.image_to_string(
-            processed, lang="sin+eng", config=tess_config
+        # -------------------------------------
+        # 1️⃣ Detect tables using YOLO
+        # -------------------------------------
+        table_coords, num_tables = detect_tables_with_yolo(img)
+
+        logger.info(f"Page {page_count}: Detected {num_tables} tables.")
+
+        # -------------------------------------
+        # 2️⃣ Mask table regions
+        # -------------------------------------
+        mask = np.ones(gray.shape, dtype=np.uint8) * 255
+
+        for coords in table_coords:
+            x1, y1, x2, y2 = coords["x1"], coords["y1"], coords["x2"], coords["y2"]
+            mask[y1:y2, x1:x2] = 0
+
+        non_table_img = cv2.bitwise_and(gray, gray, mask=mask)
+
+        # -------------------------------------
+        # 3️⃣ OCR non-table content
+        # -------------------------------------
+        text_non_table = pytesseract.image_to_string(
+            non_table_img,
+            lang="sin+eng",
+            config=tess_config
         )
 
-        extracted_text += f"\n\n--- PAGE {page_count} ---\n{text}"
+        # -------------------------------------
+        # 4️⃣ OCR tables separately
+        # -------------------------------------
+        table_texts = []
+
+        for t_idx, coords in enumerate(table_coords):
+            x1, y1, x2, y2 = coords["x1"], coords["y1"], coords["x2"], coords["y2"]
+
+            table_crop = gray[y1:y2, x1:x2]
+
+            table_config = (
+                "--oem 1 "
+                "--psm 6 "
+                "-c preserve_interword_spaces=1 "
+                "-c textord_tablefind_good_text_size=12 "
+            )
+
+            t_text = pytesseract.image_to_string(
+                table_crop,
+                lang="sin+eng",
+                config=table_config
+            )
+
+            table_texts.append(
+                f"\n\n--- TABLE {t_idx + 1} (Page {page_count}) ---\n{t_text}"
+            )
+
+        # -------------------------------------
+        # 5️⃣ Merge page result
+        # -------------------------------------
+        page_output = (
+            f"\n\n--- PAGE {page_count} ---\n"
+            + text_non_table
+            + "\n".join(table_texts)
+        )
+
+        extracted_text += page_output
 
     return extracted_text, page_count
