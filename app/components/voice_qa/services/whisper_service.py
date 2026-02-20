@@ -51,10 +51,13 @@ class VoiceService:
         Return only the Standard Sinhala version.
         """
 
-        gemini = GeminiClient.load()
-        result = gemini.generate_content(prompt).text.strip()
+        gemini = GeminiClient()
+        response = gemini.generate_content(prompt)
+
+        result = (response.get("text") or "").strip()
 
         return normalized, result
+
 
 
 class VoiceQAService:
