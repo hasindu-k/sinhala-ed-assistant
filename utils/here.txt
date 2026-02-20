@@ -1,0 +1,11 @@
+This directory is expected to contain the PyTorch (.pt) model files required at runtime.
+
+Required files:
+- yolov8m-doclaynet.pt  (layout / document structure detection)
+- table_model.pt        (table detection / extraction)
+
+These model files are not included in the repository because they are large binary assets.
+
+Before running the application, download or obtain these files and place them in this
+utils/ directory so that code such as text_extraction.py and table_detection.py can
+successfully load them at startup.

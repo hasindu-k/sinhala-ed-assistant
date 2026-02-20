@@ -50,6 +50,7 @@ class ResourceService:
         content: bytes,
         *,
         commit: bool = True,
+        resource_type: Optional[str] = None,
     ):
         """Handle complete file upload process with validation."""
         # Validate
@@ -72,7 +73,7 @@ class ResourceService:
                 source_type="user_upload",
                 commit=commit,
             )
-            self.process_resource(resource.id, user_id)
+            self.process_resource(resource.id, user_id, resource_type=resource_type)
             return resource
         except Exception as e:
             # Cleanup file if database save failed
@@ -225,7 +226,7 @@ class ResourceService:
         else:
             self.db.flush()
     
-    def process_resource(self, resource_id: UUID, user_id: UUID):
+    def process_resource(self, resource_id: UUID, user_id: UUID, resource_type: Optional[str] = None):
         """Process resource (OCR, chunk, embed) after validation."""
         resource = self.get_resource_with_ownership_check(resource_id, user_id)
         
@@ -233,7 +234,7 @@ class ResourceService:
         from app.components.document_processing.services.resource_processor_service import ResourceProcessorService
         
         processor = ResourceProcessorService(self.db)
-        result = processor.process_resource(resource)
+        result = processor.process_resource(resource, resource_type=resource_type)
         
         return result
 

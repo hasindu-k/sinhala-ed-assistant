@@ -31,7 +31,7 @@ class ResourceProcessorService:
         if file_ext not in ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.webp']:
             raise ValueError(f"Unsupported file type: {file_ext}")
 
-    def _extract_text(self, file_path: str) -> tuple[str, int, str]:
+    def _extract_text(self, file_path: str, resource_type: Optional[str] = None) -> tuple[str, int, str]:
         """
         Extract text from PDF or image file.
 
@@ -62,6 +62,7 @@ class ResourceProcessorService:
                     classify_text_type,
                     detect_language_from_text,
                     basic_clean,
+                    resource_type=resource_type,
                 )
 
             return self._process_image(
@@ -71,6 +72,7 @@ class ResourceProcessorService:
                 classify_text_type,
                 detect_language_from_text,
                 basic_clean,
+                resource_type=resource_type,
             )
 
         except Exception as e:
@@ -86,6 +88,7 @@ class ResourceProcessorService:
         classify_text_type,
         detect_language_from_text,
         basic_clean,
+        resource_type: Optional[str] = None
     ):
         lang_hint = self._sniff_pdf_language(file_path, detect_language_from_text)
 
@@ -101,7 +104,12 @@ class ResourceProcessorService:
         if images:
             self._classify_first_image(images[0], classify_text_type)
 
-        extracted_text, page_count = process_ocr_for_images_with_tables(images)
+        if resource_type:
+            force_layout = self.is_need_to_analyze_layout(resource_type)
+        else:
+            force_layout = True
+
+        extracted_text, page_count = process_ocr_for_images_with_tables(images, force_layout_analysis=force_layout)
         cleaned_text = basic_clean(extracted_text)
 
         inferred_lang = detect_language_from_text(cleaned_text)
@@ -117,12 +125,19 @@ class ResourceProcessorService:
         classify_text_type,
         detect_language_from_text,
         basic_clean,
+        resource_type: Optional[str] = None
     ):
         text_type = classify_text_type(file_path)
         logger.info(f"Detected text type for image: {text_type}")
 
         images = convert_file_to_images(file_path, file_path.split('.')[-1])
-        extracted_text, page_count = process_ocr_for_images_with_tables(images)
+
+        if resource_type:
+            force_layout = self.is_need_to_analyze_layout(resource_type)
+        else:
+            force_layout = True
+
+        extracted_text, page_count = process_ocr_for_images_with_tables(images, force_layout_analysis=force_layout)
 
         cleaned_text = basic_clean(extracted_text)
         lang = detect_language_from_text(cleaned_text)
@@ -290,6 +305,7 @@ class ResourceProcessorService:
     def process_resource(
         self, 
         resource: ResourceFile, 
+        resource_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process a stored resource: extract text, chunk, embed, and save.
@@ -329,7 +345,7 @@ class ResourceProcessorService:
         logger.info("Starting processing for resource %s: %s", resource.id, resource.original_filename)
         
         # Extract text via OCR
-        extracted_text, page_count, detected_language = self._extract_text(resource.storage_path)
+        extracted_text, page_count, detected_language = self._extract_text(resource.storage_path, resource_type=resource_type)
 
         if not extracted_text.strip():
             raise ValueError("No text could be extracted from the document")
@@ -342,7 +358,7 @@ class ResourceProcessorService:
             resource.language = detected_language
 
             # Document embedding
-            if not resource.document_embedding:
+            if resource.document_embedding is None:
                 logger.info("Generating document embedding for resource %s", resource.id)
 
                 from app.shared.ai.embeddings import EMBED_MODEL
@@ -368,3 +384,12 @@ class ResourceProcessorService:
             "chunks_created": len(chunks),
             "message": "Resource processed successfully"
         }
+
+    def is_need_to_analyze_layout(self, resource_type: Optional[str]) -> bool:
+
+        if resource_type in ["question_paper"]:
+            logger.info(f"Resource type {resource_type} detected, forcing not to layout analysis for OCR.")
+            return False
+        
+        logger.info(f"Resource type {resource_type} detected, enabling layout analysis for OCR.")
+        return True
