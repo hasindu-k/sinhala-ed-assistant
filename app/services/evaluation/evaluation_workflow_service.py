@@ -110,6 +110,86 @@ class EvaluationWorkflowService:
         return session
 
 
+    # ------------------------------------------------------------------
+    # Ownership helpers
+    # ------------------------------------------------------------------
+    def _precalculate_session_cache(self, session_id: UUID):
+        """Pre-calculate and cache reference embeddings for the entire session."""
+        from app.shared.ai.embeddings import xlmr
+        from app.services.evaluation.grading_service import GradingService
+        
+        # 1. Get Session
+        eval_session = self.sessions.get_evaluation_session(session_id)
+        if not eval_session: return None
+
+        # 2. Get Context Texts
+        grader = GradingService(self.db)
+        rubric_text = grader._load_rubric_text(eval_session)
+        syllabus_text = grader._load_syllabus_text(eval_session)
+        
+        # 3. Get All Questions
+        question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
+        if not question_papers: return None
+        
+        all_q_objs = []
+        for qp in question_papers:
+            questions = self.question_papers.get_questions_by_paper(qp.id)
+            for q in questions:
+                # Add question and all its subquestions
+                all_q_objs.append(q)
+                if hasattr(q, "sub_questions") and q.sub_questions:
+                    all_q_objs.extend(q.sub_questions)
+
+        logger.info(f"Pre-calculating cache for {len(all_q_objs)} question targets...")
+        
+        reference_embeddings = {}
+        reference_sentences_text = {}
+        
+        all_refs = []
+        ref_q_ids = []
+        
+        for q in all_q_objs:
+            q_id_str = str(q.id)
+            ref_text = grader._get_reference_context(q, syllabus_text, rubric_text)
+            if ref_text:
+                all_refs.append(ref_text)
+                ref_q_ids.append(q_id_str)
+                
+                # Split sentences for coverage
+                sentences = re.split(r"(?<=[.!?])\s+", ref_text)
+                sentences = [s for s in sentences if len(s.strip()) > 10]
+                reference_sentences_text[q_id_str] = sentences
+
+        # 4. Batch Encode Main References
+        if all_refs:
+            logger.info(f"Batch encoding {len(all_refs)} main reference contexts...")
+            embeddings = xlmr.encode(all_refs, convert_to_tensor=True)
+            for i, q_id in enumerate(ref_q_ids):
+                reference_embeddings[q_id] = embeddings[i]
+
+        # 5. Batch Encode Sentences for Coverage
+        all_sentences = []
+        sentence_to_q = []
+        for q_id, s_list in reference_sentences_text.items():
+            for s in s_list:
+                all_sentences.append(s)
+                sentence_to_q.append(q_id)
+        
+        reference_sentences = {}
+        if all_sentences:
+            logger.info(f"Batch encoding {len(all_sentences)} reference sentences for coverage...")
+            s_embeddings = xlmr.encode(all_sentences, convert_to_tensor=True)
+            
+            for i, q_id in enumerate(sentence_to_q):
+                if q_id not in reference_sentences:
+                    reference_sentences[q_id] = []
+                reference_sentences[q_id].append((all_sentences[i], s_embeddings[i]))
+
+        return {
+            "reference_embeddings": reference_embeddings,
+            "reference_sentences": reference_sentences
+        }
+
     def initialize_evaluation_session(self, chat_session_id: UUID, answer_resource_ids: List[UUID], user_id: UUID):
         """
         Creates a session, attaches active context + answers, and sets status to processing.
@@ -149,26 +229,37 @@ class EvaluationWorkflowService:
         Performs the actual heavy lifting of evaluation.
         Should be called in a background task.
         """
+        from concurrent.futures import ThreadPoolExecutor
         try:
-            logger.info(f"Starting background evaluation for session {session_id}")
+            logger.info(f"Starting background parallel evaluation for session {session_id}")
             
-            for resource_id in answer_resource_ids:
-                # Find the answer document we just ensured exists
-                ad = self.answers.get_answer_document_by_session_and_resource(session_id, resource_id)
-                if ad:
-                    try:
-                        logger.info(f"Triggering evaluation for answer document {ad.id}...")
-                        self.evaluate_answer(ad.id, user_id)
-                        logger.info(f"Evaluation finished for answer document {ad.id}.")
-                    except Exception as e:
-                        logger.error(f"Failed to evaluate answer {ad.id}: {e}")
-                        # Continue with others
+            # Phase 1: Pre-calculate session cache (embeddings)
+            shared_cache = self._precalculate_session_cache(session_id)
+
+            def run_single(res_id):
+                from app.core.database import SessionLocal
+                db = SessionLocal()
+                try:
+                    ad = self.answers.get_answer_document_by_session_and_resource(session_id, res_id)
+                    if ad:
+                        logger.info(f"Thread: Starting evaluation for answer document {ad.id}...")
+                        thread_service = EvaluationWorkflowService(db)
+                        # Pass the shared cache to avoid redundant encoding
+                        thread_service.evaluate_answer(ad.id, user_id, shared_cache=shared_cache)
+                        logger.info(f"Thread: Finished evaluation for answer document {ad.id}.")
+                except Exception as e:
+                    logger.error(f"Thread: Failed to evaluate answer {res_id}: {e}")
+                finally:
+                    db.close()
+
+            with ThreadPoolExecutor(max_workers=min(len(answer_resource_ids), 10)) as executor:
+                executor.map(run_single, answer_resource_ids)
             
             self.sessions.update_evaluation_session(session_id, status="completed")
-            logger.info(f"Background evaluation completed for session {session_id}")
+            logger.info(f"Background parallel evaluation completed for session {session_id}")
             
         except Exception as e:
-            logger.error(f"Critical error in background evaluation: {e}")
+            logger.error(f"Critical error in background parallel evaluation: {e}")
             self.sessions.update_evaluation_session(session_id, status="failed")
 
     def execute_evaluation_process_generator(self, session_id: UUID, answer_resource_ids: List[UUID], user_id: UUID):
@@ -176,19 +267,15 @@ class EvaluationWorkflowService:
         Generator that yields progress updates for evaluation process.
         Yields JSON strings formatted for SSE.
         """
+        from concurrent.futures import ThreadPoolExecutor
+        import queue
+        import json
+
+        total_docs = len(answer_resource_ids)
         import json
         
-        total_docs = len(answer_resource_ids)
-        current_doc_index = 0
-        
         def make_event(msg, progress=None, status="processing", detail=None, stage="initializing"):
-            nonlocal current_doc_index
-            if progress is None:
-                # Calculate progress based on completed docs + current step estimate
-                # This is a rough estimate
-                base_progress = int((current_doc_index / total_docs) * 100) if total_docs > 0 else 0
-                progress = base_progress
-            
+            # If progress is not explicitly given, it results in None in JSON
             data = {
                 "progress": progress,
                 "message": msg,
@@ -198,101 +285,84 @@ class EvaluationWorkflowService:
             }
             return json.dumps(data, default=str) + "\n"
 
-        # Callback function to be passed down
-        def progress_callback(stage, message, percent=None):
-            # We can map internal stages to frontend stages if needed
-            # For now, pass through
-            # Calculate overall progress if percent is given for the sub-task
-            overall_progress = None
-            if percent is not None and total_docs > 0:
-                doc_progress = percent / 100.0
-                overall_progress = int(((current_doc_index + doc_progress) / total_docs) * 100)
-            
-            # We can't yield from here directly because this is a callback called by synchronous code.
-            # But wait! We can't yield from a callback in a synchronous function.
-            # This is the tricky part. 
-            # Since `evaluate_answer` is synchronous, we can't stream OUT of it easily unless we use a queue or similar,
-            # OR we just accept that we can't stream granular updates from within the sync function 
-            # unless we change the architecture to be async or use a shared queue.
-            
-            # However, for a generator, we can't just "yield" from a nested function call.
-            # The standard way in Python without async is to pass a queue or just log it.
-            # But we want to stream it to the client.
-            
-            # Given the constraints and the synchronous nature of `evaluate_answer`, 
-            # we might not be able to get granular updates *out* of the generator loop easily 
-            # without refactoring `evaluate_answer` to be a generator itself.
-            pass 
+        if total_docs == 0:
+            yield make_event("No answer documents to evaluate.", progress=100, status="completed", stage="completed")
+            return
 
-        # REFACTOR: To support streaming from deep within, we need `evaluate_answer` to yield or use a queue.
-        # Since I cannot easily change `evaluate_answer` to a generator everywhere (it might break other callers),
-        # I will use a queue-based approach or just accept stage-level updates for now.
-        
-        # BUT, since I am editing the code, I CAN change `evaluate_answer` to accept a callback 
-        # that writes to a queue, and have a separate thread consume it? 
-        # No, that's too complex for this context.
-        
-        # Alternative: Just yield stage updates from the top level loop, 
-        # and maybe break down `evaluate_answer` in the loop if possible.
-        # But `evaluate_answer` does a lot.
-        
-        # Let's try to make `evaluate_answer` a generator? 
-        # If I change it to `yield`, I break the return value for other callers.
-        
-        # Let's stick to the plan: I added `progress_callback` to `evaluate_answer`.
-        # But I can't use it to yield from the outer generator.
-        # I can use a simple trick: The callback updates a shared state, but the generator is blocked!
-        # The generator is blocked while `evaluate_answer` runs. So no yields will happen until it returns.
-        
-        # So, `evaluate_answer` MUST yield or be broken down.
-        # I will create a new method `evaluate_answer_generator` that yields progress, 
-        # and `evaluate_answer` can just consume it and return the final result.
-        
-        yield make_event("Starting evaluation process...", progress=0, stage="initializing")
-        logger.info(f"Stream: Starting evaluation for session {session_id}")
+        update_queue = queue.Queue()
+        doc_percents = [0] * total_docs
+        completed_docs = 0
 
-        try:
-            for resource_id in answer_resource_ids:
+        yield make_event("Starting parallel evaluation process...", progress=0, stage="initializing")
+        logger.info(f"Stream: Starting parallel evaluation for session {session_id}")
+
+        # Phase 1: Pre-calculate session cache (embeddings)
+        yield make_event("Pre-calculating reference embeddings for the session...", progress=2, stage="initializing")
+        shared_cache = self._precalculate_session_cache(session_id)
+
+        def run_eval_for_ad(ad_id, doc_index):
+            from app.core.database import SessionLocal
+            db = SessionLocal()
+            try:
+                # Create a new service instance for this thread with its own DB session
+                thread_service = EvaluationWorkflowService(db)
+                for stage, msg, p in thread_service.evaluate_answer_generator(ad_id, user_id, shared_cache=shared_cache):
+                    update_queue.put({
+                        "doc_index": doc_index,
+                        "stage": stage,
+                        "message": msg,
+                        "percent": p
+                    })
+                update_queue.put({"doc_index": doc_index, "status": "doc_completed"})
+            except Exception as e:
+                logger.error(f"Failed to evaluate answer {ad_id} in thread: {e}")
+                update_queue.put({"doc_index": doc_index, "status": "failed", "error": str(e)})
+            finally:
+                db.close()
+
+        # Start evaluations in parallel
+        executor = ThreadPoolExecutor(max_workers=min(total_docs, 10))
+        for i, resource_id in enumerate(answer_resource_ids):
+            ad = self.answers.get_answer_document_by_session_and_resource(session_id, resource_id)
+            if ad:
+                executor.submit(run_eval_for_ad, ad.id, i)
+            else:
+                update_queue.put({"doc_index": i, "status": "failed", "error": "Not found"})
+
+        # Consume the queue
+        while completed_docs < total_docs:
+            try:
+                item = update_queue.get(timeout=300) # 5 minute timeout
+                idx = item["doc_index"]
                 
-                # Find the answer document
-                ad = self.answers.get_answer_document_by_session_and_resource(session_id, resource_id)
-                if not ad:
-                    yield make_event(f"Answer document for resource {resource_id} not found, skipping.", status="warning", stage="processing_documents")
-                    continue
+                if "status" in item:
+                    if item["status"] == "doc_completed":
+                        completed_docs += 1
+                        doc_percents[idx] = 100
+                        yield make_event(f"Completed document {idx + 1}/{total_docs}", status="processing")
+                    elif item["status"] == "failed":
+                        completed_docs += 1
+                        yield make_event(f"Document {idx + 1} failed: {item.get('error')}", status="warning")
+                else:
+                    # Progress update
+                    msg = item["message"]
+                    p = item["percent"]
+                    if p is not None:
+                        doc_percents[idx] = p
+                    
+                    # Calculate aggregate progress
+                    avg_progress = sum(doc_percents) // total_docs
+                    yield make_event(f"[Doc {idx+1}] {msg}", progress=avg_progress, stage=item["stage"])
 
-                try:
-                    yield make_event(f"Evaluating answer document {current_doc_index + 1}/{total_docs}...", status="processing", stage="processing_documents")
-                    logger.info(f"Stream: Evaluating answer document {ad.id}...")
-                    
-                    # Call the generator version of evaluate_answer
-                    # I need to implement `evaluate_answer_generator`
-                    for update in self.evaluate_answer_generator(ad.id, user_id):
-                        # update is (stage, message, percent)
-                        stage, msg, pct = update
-                        
-                        # Calculate overall progress
-                        overall_progress = int(((current_doc_index + (pct/100.0 if pct else 0)) / total_docs) * 100)
-                        yield make_event(msg, progress=overall_progress, stage=stage)
-                    
-                    current_doc_index += 1
-                    yield make_event(f"Completed evaluation for document {current_doc_index}/{total_docs}", status="success", stage="completed")
-                    logger.info(f"Stream: Evaluation finished for answer document {ad.id}.")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to evaluate answer {ad.id}: {e}")
-                    yield make_event(f"Failed to evaluate document {current_doc_index + 1}: {str(e)}", status="error", stage="failed")
-                    current_doc_index += 1
-            
-            self.sessions.update_evaluation_session(session_id, status="completed")
-            yield make_event("Evaluation process completed successfully.", progress=100, status="completed", stage="completed")
-            logger.info(f"Stream: Evaluation completed for session {session_id}")
-            
-        except Exception as e:
-            logger.error(f"Critical error in evaluation stream: {e}")
-            self.sessions.update_evaluation_session(session_id, status="failed")
-            yield make_event(f"Evaluation process failed: {str(e)}", status="failed", stage="failed")
+            except queue.Empty:
+                logger.error("Evaluation stream queue timeout")
+                break
 
-    def evaluate_answer_generator(self, answer_id: UUID, user_id: UUID):
+        executor.shutdown(wait=True)
+        self.sessions.update_evaluation_session(session_id, status="completed")
+        yield make_event("All evaluations completed.", progress=100, status="completed", stage="completed")
+
+    def evaluate_answer_generator(self, answer_id: UUID, user_id: UUID, shared_cache=None):
         """
         Generator version of evaluate_answer.
         Yields (stage, message, percent) tuples.
@@ -392,7 +462,7 @@ class EvaluationWorkflowService:
         
         def run_grading():
             try:
-                result_container['result'] = grader.grade_answer_document(answer_id, user_id, queue_callback)
+                result_container['result'] = grader.grade_answer_document(answer_id, user_id, queue_callback, shared_cache=shared_cache)
             except Exception as e:
                 error_container['error'] = e
             finally:
@@ -1316,7 +1386,7 @@ class EvaluationWorkflowService:
             "extracted_text": resource.extracted_text
         }
 
-    def evaluate_answer(self, answer_id: UUID, user_id: UUID, progress_callback=None):
+    def evaluate_answer(self, answer_id: UUID, user_id: UUID, progress_callback=None, shared_cache=None):
         """Evaluate answer with recursive sub-question support."""
         answer_doc = self._ensure_answer_owner(answer_id, user_id)
 
@@ -1401,7 +1471,7 @@ class EvaluationWorkflowService:
         logger.info("Starting grading process...")
         from app.services.evaluation.grading_service import GradingService
         grader = GradingService(self.db)
-        result = grader.grade_answer_document(answer_id, user_id, progress_callback)
+        result = grader.grade_answer_document(answer_id, user_id, progress_callback, shared_cache=shared_cache)
         logger.info(f"Grading completed for answer document {answer_id}.")
         return result
 
