@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from ultralytics import YOLO
-layout_model = YOLO("yolov8m-doclaynet.pt")
+layout_model = YOLO("utils/yolov8m-doclaynet.pt")
 
 def classify_text_type(image_path: str) -> Literal["handwritten", "printed", "unknown"]:
     try:
