@@ -956,6 +956,7 @@ class EvaluationWorkflowService:
         Parse question paper by extracting text and structuring content.
         Uses OCR if needed and AI-based content separation.
         """
+        logger.info(f"Parsing question paper for session {session_id} by user {user_id}")
         # Verify ownership and get session
         self._ensure_chat_session_owner(session_id, user_id)
 
@@ -1204,6 +1205,7 @@ class EvaluationWorkflowService:
         Parse and map student answers to questions without evaluating.
         Returns the mapping for verification.
         """
+        logger.info(f"Parsing answer document {answer_id} for user {user_id}")
         answer_doc = self._ensure_answer_owner(answer_id, user_id)
 
         # Check if already mapped

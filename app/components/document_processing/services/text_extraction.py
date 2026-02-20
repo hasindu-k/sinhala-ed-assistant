@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 from ultralytics import YOLO
 layout_model = YOLO("utils/yolov8m-doclaynet.pt")
 
+lang = "sin+eng"  # Tesseract language setting for Sinhala and English
+
 def classify_text_type(image_path: str) -> Literal["handwritten", "printed", "unknown"]:
     try:
         img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -107,7 +109,7 @@ def extract_text_from_pdf(file_path: str) -> tuple:
             text += f"\n\n--- PAGE {page_num} ---\n{page_text}"
     return text, len(pdf.pages)
 
-def process_ocr_for_images_with_tables(images) -> tuple:
+def process_ocr_for_images_with_tables(images, force_layout_analysis: bool = False) -> tuple:
     """
     OCR pipeline with:
     - Table detection
@@ -138,38 +140,62 @@ def process_ocr_for_images_with_tables(images) -> tuple:
         table_coords, num_tables = detect_tables_with_yolo(img)
         logger.info(f"Page {page_count}: Detected {num_tables} tables.")
 
-        # -------------------------------------
-        # 2️⃣ Detect layout excluding tables
-        # -------------------------------------
-        text_regions = detect_layout_excluding_tables(img, table_coords)
+        # Create a mask for the table areas to exclude them from OCR
+        table_mask = np.zeros_like(gray)
+        for coords in table_coords:
+            x1, y1, x2, y2 = coords["x1"], coords["y1"], coords["x2"], coords["y2"]
+            table_mask[y1:y2, x1:x2] = 255  # Mark table areas with white in the mask
 
-        # -------------------------------------
-        # 3️⃣ Column clustering
-        # -------------------------------------
-        columns = detect_columns(text_regions, img.shape[1])
+        # If force_layout_analysis is True, always perform layout detection
+        if force_layout_analysis:
+            # -------------------------------------
+            # 2️⃣ Detect layout excluding tables
+            # -------------------------------------
+            text_regions = detect_layout_excluding_tables(img, table_coords)
 
-        # -------------------------------------
-        # 4️⃣ Reading order reconstruction
-        # -------------------------------------
-        reading_order = sort_regions_by_reading_order(columns)
+            # -------------------------------------
+            # 3️⃣ Column clustering
+            # -------------------------------------
+            columns = detect_columns(text_regions, img.shape[1])
+
+            # -------------------------------------
+            # 4️⃣ Reading order reconstruction
+            # -------------------------------------
+            reading_order = sort_regions_by_reading_order(columns)
+
+        else:
+            # If force_layout_analysis is False, skip layout analysis
+            reading_order = []
 
         # -------------------------------------
         # 5️⃣ OCR TEXT BLOCKS IN ORDER
         # -------------------------------------
         page_text = ""
 
-        for box in reading_order:
-            x1, y1, x2, y2 = box
+        if reading_order:
+            for box in reading_order:
+                x1, y1, x2, y2 = box
 
-            crop = gray[y1:y2, x1:x2]
+                crop = gray[y1:y2, x1:x2]
 
-            text = pytesseract.image_to_string(
-                crop,
-                lang="sin+eng",
+                text = pytesseract.image_to_string(
+                    crop,
+                    lang=lang,
+                    config=tess_config
+                )
+
+                page_text += text.strip() + "\n\n"
+        else:
+            # Perform OCR on the entire page excluding table areas
+            # Use bitwise NOT to exclude the table areas from OCR
+            non_table_area = cv2.bitwise_and(gray, gray, mask=cv2.bitwise_not(table_mask))
+
+            full_page_text = pytesseract.image_to_string(
+                non_table_area,
+                lang=lang,
                 config=tess_config
             )
-
-            page_text += text.strip() + "\n\n"
+            page_text = full_page_text.strip()
 
         # -------------------------------------
         # 6️⃣ OCR TABLES SEPARATELY
@@ -190,7 +216,7 @@ def process_ocr_for_images_with_tables(images) -> tuple:
 
             t_text = pytesseract.image_to_string(
                 table_crop,
-                lang="sin+eng",
+                lang=lang,
                 config=table_config
             )
 
