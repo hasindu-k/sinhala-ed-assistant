@@ -148,25 +148,57 @@ class EvaluationWorkflowService:
         """
         Performs the actual heavy lifting of evaluation.
         Should be called in a background task.
+
+        Evaluates up to 5 answer sheets CONCURRENTLY using a ThreadPoolExecutor.
+        Each worker thread gets its own SQLAlchemy session to avoid shared-state conflicts.
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from app.core.database import SessionLocal
+
+        logger.info(f"Starting parallel background evaluation for session {session_id} "
+                    f"({len(answer_resource_ids)} sheets)")
+
+        import time as _time
+        _start = _time.time()
+
+        # Resolve answer document IDs up-front (uses the caller's DB session)
+        doc_ids = []
+        for resource_id in answer_resource_ids:
+            ad = self.answers.get_answer_document_by_session_and_resource(session_id, resource_id)
+            if ad:
+                doc_ids.append(ad.id)
+            else:
+                logger.warning(f"No answer document found for resource {resource_id}, skipping.")
+
+        def _evaluate_one(answer_doc_id):
+            """Worker: owns its own DB session for thread safety."""
+            thread_db = SessionLocal()
+            try:
+                from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
+                worker_service = EvaluationWorkflowService(thread_db)
+                logger.info(f"[Thread] Evaluating answer document {answer_doc_id}...")
+                worker_service.evaluate_answer(answer_doc_id, user_id)
+                logger.info(f"[Thread] Finished answer document {answer_doc_id}.")
+                return answer_doc_id, None
+            except Exception as exc:
+                logger.error(f"[Thread] Failed to evaluate {answer_doc_id}: {exc}")
+                return answer_doc_id, exc
+            finally:
+                thread_db.close()
+
         try:
-            logger.info(f"Starting background evaluation for session {session_id}")
-            
-            for resource_id in answer_resource_ids:
-                # Find the answer document we just ensured exists
-                ad = self.answers.get_answer_document_by_session_and_resource(session_id, resource_id)
-                if ad:
-                    try:
-                        logger.info(f"Triggering evaluation for answer document {ad.id}...")
-                        self.evaluate_answer(ad.id, user_id)
-                        logger.info(f"Evaluation finished for answer document {ad.id}.")
-                    except Exception as e:
-                        logger.error(f"Failed to evaluate answer {ad.id}: {e}")
-                        # Continue with others
-            
+            max_workers = min(5, len(doc_ids)) if doc_ids else 1
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="eval_sheet") as executor:
+                futures = {executor.submit(_evaluate_one, doc_id): doc_id for doc_id in doc_ids}
+                for future in as_completed(futures):
+                    doc_id, err = future.result()
+                    if err:
+                        logger.error(f"Sheet {doc_id} failed: {err}")
+
+            elapsed = _time.time() - _start
+            logger.info(f"All sheets evaluated in {elapsed:.1f}s — marking session completed.")
             self.sessions.update_evaluation_session(session_id, status="completed")
-            logger.info(f"Background evaluation completed for session {session_id}")
-            
+
         except Exception as e:
             logger.error(f"Critical error in background evaluation: {e}")
             self.sessions.update_evaluation_session(session_id, status="failed")

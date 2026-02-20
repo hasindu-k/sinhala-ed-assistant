@@ -3,10 +3,13 @@
 import logging
 import re
 import json
+import time
 from uuid import UUID
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 from decimal import Decimal
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import numpy as np
 from rank_bm25 import BM25Okapi
 from sentence_transformers import util
 from sqlalchemy.orm import Session
@@ -47,6 +50,7 @@ class GradingService:
                 return max(1, int(parent.max_marks) // len(parent.sub_questions))
 
         return 1
+
     # ----------------------------------------------------------
     # PUBLIC ENTRY
     # ----------------------------------------------------------
@@ -92,11 +96,9 @@ class GradingService:
 
         if existing_result:
             logger.info(f"Updating existing evaluation result {existing_result.id}")
-            # Clear existing scores
             self.db.query(QuestionScore).filter(
                 QuestionScore.evaluation_result_id == existing_result.id
             ).delete()
-            
             eval_result = existing_result
             eval_result.total_score = Decimal(0)
             eval_result.overall_feedback = "Grading in progress..."
@@ -107,67 +109,106 @@ class GradingService:
                 overall_feedback="Grading in progress...",
             )
             self.db.add(eval_result)
-        
+
         self.db.commit()
         self.db.refresh(eval_result)
 
         question_map = self._build_question_map(questions)
-        total_score = Decimal(0)
 
-        # ------------------------------------------------------
-        # MAIN GRADING LOOP
-        # ------------------------------------------------------
+        # ---- HOIST LOOP-INVARIANT WORK ----
+        # Fetch rubric weights once for the entire document (not per-question)
+        rubric_weights = self._get_rubric_weights(eval_session)
+
         total_questions = len(answer_doc.mapped_answers)
         processed_count = 0
 
         if progress_callback:
-            progress_callback("evaluating_answers", f"Grading {total_questions} answers...")
+            progress_callback("evaluating_answers", f"Scoring {total_questions} answers...")
 
+        # -------------------------------------------------------
+        # PHASE 1: Parallel system scoring (XLM-R — CPU-bound)
+        # -------------------------------------------------------
+        # Collect all scoring work items first
+        score_inputs: List[Tuple] = []  # (key, student_text, target, max_marks, reference_text)
         for key, student_text in answer_doc.mapped_answers.items():
-            processed_count += 1
-            if progress_callback:
-                # Calculate percentage for this stage
-                pct = int((processed_count / total_questions) * 100)
-                progress_callback("evaluating_answers", f"Grading question {key}...", percent=pct)
-
             target = self._find_matching_question(key, question_map)
             if not target:
                 logger.error(f"UNRESOLVED mapping key: {key}")
-                continue  
+                continue
 
             max_marks = self._resolve_max_marks(target)
+            reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
+            score_inputs.append((key, student_text, target, max_marks, reference_text))
 
-            reference_text = self._get_reference_context(
-                target, syllabus_text, rubric_text
-            )
+        # Run system scoring synchronously (XLM-R shares a single GPU/CPU process — not safe to parallelize)
+        scored_items: List[Dict] = []
+        for idx, (key, student_text, target, max_marks, reference_text) in enumerate(score_inputs):
+            processed_count += 1
+            if progress_callback:
+                pct = int((processed_count / total_questions) * 70)  # scoring = 0-70%
+                progress_callback("evaluating_answers", f"Scoring question {key}...", percent=pct)
 
-            # --- NEW SCORING FLOW ---
-            # 1. Fetch rubric weights
-            rubric_weights = self._get_rubric_weights(eval_session)
-            
-            # 2. Calculate system score (XLM-R based)
             system_score_ratio = self._calculate_system_score(
                 student_text=student_text,
                 reference_text=reference_text,
                 weights=rubric_weights
             )
-            
             awarded_marks = Decimal(str(system_score_ratio * max_marks)).quantize(Decimal("0.01"))
-            
-            # 3. Get feedback from Gemini
             display_number = self._resolve_display_number(target, key)
+
+            scored_items.append({
+                "key": key,
+                "student_text": student_text,
+                "reference_text": reference_text,
+                "target": target,
+                "max_marks": max_marks,
+                "awarded_marks": awarded_marks,
+                "display_number": display_number,
+            })
+
+        # -------------------------------------------------------
+        # PHASE 2: Parallel Gemini feedback (I/O-bound — safe to parallelize)
+        # -------------------------------------------------------
+        if progress_callback:
+            progress_callback("generating_feedback", "Generating feedback in parallel...", percent=70)
+
+        def _fetch_feedback(item: Dict) -> Tuple[str, str]:
+            """Returns (key, feedback_text)"""
             feedback = self._get_feedback_from_gemini(
-                student_text=student_text,
-                reference_text=reference_text,
-                question=target,
-                awarded_marks=float(awarded_marks),
-                max_marks=max_marks,
-                display_number=display_number
+                student_text=item["student_text"],
+                reference_text=item["reference_text"],
+                question=item["target"],
+                awarded_marks=float(item["awarded_marks"]),
+                max_marks=item["max_marks"],
+                display_number=item["display_number"],
             )
-            
+            return item["key"], feedback
+
+        feedback_map: Dict[str, str] = {}
+        max_workers = min(10, len(scored_items)) if scored_items else 1
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_fetch_feedback, item): item["key"] for item in scored_items}
+            done_count = 0
+            for future in as_completed(futures):
+                key, feedback = future.result()
+                feedback_map[key] = feedback
+                done_count += 1
+                if progress_callback:
+                    pct = 70 + int((done_count / len(scored_items)) * 25)  # feedback = 70-95%
+                    progress_callback("generating_feedback", f"Feedback done {done_count}/{len(scored_items)}...", percent=pct)
+
+        # -------------------------------------------------------
+        # PHASE 3: Persist QuestionScore rows
+        # -------------------------------------------------------
+        total_score = Decimal(0)
+        for item in scored_items:
+            key = item["key"]
+            target = item["target"]
+            awarded_marks = item["awarded_marks"]
+            feedback = feedback_map.get(key, f"**Question {item['display_number']}**\n(Feedback unavailable)")
+
             total_score += awarded_marks
 
-            # ONLY store marks for sub-questions
             if isinstance(target, SubQuestion):
                 qs = QuestionScore(
                     evaluation_result_id=eval_result.id,
@@ -175,7 +216,6 @@ class GradingService:
                     awarded_marks=awarded_marks,
                     feedback=feedback,
                 )
-
             elif isinstance(target, Question):
                 qs = QuestionScore(
                     evaluation_result_id=eval_result.id,
@@ -183,7 +223,6 @@ class GradingService:
                     awarded_marks=awarded_marks,
                     feedback=feedback,
                 )
-
             else:
                 logger.error(f"Invalid target type for key {key}: {type(target)}")
                 continue
@@ -193,7 +232,7 @@ class GradingService:
         self.db.flush()
 
         if progress_callback:
-            progress_callback("calculating_marks", "Calculating final score...")
+            progress_callback("calculating_marks", "Calculating final score...", percent=96)
 
         eval_result.total_score = sum(
             qs.awarded_marks for qs in self.db.query(QuestionScore)
@@ -201,38 +240,31 @@ class GradingService:
         )
 
         if progress_callback:
-            progress_callback("generating_feedback", "Generating overall feedback...")
+            progress_callback("generating_feedback", "Generating overall feedback...", percent=98)
 
         eval_result.overall_feedback = self._generate_overall_feedback(
             total_score, eval_result.id
         )
 
         if progress_callback:
-            progress_callback("preparing_report", "Finalizing report...")
+            progress_callback("preparing_report", "Finalizing report...", percent=99)
 
         self.db.commit()
         return eval_result
 
     # ----------------------------------------------------------
-    # SCORING LOGIC (FIXED)
+    # SCORING LOGIC
     # ----------------------------------------------------------
     def _score_answer(self, student_text: str, reference_text: str, max_marks: int) -> float:
         q_type = self._classify_question(max_marks)
         semantic = self._semantic_similarity(student_text, reference_text)
 
-        # Short factual answers
         if q_type == "short":
             return 1.0 if semantic >= 0.70 else semantic
-
-        # Structured answers
         if q_type == "structured":
             return 1.0 if semantic >= 0.65 else semantic * 0.9
 
-        # Essay answers (EXAMINER STYLE)
-        coverage, _ = self._calculate_coverage_score(
-            student_text, reference_text, max_marks
-        )
-
+        coverage, _ = self._calculate_coverage_score(student_text, reference_text, max_marks)
         return self._apply_marking_band(semantic, coverage)
 
     def _classify_question(self, max_marks: int) -> str:
@@ -248,36 +280,32 @@ class GradingService:
         emb1 = xlmr.encode(student_text, convert_to_tensor=True)
         emb2 = xlmr.encode(reference_text, convert_to_tensor=True)
         raw_sim = util.cos_sim(emb1, emb2).item()
-        
-        # Apply 1.2x boost and clamp
+
         boosted = min(1.0, max(0.0, raw_sim * 1.2))
-        
-        # Nonlinear mapping for human-like grading
-        # (e.g., 0.65 raw -> 0.8+ score)
+
         if boosted > 0.60:
-            # Scale 0.6 -> 1.0 range into 0.75 -> 1.0 range
             return 0.75 + (boosted - 0.60) * (0.25 / 0.40)
-        
+
         return boosted
 
     # ----------------------------------------------------------
-    # MARKING BANDS (CRITICAL FIX)
+    # MARKING BANDS
     # ----------------------------------------------------------
     def _apply_marking_band(self, semantic: float, coverage: float) -> float:
         combined = (0.6 * semantic) + (0.4 * coverage)
 
         if combined >= 0.85:
-            return 0.95   # Excellent
+            return 0.95
         if combined >= 0.75:
-            return 0.85   # Very good
+            return 0.85
         if combined >= 0.65:
-            return 0.70   # Good
+            return 0.70
         if combined >= 0.50:
-            return 0.55   # Partial
+            return 0.55
         if combined >= 0.35:
-            return 0.35   # Weak
+            return 0.35
         if combined >= 0.20:
-            return 0.20   # Very weak
+            return 0.20
 
         return 0.0
 
@@ -297,29 +325,34 @@ class GradingService:
             chunks = [c.strip() for c in source.split("\n") if c.strip()]
 
         bm25 = BM25Okapi([c.split() for c in chunks])
-        # Retrieve top 3 chunks for richer context
         top_chunks = bm25.get_top_n(q_text.split(), chunks, n=3)
         return "\n\n".join(top_chunks)
 
-    def _calculate_coverage_score(self, student_text, reference_text, max_marks):
+    def _calculate_coverage_score(self, student_text: str, reference_text: str, max_marks: int):
+        """
+        Optimized: batch-encodes all reference sentences in a single XLM-R forward pass
+        instead of one pass per sentence.
+        """
         if not reference_text:
             return 0.0, "No reference"
 
         sentences = re.split(r"(?<=[.!?])\s+", reference_text)
         sentences = [s for s in sentences if len(s.strip()) > 10]
 
+        if not sentences:
+            return 0.0, "No reference sentences"
+
+        # Encode student text once
         student_emb = xlmr.encode(student_text, convert_to_tensor=True)
 
-        hits = 0
-        for s in sentences:
-            sim = util.cos_sim(
-                student_emb, xlmr.encode(s, convert_to_tensor=True)
-            ).item()
-            # Lower threshold for Sinhala linguistic variation
-            if sim >= 0.45:
-                hits += 1
+        # Batch-encode ALL reference sentences in one forward pass (major speedup)
+        sentence_embs = xlmr.encode(sentences, batch_size=32, convert_to_tensor=True)
 
-        # Use 70% threshold for full coverage marks
+        # Cosine similarities in one matrix operation
+        sims = util.cos_sim(student_emb, sentence_embs)[0]  # shape: (num_sentences,)
+
+        hits = int((sims >= 0.45).sum().item())
+
         ratio = hits / max(1, len(sentences) * 0.7)
         return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
 
@@ -380,74 +413,69 @@ class GradingService:
     def _get_rubric_weights(self, eval_session) -> Dict[str, float]:
         """Fetch weights for semantic, coverage, and relevance from the session's rubric."""
         default_weights = {"semantic": 0.6, "coverage": 0.2, "relevance": 0.2}
-        
+
         if not eval_session.rubric_id:
             logger.warning(f"No rubric_id for session {eval_session.id}, using default weights")
             return default_weights
-            
+
         criteria = (
             self.db.query(RubricCriterion)
             .filter(RubricCriterion.rubric_id == eval_session.rubric_id)
             .all()
         )
-        
+
         if not criteria:
             logger.warning(f"No criteria found for rubric {eval_session.rubric_id}, using defaults")
             return default_weights
-            
+
         weights = {c.criterion.lower(): c.weight_percentage for c in criteria}
-        
-        # Ensure all key criteria exist
+
         for key in default_weights:
             if key not in weights:
                 weights[key] = default_weights[key]
-                
+
         return weights
 
     def _calculate_system_score(self, student_text: str, reference_text: str, weights: Dict[str, float]) -> float:
         """Calculate score based on rubrics, using XLM-R for semantic similarity."""
         if not reference_text or not student_text:
             return 0.0
-            
+
         # 1. Semantic Score (XLM-R)
         semantic = self._semantic_similarity(student_text, reference_text)
-        
-        # 2. Coverage Score
-        coverage, _ = self._calculate_coverage_score(student_text, reference_text, 1) # max_marks dummy
-        
-        # 3. Relevance Score (Word overlap / alignment)
+
+        # 2. Coverage Score (uses batched XLM-R encoding)
+        coverage, _ = self._calculate_coverage_score(student_text, reference_text, 1)
+
+        # 3. Relevance Score (word overlap — fast)
         relevance = self._calculate_relevance_score(student_text, reference_text)
-        
-        # Combined Score
+
         total = (
             weights.get("semantic", 0.6) * semantic +
             weights.get("coverage", 0.2) * coverage +
             weights.get("relevance", 0.2) * relevance
         )
-        
+
         return max(0.0, min(1.0, total))
 
     def _calculate_relevance_score(self, student_text: str, reference_text: str) -> float:
         """Calculate relevance using keyword recall with lenient filtering."""
         if not reference_text or not student_text:
             return 0.0
-            
+
         def get_keywords(text):
-            # Simple keyword filter: length > 3 characters (avoid particles)
             words = re.findall(r'\w+', text.lower())
             return set([w for w in words if len(w) > 3])
-            
+
         student_words = get_keywords(student_text)
         ref_words = get_keywords(reference_text)
-        
+
         if not ref_words:
-            return 1.0 # If no keywords in ref, assume relevant
-            
+            return 1.0
+
         overlap = len(student_words & ref_words)
-        # Recall: how many ref keywords matched?
-        # Target: matching 50% of reference keywords is usually 100% relevant
         recall = overlap / (len(ref_words) * 0.5)
-        
+
         return min(1.0, recall)
 
     def _resolve_display_number(self, question, q_number: str) -> str:
@@ -455,10 +483,10 @@ class GradingService:
         if hasattr(question, "question_number") and question.question_number:
             return str(question.question_number)
         elif hasattr(question, "label") and question.label:
-             if hasattr(question, "question") and question.question and question.question.question_number:
-                 return f"{question.question.question_number}({question.label})"
-             else:
-                 return str(question.label)
+            if hasattr(question, "question") and question.question and question.question.question_number:
+                return f"{question.question.question_number}({question.label})"
+            else:
+                return str(question.label)
         return q_number
 
     # ----------------------------------------------------------
@@ -471,7 +499,7 @@ class GradingService:
             q_text = getattr(question, "question_text", "") or getattr(
                 question, "sub_question_text", ""
             )
-            
+
             prompt = f"""
 You are an expert teacher in Sri Lanka. A system has already graded a student's answer.
 Question {display_number}: {q_text}
@@ -493,9 +521,9 @@ Output ONLY the feedback text in Sinhala.
 """
             response = self.gemini.generate_content(prompt).get("text", "")
             feedback_text = response.strip()
-            
+
             return f"**Question {display_number}**\n\n{feedback_text}"
-            
+
         except Exception as e:
             logger.error(f"Gemini feedback failed for {display_number}: {e}")
             return f"**Question {display_number}**\n(Feedback unavailable. Score: {awarded_marks}/{max_marks})"
