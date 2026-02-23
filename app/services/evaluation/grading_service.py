@@ -381,10 +381,13 @@ class GradingService:
         
         raw_sim = util.cos_sim(emb1, emb2).item()
 
-        boosted = min(1.0, max(0.0, raw_sim * 1.2))
+        # Increased boost back to a more generous level (1.3)
+        # Sinhala embeddings often naturally sit in the 0.4-0.6 range for correct answers
+        boosted = min(1.0, max(0.0, raw_sim * 1.3))
 
-        if boosted > 0.60:
-            return 0.75 + (boosted - 0.60) * (0.25 / 0.40)
+        if boosted > 0.45: # Lowered threshold from 0.65 to 0.45
+            # Linear mapping that ensures mid-range answers (0.45+ raw) land in passing grades
+            return 0.65 + (boosted - 0.45) * (0.35 / 0.55)
 
         return boosted
 
@@ -395,20 +398,17 @@ class GradingService:
     def _apply_marking_band(self, semantic: float, coverage: float) -> float:
         combined = (0.6 * semantic) + (0.4 * coverage)
 
-        if combined >= 0.85:
-            return 0.95
-        if combined >= 0.75:
-            return 0.85
-        if combined >= 0.65:
-            return 0.70
-        if combined >= 0.50:
-            return 0.55
-        if combined >= 0.35:
-            return 0.35
-        if combined >= 0.20:
-            return 0.20
+        # Generous mid-range bands to restore score distribution
+        if combined >= 0.80:
+            return 0.92 + (combined - 0.80) * 0.4  # 0.80 -> 0.92, 1.0 -> 1.0
+        if combined >= 0.60: # Widened mid-high range
+            return 0.75 + (combined - 0.60) * 0.85 # 0.60 -> 0.75, 0.80 -> 0.92
+        if combined >= 0.40: # Generous mid-range
+            return 0.50 + (combined - 0.40) * 1.25 # 0.40 -> 0.50, 0.60 -> 0.75
+        if combined >= 0.25:
+            return 0.30 + (combined - 0.25) * 1.33 # 0.25 -> 0.30, 0.40 -> 0.50
 
-        return 0.0
+        return combined
 
     # ----------------------------------------------------------
     # CONTEXT & COVERAGE
@@ -426,7 +426,8 @@ class GradingService:
             chunks = [c.strip() for c in source.split("\n") if c.strip()]
 
         bm25 = BM25Okapi([c.split() for c in chunks])
-        top_chunks = bm25.get_top_n(q_text.split(), chunks, n=3)
+        # Increase n from 3 to 5 to get more context
+        top_chunks = bm25.get_top_n(q_text.split(), chunks, n=5)
         return "\n\n".join(top_chunks)
 
     def _calculate_coverage_score(self, student_text: str, reference_text: str, max_marks: int, student_emb=None):
@@ -464,9 +465,11 @@ class GradingService:
         # Cosine similarities in one matrix operation
         sims = util.cos_sim(s_emb, sentence_embs)[0]  # shape: (num_sentences,)
 
-        hits = int((sims >= 0.45).sum().item())
+        # Restored lenient hit threshold (0.32) for broad Sinhala concept matching
+        hits = int((sims >= 0.32).sum().item())
 
-        ratio = hits / max(1, len(sentences) * 0.7)
+        # More lenient divisor (0.5 instead of 0.6)
+        ratio = hits / max(1, len(sentences) * 0.5)
         return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
 
 
@@ -555,13 +558,29 @@ class GradingService:
         # 3. Relevance Score (word overlap — fast)
         relevance = self._calculate_relevance_score(student_text, reference_text)
 
+        # 4. Integrate Marking Band Logic
+        # Marking bands effectively "round up" scores based on combined semantic/coverage strength
+        banded_score = self._apply_marking_band(semantic, coverage)
+        
+        # Weighted average of metrics
         total = (
             weights.get("semantic", 0.6) * semantic +
             weights.get("coverage", 0.2) * coverage +
             weights.get("relevance", 0.2) * relevance
         )
 
-        return max(0.0, min(1.0, total))
+        # If it's a very high semantic match, prioritize the banded score to ensure top marks
+        if semantic >= 0.90:
+            # Floor for high quality answers
+            final_score = max(banded_score, total, 0.90)
+        elif semantic >= 0.50:
+            # Stronger influence of marking bands for mid-range answers
+            final_score = (banded_score * 0.85) + (total * 0.15)
+        else:
+            # Low quality: raw total with a small bandaided boost
+            final_score = (banded_score * 0.3) + (total * 0.7)
+
+        return max(0.0, min(1.0, final_score))
 
 
     def _calculate_relevance_score(self, student_text: str, reference_text: str) -> float:
@@ -571,7 +590,8 @@ class GradingService:
 
         def get_keywords(text):
             words = re.findall(r'\w+', text.lower())
-            return set([w for w in words if len(w) > 3])
+            # For Sinhala, words slightly longer than 2 characters often carry meaning
+            return set([w for w in words if len(w) > 2])
 
         student_words = get_keywords(student_text)
         ref_words = get_keywords(reference_text)
@@ -580,7 +600,8 @@ class GradingService:
             return 1.0
 
         overlap = len(student_words & ref_words)
-        recall = overlap / (len(ref_words) * 0.5)
+        # More lenient recall divisor (0.4 instead of 0.5)
+        recall = overlap / (len(ref_words) * 0.4)
 
         return min(1.0, recall)
 
