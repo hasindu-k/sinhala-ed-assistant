@@ -75,6 +75,17 @@ def create_user_message(
             transcript=payload.transcript,
             audio_duration_sec=payload.audio_duration_sec,
         )
+        
+        # 🎯 Generate intelligent title if this is a new session with default title
+        if session_id in ("undefined", "null", "", None) and payload.content:
+            try:
+                from app.components.document_processing.services.classifier_service import generate_session_title
+                intelligent_title = generate_session_title(payload.content)
+                chat_session_service.update_session_title(parsed_session_id, current_user.id, intelligent_title)
+                logger.info(f"Generated title '{intelligent_title}' for new session {parsed_session_id}")
+            except Exception as e:
+                logger.warning(f"Failed to generate session title: {e}")
+                # Continue with default "New Chat" title
 
         attachments = payload.attachments or []
         if attachments:
