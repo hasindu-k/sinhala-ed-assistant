@@ -203,4 +203,15 @@ class ChatSessionService:
                 context_service.update_question_paper(user_id, resource_id)
             
         return {"detail": f"Resource attached as {role} successfully"}
+    
+    def update_session_title(self, session_id: UUID, user_id: UUID, new_title: str):
+        """Update session title after ownership validation."""
+        session = self.get_session_with_ownership_check(session_id, user_id)
+        
+        session.title = new_title
+        self.db.commit()
+        self.db.refresh(session)
+        
+        logger.info(f"Updated session {session_id} title to: {new_title}")
+        return session
 
