@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.repositories.resource_repository import ResourceRepository
 from app.shared.models.resource_file import ResourceFile
+from app.shared.models.resource_chunks import ResourceChunk
+from app.shared.models.message_relations import MessageContextChunk
 
 # Configure upload directory
 UPLOAD_DIR = Path("uploads")
@@ -210,6 +212,26 @@ class ResourceService:
     def delete_resource(self, resource_id: UUID, user_id: UUID, *, commit: bool = True):
         """Delete resource and associated file after ownership validation."""
         resource = self.get_resource_with_ownership_check(resource_id, user_id)
+
+        chunk_ids = (
+            self.db.query(ResourceChunk.id)
+            .filter(ResourceChunk.resource_id == resource_id)
+            .all()
+        )
+        chunk_ids = [row.id for row in chunk_ids]
+
+        if chunk_ids:
+            (
+                self.db.query(MessageContextChunk)
+                .filter(MessageContextChunk.chunk_id.in_(chunk_ids))
+                .delete(synchronize_session=False)
+            )
+
+        (
+            self.db.query(ResourceChunk)
+            .filter(ResourceChunk.resource_id == resource_id)
+            .delete(synchronize_session=False)
+        )
         
         # Delete physical file
         if resource.storage_path and os.path.exists(resource.storage_path):
