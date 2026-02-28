@@ -3,6 +3,7 @@ import logging
 from typing import Optional, List, Dict
 from uuid import UUID
 from sqlalchemy.orm import Session
+logger = logging.getLogger(__name__)
 
 from app.repositories.message_repository import MessageRepository
 from app.shared.models.message import Message
@@ -271,7 +272,7 @@ class MessageService:
         # query_embedding: Optional[List[float]] = None,
         from app.components.document_processing.services.embedding_service import generate_text_embedding
         query_embedding: list[float] = generate_text_embedding(user_query)
-        logging.info("Generated query embedding for message %s", message_id)
+        logging.info("Generated query embedding for message %s: %s", message_id, query_embedding[:5])
         # Generate response using RAG
         from app.services.rag_service import RAGService
         rag_service = RAGService(self.db)
@@ -286,6 +287,8 @@ class MessageService:
             final_k=final_k,
             grade_level=message.grade_level,
         )
+
+        logger.info("RAG response generated for message %s: %s", message_id, result.get("xai_explanation"))
         
         # Get the created assistant message
         assistant_message = self.db.query(Message).filter(

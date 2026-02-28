@@ -77,6 +77,7 @@ class MessageResponse(BaseModel):
     resource_ids: list[UUID] = []
     parent_msg_id: Optional[UUID] = None
     safety_summary: Optional[MessageSafetySummary] = None
+    
 
     class Config:
         from_attributes = True
@@ -186,8 +187,16 @@ class MessageSafetyReportResponse(BaseModel):
     extra_concepts: Optional[List[str]] = None
     flagged_sentences: Optional[List[Any]] = None
     reasoning: Optional[str] = None
+    xai_explanation: Optional[Any] = None
     created_at: datetime
 
+
+class XAIExplanationResponse(BaseModel):
+    """Return only the stored explanation for a message."""
+    xai_explanation: Optional[Any] = None
+
+    class Config:
+        from_attributes = True
     class Config:
         from_attributes = True
 

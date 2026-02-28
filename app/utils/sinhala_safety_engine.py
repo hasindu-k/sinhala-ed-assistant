@@ -82,19 +82,18 @@ def detect_misconceptions(generated: str, source: str):
             flagged.append({
                 "sentence": sentence,
                 "severity": severity,
-                "unseen_ratio": round(unseen_ratio, 2)
+                "unseen_ratio": round(unseen_ratio, 2),
+                "concept_count": len(sent_concepts),
             })
 
     return flagged
+
+from app.services.semantic_similarity_service import SemanticSimilarityService
 
 def attach_evidence(
     flagged_sentences: list[dict],
     context: str
 ) -> list[dict]:
-    """
-    Attach supporting or conflicting evidence from context
-    to each flagged sentence.
-    """
 
     if not flagged_sentences or not context:
         return flagged_sentences
@@ -106,28 +105,39 @@ def attach_evidence(
         if len(s.strip()) > 10
     ]
 
-    context_concepts = [
-        extract_concepts(s) for s in context_sentences
-    ]
-
     enriched = []
 
     for item in flagged_sentences:
         sentence = item["sentence"]
-        sent_concepts = extract_concepts(sentence)
 
+        # --- Semantic alignment ---
         best_match = None
-        best_overlap = 0
+        best_similarity = 0.0
 
-        for ctx_sentence, ctx_concepts in zip(context_sentences, context_concepts):
-            overlap = len(sent_concepts & ctx_concepts)
-            if overlap > best_overlap:
-                best_overlap = overlap
+        for ctx_sentence in context_sentences:
+            similarity = SemanticSimilarityService.similarity(
+                sentence,
+                ctx_sentence
+            )
+
+            if similarity > best_similarity:
+                best_similarity = similarity
                 best_match = ctx_sentence
+
+        # --- Concept overlap ---
+        sent_concepts = extract_concepts(sentence)
+        ctx_concepts = extract_concepts(best_match) if best_match else set()
+
+        if sent_concepts:
+            concept_overlap = len(sent_concepts & ctx_concepts) / len(sent_concepts)
+        else:
+            concept_overlap = 0.0
 
         enriched.append({
             **item,
-            "evidence": best_match
+            "evidence": best_match,
+            "semantic_similarity_score": round(best_similarity, 3),
+            "concept_overlap": round(concept_overlap, 3),
         })
 
     return enriched
