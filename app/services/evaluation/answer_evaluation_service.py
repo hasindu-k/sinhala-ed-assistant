@@ -11,7 +11,10 @@ from typing import Optional, List, Dict
 from uuid import UUID
 from decimal import Decimal
 import re
+import logging
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.repositories.evaluation.answer_evaluation_repository import AnswerEvaluationRepository
 from app.shared.models.session_resources import SessionResource
@@ -241,6 +244,35 @@ class AnswerEvaluationService:
             else:
                 return "F"
 
+        # Generate marks summary grouped by paper part
+        marks_summary = {}
+        logger.debug(f"Generating marks summary for {len(scores)} scores")
+        for score in scores:
+            part = "Other"
+            if score.question and score.question.part_name:
+                part = score.question.part_name.replace("_", " ")
+            elif score.sub_question and score.sub_question.question and score.sub_question.question.part_name:
+                part = score.sub_question.question.part_name.replace("_", " ")
+
+            if part not in marks_summary:
+                marks_summary[part] = []
+            
+            label = ""
+            if score.question:
+                label = score.question.question_number
+            elif score.sub_question:
+                parent_num = score.sub_question.question.question_number if score.sub_question.question else ""
+                label = f"{parent_num}({score.sub_question.label})"
+
+            marks_summary[part].append({
+                "label": label,
+                "awarded": float(score.awarded_marks) if score.awarded_marks is not None else 0,
+                "max": float(score.question.max_marks) if score.question else (float(score.sub_question.max_marks) if score.sub_question else 0)
+            })
+        
+        logger.debug(f"Generated marks summary with {len(marks_summary)} parts: {list(marks_summary.keys())}")
+
+
         # Extract missed concepts and improvement points from question feedbacks
         improvement_points = []
         seen_points = set()
@@ -277,6 +309,7 @@ class AnswerEvaluationService:
             "total_score": float(result.total_score) if result.total_score is not None else None,
             "grade": calc_grade(result.total_score),
             "feedback": feedback_obj,
+            "marks_summary": marks_summary,
             "evaluated_at": result.evaluated_at,
             "question_feedbacks": [
                 {

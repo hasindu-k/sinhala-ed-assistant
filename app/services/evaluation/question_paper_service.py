@@ -50,6 +50,7 @@ class QuestionPaperService:
         question_number: str,
         question_text: str,
         max_marks: Optional[int] = None,
+        part_name: Optional[str] = None,
         shared_stem: Optional[str] = None,
         inherits_shared_stem_from: Optional[str] = None,
     ):
@@ -59,6 +60,7 @@ class QuestionPaperService:
             question_number=question_number,
             question_text=question_text,
             max_marks=max_marks,
+            part_name=part_name,
             shared_stem=shared_stem,
             inherits_shared_stem_from=inherits_shared_stem_from,
         )

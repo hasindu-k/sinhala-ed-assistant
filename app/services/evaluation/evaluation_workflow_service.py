@@ -1114,6 +1114,7 @@ class EvaluationWorkflowService:
                         question_number=normalized_q_num,
                         question_text=q_data.get("text"),
                         max_marks=q_data.get("marks"),
+                        part_name=paper_key,
                         shared_stem=q_data.get("shared_stem"),
                         inherits_shared_stem_from=q_data.get("inherits_shared_stem_from")
                     )
