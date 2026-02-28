@@ -80,7 +80,6 @@ def get_answer_feedback(
         "improvement_points": improvement_points,
         "evaluated_at": result.get("evaluated_at"),
     }
-logger = logging.getLogger(__name__)
 
 @router.get("/sessions/{evaluation_id}/results", response_model=List[Dict[str, Any]])
 def list_evaluation_results(
@@ -94,7 +93,6 @@ def list_evaluation_results(
     """
     service = EvaluationWorkflowService(db)
     try:
-        logger = logging.getLogger(__name__)
         answer_docs = service.list_answer_documents(evaluation_id, current_user.id)
         logger.debug(f"Session {evaluation_id}: Found {len(answer_docs)} answer documents.")
         results = []

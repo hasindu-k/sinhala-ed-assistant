@@ -14,7 +14,7 @@ class ResourceChunk(Base):
     __tablename__ = "resource_chunks"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    resource_id = Column(UUID(as_uuid=True), ForeignKey("resource_files.id"), nullable=False, index=True)
+    resource_id = Column(UUID(as_uuid=True), ForeignKey("resource_files.id", ondelete="CASCADE"), nullable=False, index=True)
     chunk_index = Column(Integer, nullable=True)
     content = Column(Text, nullable=True)
     content_length = Column(Integer, nullable=True)
