@@ -36,6 +36,10 @@ class QuestionPaperService:
         """Get all question papers for a chat session."""
         return self.repository.get_question_papers_by_chat_session(chat_session_id)
 
+    def delete_question_papers_by_chat_session(self, chat_session_id: UUID) -> None:
+        """Delete all question papers for a chat session."""
+        self.repository.delete_question_papers_by_chat_session(chat_session_id)
+
     def get_question_papers_by_evaluation_session(self, evaluation_session_id: UUID) -> List:
         """Get all question papers for an evaluation session."""
         return self.repository.get_question_papers_by_evaluation_session(evaluation_session_id)

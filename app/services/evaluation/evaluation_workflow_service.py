@@ -604,7 +604,14 @@ class EvaluationWorkflowService:
             if qp_resource:
                 # Check if already parsed
                 existing_qp = self.question_papers.get_question_papers_by_chat_session(chat_session_id)
+                already_parsed = False
                 if existing_qp:
+                    for qp in existing_qp:
+                        if getattr(qp, 'resource_id', None) == qp_resource.resource_id:
+                            already_parsed = True
+                            break
+                            
+                if already_parsed:
                     results.append(DocumentProcessingStatus(
                         resource_id=qp_resource.resource_id,
                         role="question_paper",
@@ -1000,11 +1007,6 @@ class EvaluationWorkflowService:
         # Verify ownership and get session
         self._ensure_chat_session_owner(session_id, user_id)
 
-        # Check if already parsed for this chat session
-        question_papers = self.question_papers.get_question_papers_by_chat_session(session_id)
-        if question_papers:
-            return self.question_papers.get_question_paper_with_questions(question_papers[0].id)
-
         # Get attached question paper resource from Chat Session
         from app.shared.models.session_resources import SessionResource
         session_resource = self.db.query(SessionResource).filter(
@@ -1014,6 +1016,13 @@ class EvaluationWorkflowService:
 
         if not session_resource:
             raise ValueError("No question paper resource attached to this chat session")
+            
+        # Check if already parsed for this chat session AND resource
+        question_papers = self.question_papers.get_question_papers_by_chat_session(session_id)
+        if question_papers:
+            for qp in question_papers:
+                if getattr(qp, 'resource_id', None) == session_resource.resource_id:
+                    return self.question_papers.get_question_paper_with_questions(qp.id)
 
         self._ensure_resource_owner(session_resource.resource_id, user_id)
         
@@ -1064,6 +1073,9 @@ class EvaluationWorkflowService:
         except Exception as e:
             logger.error(f"Failed to parse paper structure: {e}", exc_info=True)
             raise ValueError(f"Failed to parse question paper structure: {e}")
+        
+        # Clear any existing question papers for this chat session to cleanly replace
+        self.question_papers.delete_question_papers_by_chat_session(session_id)
         
         # Create question paper entry linked to Chat Session
         question_paper = self.question_papers.create_question_paper(
