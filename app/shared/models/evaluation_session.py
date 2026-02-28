@@ -23,7 +23,7 @@ class EvaluationResource(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     evaluation_session_id = Column(UUID(as_uuid=True), ForeignKey("evaluation_sessions.id"), nullable=False, index=True)
-    resource_id = Column(UUID(as_uuid=True), ForeignKey("resource_files.id"), nullable=False)
+    resource_id = Column(UUID(as_uuid=True), ForeignKey("resource_files.id", ondelete="CASCADE"), nullable=False)
     role = Column(String, nullable=True)  # syllabus, question_paper, answer_script
 
 

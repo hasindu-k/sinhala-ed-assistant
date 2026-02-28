@@ -332,9 +332,25 @@ class GradingService:
         if not scored_items:
             return result
 
-        # 5. Generate Batch Feedback
-        logger.info(f"Generating on-demand batch feedback for result {result.id}")
-        feedback_map = self._get_batch_feedback_from_gemini(scored_items)
+        # 5. Generate Batch & Overall Feedback Concurrently
+        logger.info(f"Generating on-demand batch & overall feedback for result {result.id}")
+        feedback_map = {}
+        overall_feedback = ""
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_batch = executor.submit(self._get_batch_feedback_from_gemini, scored_items)
+            future_overall = executor.submit(self._generate_overall_feedback, result.total_score, result.id)
+            
+            try:
+                feedback_map = future_batch.result()
+            except Exception as e:
+                logger.error(f"Batch feedback generation failed: {e}")
+                
+            try:
+                overall_feedback = future_overall.result()
+            except Exception as e:
+                logger.error(f"Overall feedback generation failed: {e}")
+                overall_feedback = f"Total Score: {result.total_score}"
 
         # 6. Update individual scores
         for item in scored_items:
@@ -344,7 +360,7 @@ class GradingService:
                 qs.feedback = feedback
 
         # 7. Generate overall feedback
-        result.overall_feedback = self._generate_overall_feedback(result.total_score, result.id)
+        result.overall_feedback = overall_feedback
         
         self.db.commit()
         return result
@@ -621,62 +637,78 @@ class GradingService:
     # ----------------------------------------------------------
     def _get_batch_feedback_from_gemini(self, items: List[Dict]) -> Dict[str, str]:
         """
-        Request feedback for multiple questions in a single Gemini call.
+        Request feedback for multiple questions in smaller concurrent batches.
         Returns map of key -> feedback text.
         """
         if not items:
             return {}
 
-        batch_prompt = """
+        base_prompt = """
 You are an expert teacher in Sri Lanka. A system has already graded several student answers.
 Provide short, helpful feedback in Sinhala for each question, explaining why the student received the awarded marks.
 Highlight what was good and what could be improved based on the reference.
+
+**CRITICAL INSTRUCTION:**
+If the student did not get full marks and missed certain concepts, you MUST explicitly state the missing points using phrases like "අඩංගු විය යුතුය", "මඟ හැරී ඇත", "සඳහන් කළ යුතුය", or "පැහැදිලි කළ යුතුය". The system relies on these keywords to extract 'Missing Concepts' and 'Improvement Points'.
 Be encouraging but accurate.
 
 Return the results as a JSON object where names are the question keys and values are the feedback text.
 Example format:
 {
-  "1": "ඔබේ පිළිතුර නිවැරදි නමුත් තවත් පැහැදිලි කිරීමක් අවශ්‍යයි...",
+  "1": "ඔබේ පිළිතුර නිවැරදි නමුත් තවත් පැහැදිලි කිරීමක් අවශ්‍යයි. [X] අඩංගු විය යුතුය...",
   "2අ": "හොඳ උත්සාහයක්! නමුත් ප්‍රධාන කරුණු කිහිපයක් මඟ හැරී ඇත..."
 }
 
 Questions to evaluate:
 """
-        for item in items:
-            q_text = getattr(item["target"], "question_text", "") or getattr(
-                item["target"], "sub_question_text", ""
-            )
-            batch_prompt += f"\n--- Key: {item['key']} ---\n"
-            batch_prompt += f"Question Number: {item['display_number']}\n"
-            batch_prompt += f"Question: {q_text}\n"
-            batch_prompt += f"Max Marks: {item['max_marks']}\n"
-            batch_prompt += f"Awarded Marks: {item['awarded_marks']}\n"
-            batch_prompt += f"Student Answer: {item['student_text']}\n"
-            batch_prompt += f"Reference: {item['reference_text']}\n"
-
-        try:
-            # Use JSON mode for reliable parsing
-            response_json = self.gemini.generate_content(batch_prompt, json_mode=True).get("text", "{}")
-            try:
-                # Clean the response often Gemini wraps in ```json
-                clean_json = re.sub(r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE)
-                feedback_data = json.loads(clean_json)
-            except Exception as e:
-                logger.error(f"Failed to parse batched feedback JSON: {e}. Raw: {response_json}")
-                feedback_data = {}
-
-            # Wrap feedback with question identifiers
-            final_map = {}
-            for item in items:
-                key = item["key"]
-                feedback = feedback_data.get(key, "(ප්‍රතිපෝෂණ ලබා ගත නොහැක)")
-                final_map[key] = f"**ප්‍රශ්නය {item['display_number']}**\n\n{feedback}"
+        def process_chunk(chunk: List[Dict]) -> Dict[str, str]:
+            chunk_prompt = base_prompt
+            for item in chunk:
+                q_text = getattr(item["target"], "question_text", "") or getattr(
+                    item["target"], "sub_question_text", ""
+                )
+                chunk_prompt += f"\n--- Key: {item['key']} ---\n"
+                chunk_prompt += f"Question Number: {item['display_number']}\n"
+                chunk_prompt += f"Question: {q_text}\n"
+                chunk_prompt += f"Max Marks: {item['max_marks']}\n"
+                chunk_prompt += f"Awarded Marks: {item['awarded_marks']}\n"
+                chunk_prompt += f"Student Answer: {item['student_text']}\n"
+                chunk_prompt += f"Reference: {item['reference_text']}\n"
             
-            return final_map
+            try:
+                response_json = self.gemini.generate_content(chunk_prompt, json_mode=True).get("text", "{}")
+                try:
+                    clean_json = re.sub(r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE)
+                    return json.loads(clean_json)
+                except Exception as e:
+                    logger.error(f"Failed to parse batched feedback JSON: {e}. Raw: {response_json}")
+                    return {}
+            except Exception as e:
+                logger.error(f"Batch Gemini feedback failed: {e}")
+                return {}
 
-        except Exception as e:
-            logger.error(f"Batch Gemini feedback failed: {e}")
-            return {item["key"]: f"**ප්‍රශ්නය {item['display_number']}**\n(ප්‍රතිපෝෂණ තාවකාලිකව ලබා ගත නොහැක)" for item in items}
+        batch_size = 5
+        chunks = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+        
+        feedback_data = {}
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 4)) as executor:
+            future_to_chunk = {executor.submit(process_chunk, chunk): chunk for chunk in chunks}
+            for future in as_completed(future_to_chunk):
+                try:
+                    result = future.result()
+                    if result:
+                        feedback_data.update(result)
+                except Exception as exc:
+                    logger.error(f"Chunk processing generated an exception: {exc}")
+
+        # Wrap feedback with question identifiers
+        final_map = {}
+        for item in items:
+            key = item["key"]
+            feedback = feedback_data.get(key, "(ප්‍රතිපෝෂණ ලබා ගත නොහැක)")
+            final_map[key] = f"**ප්‍රශ්නය {item['display_number']}**\n\n{feedback}"
+        
+        return final_map
 
     def _generate_overall_feedback(self, total_score, result_id):
         try:
