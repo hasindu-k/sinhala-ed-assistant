@@ -71,7 +71,7 @@ class ResourceProcessorService:
                         if extracted_text.strip():
                             cleaned_text = basic_clean(extracted_text)
                             logger.info("Direct PDF text extraction succeeded (english hint)")
-                            return cleaned_text, page_count, lang_hint
+                            return cleaned_text, page_count
                         logger.info("Direct PDF extraction returned empty text; falling back to OCR")
                     except Exception as e:
                         logger.warning(f"Direct PDF text extraction failed, falling back to OCR: {e}")
