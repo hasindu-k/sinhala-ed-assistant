@@ -31,89 +31,195 @@ class ResourceProcessorService:
         if file_ext not in ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.webp']:
             raise ValueError(f"Unsupported file type: {file_ext}")
 
-    def _extract_text(self, file_path: str) -> tuple[str, int, str]:
+    def _extract_text(self, file_path: str, resource_type: Optional[str] = None) -> tuple[str, int, str]:
         """
         Extract text from PDF or image file.
-        
+
         Returns:
             (extracted_text, page_count, detected_language)
         """
-        # Import utilities
+
+        from pathlib import Path
+
         from app.components.document_processing.utils.file_operations import convert_file_to_images
         from app.components.document_processing.services.text_extraction import (
             extract_text_from_pdf,
-            process_ocr_for_images,
+            process_ocr_for_images_with_tables,
             classify_text_type,
             detect_language_from_text,
         )
         from app.components.document_processing.utils.text_cleaner import basic_clean
-        
+
         file_ext = Path(file_path).suffix.lower()
-        
+
         try:
-            if file_ext == '.pdf':
-                # Quick language sniff from first page text if available
-                lang_hint = "unknown"
-                try:
-                    import pdfplumber
-                    with pdfplumber.open(file_path) as pdf:
-                        if pdf.pages:
-                            sample_text = pdf.pages[0].extract_text() or ""
-                            lang_hint = detect_language_from_text(sample_text)
-                            logger.info(f"Detected script from PDF text sample: {lang_hint}")
-                except Exception as e:
-                    logger.debug(f"PDF language sniff failed: {e}")
+            if file_ext == ".pdf":
+                return self._process_pdf(
+                    file_path,
+                    convert_file_to_images,
+                    extract_text_from_pdf,
+                    process_ocr_for_images_with_tables,
+                    classify_text_type,
+                    detect_language_from_text,
+                    basic_clean,
+                    resource_type=resource_type,
+                )
 
-                # If likely English, try direct text extraction first (faster than OCR)
-                if lang_hint == "english":
-                    try:
-                        extracted_text, page_count = extract_text_from_pdf(file_path)
-                        if extracted_text.strip():
-                            cleaned_text = basic_clean(extracted_text)
-                            logger.info("Direct PDF text extraction succeeded (english hint)")
-                            return cleaned_text, page_count
-                        logger.info("Direct PDF extraction returned empty text; falling back to OCR")
-                    except Exception as e:
-                        logger.warning(f"Direct PDF text extraction failed, falling back to OCR: {e}")
-                
-                # Convert PDF to images for OCR
-                images = convert_file_to_images(file_path, 'pdf')
-                
-                # Classify first image to determine text type
-                if images:
-                    # Convert PIL Image to numpy array for classification
-                    import numpy as np
-                    first_img_np = cv2.cvtColor(np.array(images[0]), cv2.COLOR_RGB2BGR)
-                    
-                    # Save temporarily for classification
-                    temp_img_path = f"{file_path}_temp_classify.png"
-                    cv2.imwrite(temp_img_path, first_img_np)
-                    text_type = classify_text_type(temp_img_path)
-                    os.remove(temp_img_path)
-                    logger.info(f"Detected text type for PDF: {text_type} (lang_hint={lang_hint})")
-                
-                extracted_text, page_count = process_ocr_for_images(images)
-                cleaned_text = basic_clean(extracted_text)
+            return self._process_image(
+                file_path,
+                convert_file_to_images,
+                process_ocr_for_images_with_tables,
+                classify_text_type,
+                detect_language_from_text,
+                basic_clean,
+                resource_type=resource_type,
+            )
 
-                # If initial hint was unknown, infer from extracted text
-                inferred_lang = detect_language_from_text(cleaned_text)
-                final_lang = lang_hint if lang_hint != "unknown" else inferred_lang
-                return cleaned_text, page_count, final_lang
-            else:
-                # For images, classify first
-                text_type = classify_text_type(file_path)
-                logger.info(f"Detected text type for image: {text_type}")
-                
-                # Use OCR
-                images = convert_file_to_images(file_path, file_ext.lstrip('.'))
-                extracted_text, page_count = process_ocr_for_images(images)
-                cleaned_text = basic_clean(extracted_text)
-
-                inferred_lang = detect_language_from_text(cleaned_text)
-                return cleaned_text, page_count, inferred_lang
         except Exception as e:
             logger.error(f"Failed to extract text from {file_path}: {e}")
             raise ValueError(f"Text extraction failed: {e}")
+        
+    def _process_pdf(
+        self,
+        file_path,
+        convert_file_to_images,
+        extract_text_from_pdf,
+        process_ocr_for_images_with_tables,
+        classify_text_type,
+        detect_language_from_text,
+        basic_clean,
+        resource_type: Optional[str] = None
+    ):
+        lang_hint = self._sniff_pdf_language(file_path, detect_language_from_text)
+
+        # Try direct extraction for English PDFs first
+        if lang_hint == "english":
+            text, pages = self._try_direct_pdf_extraction(file_path, extract_text_from_pdf, basic_clean)
+            if text:
+                return text, pages, "english"
+
+        # OCR fallback
+        images = convert_file_to_images(file_path, "pdf")
+
+        if images:
+            self._classify_first_image(images[0], classify_text_type)
+
+        if resource_type:
+            force_layout = self.is_need_to_analyze_layout(resource_type)
+        else:
+            force_layout = True
+
+        extracted_text, page_count = process_ocr_for_images_with_tables(images, force_layout_analysis=force_layout)
+        cleaned_text = basic_clean(extracted_text)
+
+        inferred_lang = detect_language_from_text(cleaned_text)
+        final_lang = lang_hint if lang_hint != "unknown" else inferred_lang
+        logger.info(f"Final detected language for PDF: {final_lang} (inferred from text: {inferred_lang})")
+        return cleaned_text, page_count, final_lang
+
+    def _process_image(
+        self,
+        file_path,
+        convert_file_to_images,
+        process_ocr_for_images_with_tables,
+        classify_text_type,
+        detect_language_from_text,
+        basic_clean,
+        resource_type: Optional[str] = None
+    ):
+        text_type = classify_text_type(file_path)
+        logger.info(f"Detected text type for image: {text_type}")
+
+        images = convert_file_to_images(file_path, file_path.split('.')[-1])
+
+        if resource_type:
+            force_layout = self.is_need_to_analyze_layout(resource_type)
+        else:
+            force_layout = True
+
+        extracted_text, page_count = process_ocr_for_images_with_tables(images, force_layout_analysis=force_layout)
+
+        cleaned_text = basic_clean(extracted_text)
+        lang = detect_language_from_text(cleaned_text)
+
+        return cleaned_text, page_count, lang
+
+    def _try_direct_pdf_extraction(self, file_path, extract_text_from_pdf, basic_clean):
+        try:
+            extracted_text, page_count = extract_text_from_pdf(file_path)
+
+            if extracted_text.strip():
+                cleaned_text = basic_clean(extracted_text)
+                logger.info("Direct PDF text extraction succeeded (english hint)")
+                return cleaned_text, page_count
+
+        except Exception as e:
+            logger.warning(f"Direct PDF text extraction failed, falling back to OCR: {e}")
+
+        return None, 0
+
+    def _classify_first_image(self, pil_image, classify_text_type):
+        """
+        Classify first page image as handwritten / printed without saving to disk.
+        """
+        import numpy as np
+
+        img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+
+        text_type = classify_text_type(img_np)
+
+        logger.info(f"Detected text type for PDF: {text_type}")
+        return text_type
+    
+    def _sniff_pdf_language(self, file_path, detect_language_from_text):
+        """
+        Try to detect language from embedded PDF text.
+        Detect and reject legacy-encoded Sinhala (FMAbhaya-style).
+        """
+
+        def looks_like_legacy_sinhala(text: str) -> bool:
+            """
+            Detect common legacy Sinhala font patterns.
+            These appear as ASCII junk like 'YS%', ',xld', 'ud;d', etc.
+            """
+            if not text:
+                return False
+
+            legacy_markers = [
+                "YS%", ",xld", "ud;d", "kfuda", "wm ",
+                ";", "%", "`", "/`", "Tn fõ"
+            ]
+
+            # If too many ASCII letters but no Sinhala Unicode range
+            has_unicode_sinhala = any('\u0D80' <= ch <= '\u0DFF' for ch in text)
+            ascii_ratio = sum(ch.isascii() for ch in text) / max(len(text), 1)
+
+            if not has_unicode_sinhala and ascii_ratio > 0.8:
+                # Check known patterns
+                if any(marker in text for marker in legacy_markers):
+                    return True
+
+            return False
+
+        try:
+            import pdfplumber
+
+            with pdfplumber.open(file_path) as pdf:
+                if pdf.pages:
+                    sample_text = pdf.pages[0].extract_text() or ""
+
+                    # 🔥 If legacy Sinhala detected → force OCR
+                    if looks_like_legacy_sinhala(sample_text):
+                        logger.info("Detected legacy-encoded Sinhala in PDF. Forcing OCR.")
+                        return "unknown"
+
+                    lang = detect_language_from_text(sample_text)
+                    logger.info(f"Detected script from PDF text sample: {lang}")
+                    return lang
+        except Exception as e:
+            logger.debug(f"PDF language sniff failed: {e}")
+
+        return "unknown"
 
     def _create_chunks(self, text: str, resource_id: str) -> List[Dict[str, Any]]:
         """
@@ -143,8 +249,25 @@ class ResourceProcessorService:
 
     def _save_chunks_to_db(self, chunks: List[Dict[str, Any]], resource_id: str):
         """Persist chunks with embeddings to database."""
+        EXPECTED_DIM = 768  # gemini-embedding-001 dimension
+        valid_chunks = 0
+
         for chunk_data in chunks:
             content = chunk_data.get("text")
+            embedding = chunk_data.get("embedding")
+
+            if not embedding or len(embedding) != EXPECTED_DIM:
+                logger.error(
+                    "Invalid embedding for chunk %s of resource %s. "
+                    "Expected %d dimensions, got %s",
+                    chunk_data.get("chunk_id"),
+                    resource_id,
+                    EXPECTED_DIM,
+                    0 if not embedding else len(embedding)
+                )
+                raise ValueError(
+                    f"Embedding generation failed for chunk {chunk_data.get('chunk_id')}"
+                )
             chunk = ResourceChunk(
                 resource_id=resource_id,
                 chunk_index=chunk_data.get("chunk_id"),
@@ -162,9 +285,9 @@ class ResourceProcessorService:
             )
 
             self.db.add(chunk)
+            valid_chunks += 1
         
-        self.db.commit()
-        logger.info("Saved %d chunks for resource %s", len(chunks), resource_id)
+        logger.info("Prepared %d valid chunks for resource %s", valid_chunks, resource_id)
 
     def _create_document_embedding(self, text: str, resource_id: str) -> Optional[List[float]]:
         """Generate a document-level embedding for fast filtering."""
@@ -182,6 +305,7 @@ class ResourceProcessorService:
     def process_resource(
         self, 
         resource: ResourceFile, 
+        resource_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process a stored resource: extract text, chunk, embed, and save.
@@ -202,7 +326,7 @@ class ResourceProcessorService:
             chunk_count = self.db.query(ResourceChunk).filter(
                 ResourceChunk.resource_id == resource.id
             ).count()
-            
+
             if chunk_count > 0:
                 logger.info("Resource %s already processed with %d chunks", resource.id, chunk_count)
                 return {
@@ -212,6 +336,8 @@ class ResourceProcessorService:
                     "chunks_created": chunk_count,
                     "message": "Resource already processed, skipping"
                 }
+            else:
+                logger.info("Resource %s has extracted text but no chunks, reprocessing", resource.id)
         
         # Validate resource
         self._validate_resource_file(resource)
@@ -219,33 +345,37 @@ class ResourceProcessorService:
         logger.info("Starting processing for resource %s: %s", resource.id, resource.original_filename)
         
         # Extract text via OCR
-        extracted_text, page_count, detected_language = self._extract_text(resource.storage_path)
-        
+        extracted_text, page_count, detected_language = self._extract_text(resource.storage_path, resource_type=resource_type)
+
         if not extracted_text.strip():
             raise ValueError("No text could be extracted from the document")
         
         logger.info("Extracted %d characters from %d pages", len(extracted_text), page_count)
-        
-        # Generate document-level embedding (for fast filtering)
-        from app.shared.ai.embeddings import EMBED_MODEL
-        
-        document_embedding = self._create_document_embedding(extracted_text, str(resource.id))
-        if document_embedding:
-            resource.document_embedding = document_embedding
-            resource.embedding_model = EMBED_MODEL
-        
-        # Save extracted text
-        resource.extracted_text = extracted_text
-        # Save detected language (sinhala/english/mixed/unknown)
-        resource.language = detected_language
-        self.db.commit()
 
-        # Create chunks with embeddings (for detailed retrieval)
-        chunks = self._create_chunks(extracted_text, str(resource.id))
-        
-        # Save chunks to database
-        self._save_chunks_to_db(chunks, str(resource.id))
-        
+        try:
+            # Save extracted text & language
+            resource.extracted_text = extracted_text
+            resource.language = detected_language
+
+            # Document embedding
+            if resource.document_embedding is None:
+                logger.info("Generating document embedding for resource %s", resource.id)
+
+                from app.shared.ai.embeddings import EMBED_MODEL
+                document_embedding = self._create_document_embedding(extracted_text, str(resource.id))
+                if document_embedding:
+                    resource.document_embedding = document_embedding
+                    resource.embedding_model = EMBED_MODEL
+
+            # Create chunks
+            chunks = self._create_chunks(extracted_text, str(resource.id))
+            self._save_chunks_to_db(chunks, resource.id)
+            self.db.commit()
+
+        except Exception:
+            self.db.rollback()
+            raise
+
         return {
             "resource_id": str(resource.id),
             "status": "completed",
@@ -254,3 +384,12 @@ class ResourceProcessorService:
             "chunks_created": len(chunks),
             "message": "Resource processed successfully"
         }
+
+    def is_need_to_analyze_layout(self, resource_type: Optional[str]) -> bool:
+
+        if resource_type in ["question_paper"]:
+            logger.info(f"Resource type {resource_type} detected, forcing not to layout analysis for OCR.")
+            return False
+        
+        logger.info(f"Resource type {resource_type} detected, enabling layout analysis for OCR.")
+        return True

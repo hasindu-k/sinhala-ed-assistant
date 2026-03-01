@@ -336,3 +336,51 @@ def get_session_resources(
             detail="Failed to fetch session resources"
         )
 
+
+@router.delete("/sessions/{session_id}/resources/{role}", status_code=status.HTTP_204_NO_CONTENT)
+def detach_resource_from_session(
+    session_id: UUID,
+    role: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Detach (unlink) all resources with a given role/label from a chat session.
+
+    {role} is the label the resource was attached with:
+    'syllabus', 'rubric', 'question_paper', or 'answer_script'.
+
+    Removes the SessionResource link(s) only — does NOT delete the underlying file.
+    """
+    try:
+        # Verify session ownership
+        chat_service = ChatSessionService(db)
+        session = chat_service.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+        if hasattr(session, "user_id") and session.user_id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to modify this session")
+
+        # Detach all resource links with this label
+        svc = SessionResourceService(db)
+        removed = svc.detach_resources_by_label(session_id=session_id, label=role)
+
+        if not removed:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No '{role}' resource is attached to session '{session_id}'"
+            )
+
+        logger.info(f"All '{role}' resources detached from session {session_id} by user {current_user.id}")
+
+    except HTTPException:
+        raise
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error detaching '{role}' resources from session {session_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to detach resource from session"
+        )

@@ -306,6 +306,7 @@ class EvaluationResultDetail(BaseModel):
     total_score: Optional[Decimal] = None
     grade: Optional[str] = None
     feedback: Optional[dict] = None  # {overall_feedback, missing_concepts, improvement_points}
+    marks_summary: Optional[Dict[str, List[Dict[str, Any]]]] = None
     evaluated_at: datetime
     question_feedbacks: list[QuestionScoreResponse] = []
 

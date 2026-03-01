@@ -1,8 +1,14 @@
 # app/shared/ai/embeddings.py
 
+import threading
 from app.core.gemini_client import GeminiClient
 from google.genai import types
 from sentence_transformers import SentenceTransformer, util
+
+# Global semaphore to prevent CPU thrashing during heavy XLM-R math
+# (One encoding task at a time per backend process)
+ml_semaphore = threading.Semaphore(1)
+
 
 # Load local semantic model once
 xlmr = SentenceTransformer(
@@ -50,10 +56,12 @@ def semantic_similarity(a: str, b: str) -> float:
         return 0.0
 
     try:
-        a_vec = xlmr.encode(a, convert_to_tensor=True)
-        b_vec = xlmr.encode(b, convert_to_tensor=True)
+        with ml_semaphore:
+            a_vec = xlmr.encode(a, convert_to_tensor=True)
+            b_vec = xlmr.encode(b, convert_to_tensor=True)
         sim = float(util.cos_sim(a_vec, b_vec))
         return min(sim * 1.2, 1.0)
+
 
     except Exception as e:
         print(f"[ERROR] Semantic similarity failed: {e}")

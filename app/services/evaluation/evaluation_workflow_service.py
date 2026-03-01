@@ -1,7 +1,7 @@
 # app/services/evaluation/evaluation_workflow_service.py
 
 import re
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Tuple, Dict
 from uuid import UUID
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,8 @@ from app.services.evaluation.evaluation_resource_service import EvaluationResour
 from app.services.evaluation.question_paper_service import QuestionPaperService
 from app.services.evaluation.paper_config_service import PaperConfigService
 from app.services.evaluation.answer_evaluation_service import AnswerEvaluationService
+from app.shared.models.question_papers import Question, SubQuestion
+from app.shared.models.evaluation_session import EvaluationSession
 from app.services.chat_session_service import ChatSessionService
 from app.services.resource_service import ResourceService
 from app.components.document_processing.services.classifier_service import extract_complete_exam_data, fix_sinhala_ocr, map_student_answers
@@ -148,25 +150,57 @@ class EvaluationWorkflowService:
         """
         Performs the actual heavy lifting of evaluation.
         Should be called in a background task.
+
+        Evaluates up to 5 answer sheets CONCURRENTLY using a ThreadPoolExecutor.
+        Each worker thread gets its own SQLAlchemy session to avoid shared-state conflicts.
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from app.core.database import SessionLocal
+
+        logger.info(f"Starting parallel background evaluation for session {session_id} "
+                    f"({len(answer_resource_ids)} sheets)")
+
+        import time as _time
+        _start = _time.time()
+
+        # Resolve answer document IDs up-front (uses the caller's DB session)
+        doc_ids = []
+        for resource_id in answer_resource_ids:
+            ad = self.answers.get_answer_document_by_session_and_resource(session_id, resource_id)
+            if ad:
+                doc_ids.append(ad.id)
+            else:
+                logger.warning(f"No answer document found for resource {resource_id}, skipping.")
+
+        def _evaluate_one(answer_doc_id):
+            """Worker: owns its own DB session for thread safety."""
+            thread_db = SessionLocal()
+            try:
+                from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
+                worker_service = EvaluationWorkflowService(thread_db)
+                logger.info(f"[Thread] Evaluating answer document {answer_doc_id}...")
+                worker_service.evaluate_answer(answer_doc_id, user_id, include_feedback=False)
+                logger.info(f"[Thread] Finished answer document {answer_doc_id}.")
+                return answer_doc_id, None
+            except Exception as exc:
+                logger.error(f"[Thread] Failed to evaluate {answer_doc_id}: {exc}")
+                return answer_doc_id, exc
+            finally:
+                thread_db.close()
+
         try:
-            logger.info(f"Starting background evaluation for session {session_id}")
-            
-            for resource_id in answer_resource_ids:
-                # Find the answer document we just ensured exists
-                ad = self.answers.get_answer_document_by_session_and_resource(session_id, resource_id)
-                if ad:
-                    try:
-                        logger.info(f"Triggering evaluation for answer document {ad.id}...")
-                        self.evaluate_answer(ad.id, user_id)
-                        logger.info(f"Evaluation finished for answer document {ad.id}.")
-                    except Exception as e:
-                        logger.error(f"Failed to evaluate answer {ad.id}: {e}")
-                        # Continue with others
-            
+            max_workers = min(5, len(doc_ids)) if doc_ids else 1
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="eval_sheet") as executor:
+                futures = {executor.submit(_evaluate_one, doc_id): doc_id for doc_id in doc_ids}
+                for future in as_completed(futures):
+                    doc_id, err = future.result()
+                    if err:
+                        logger.error(f"Sheet {doc_id} failed: {err}")
+
+            elapsed = _time.time() - _start
+            logger.info(f"All sheets evaluated in {elapsed:.1f}s — marking session completed.")
             self.sessions.update_evaluation_session(session_id, status="completed")
-            logger.info(f"Background evaluation completed for session {session_id}")
-            
+
         except Exception as e:
             logger.error(f"Critical error in background evaluation: {e}")
             self.sessions.update_evaluation_session(session_id, status="failed")
@@ -292,7 +326,7 @@ class EvaluationWorkflowService:
             self.sessions.update_evaluation_session(session_id, status="failed")
             yield make_event(f"Evaluation process failed: {str(e)}", status="failed", stage="failed")
 
-    def evaluate_answer_generator(self, answer_id: UUID, user_id: UUID):
+    def evaluate_answer_generator(self, answer_id: UUID, user_id: UUID, include_feedback: bool = False):
         """
         Generator version of evaluate_answer.
         Yields (stage, message, percent) tuples.
@@ -323,10 +357,8 @@ class EvaluationWorkflowService:
         eval_session = self.sessions.get_evaluation_session(answer_doc.evaluation_session_id)
         if not eval_session: raise ValueError("Evaluation session not found")
 
-        question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
-        if not question_papers: raise ValueError("Question paper not found")
-        question_paper = question_papers[0]
-        questions = self.question_papers.get_questions_by_paper(question_paper.id)
+        syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
+        question_map = self._build_question_map_helper(questions)
 
         # Fix OCR / Map
         if answer_doc.mapped_answers:
@@ -392,7 +424,16 @@ class EvaluationWorkflowService:
         
         def run_grading():
             try:
-                result_container['result'] = grader.grade_answer_document(answer_id, user_id, queue_callback)
+                result_container['result'] = grader.grade_answer_document(
+                    answer_doc_id=answer_id,
+                    user_id=user_id,
+                    eval_session_id=eval_session.id,
+                    syllabus_text=syllabus_text,
+                    rubric_text=rubric_text,
+                    question_map=question_map,
+                    progress_callback=queue_callback,
+                    include_feedback=include_feedback
+                )
             except Exception as e:
                 error_container['error'] = e
             finally:
@@ -563,7 +604,14 @@ class EvaluationWorkflowService:
             if qp_resource:
                 # Check if already parsed
                 existing_qp = self.question_papers.get_question_papers_by_chat_session(chat_session_id)
+                already_parsed = False
                 if existing_qp:
+                    for qp in existing_qp:
+                        if getattr(qp, 'resource_id', None) == qp_resource.resource_id:
+                            already_parsed = True
+                            break
+                            
+                if already_parsed:
                     results.append(DocumentProcessingStatus(
                         resource_id=qp_resource.resource_id,
                         role="question_paper",
@@ -956,13 +1004,9 @@ class EvaluationWorkflowService:
         Parse question paper by extracting text and structuring content.
         Uses OCR if needed and AI-based content separation.
         """
+        logger.info(f"Parsing question paper for session {session_id} by user {user_id}")
         # Verify ownership and get session
         self._ensure_chat_session_owner(session_id, user_id)
-
-        # Check if already parsed for this chat session
-        question_papers = self.question_papers.get_question_papers_by_chat_session(session_id)
-        if question_papers:
-            return self.question_papers.get_question_paper_with_questions(question_papers[0].id)
 
         # Get attached question paper resource from Chat Session
         from app.shared.models.session_resources import SessionResource
@@ -973,6 +1017,13 @@ class EvaluationWorkflowService:
 
         if not session_resource:
             raise ValueError("No question paper resource attached to this chat session")
+            
+        # Check if already parsed for this chat session AND resource
+        question_papers = self.question_papers.get_question_papers_by_chat_session(session_id)
+        if question_papers:
+            for qp in question_papers:
+                if getattr(qp, 'resource_id', None) == session_resource.resource_id:
+                    return self.question_papers.get_question_paper_with_questions(qp.id)
 
         self._ensure_resource_owner(session_resource.resource_id, user_id)
         
@@ -1024,6 +1075,9 @@ class EvaluationWorkflowService:
             logger.error(f"Failed to parse paper structure: {e}", exc_info=True)
             raise ValueError(f"Failed to parse question paper structure: {e}")
         
+        # Clear any existing question papers for this chat session to cleanly replace
+        self.question_papers.delete_question_papers_by_chat_session(session_id)
+        
         # Create question paper entry linked to Chat Session
         question_paper = self.question_papers.create_question_paper(
             chat_session_id=session_id,
@@ -1061,6 +1115,7 @@ class EvaluationWorkflowService:
                         question_number=normalized_q_num,
                         question_text=q_data.get("text"),
                         max_marks=q_data.get("marks"),
+                        part_name=paper_key,
                         shared_stem=q_data.get("shared_stem"),
                         inherits_shared_stem_from=q_data.get("inherits_shared_stem_from")
                     )
@@ -1204,6 +1259,7 @@ class EvaluationWorkflowService:
         Parse and map student answers to questions without evaluating.
         Returns the mapping for verification.
         """
+        logger.info(f"Parsing answer document {answer_id} for user {user_id}")
         answer_doc = self._ensure_answer_owner(answer_id, user_id)
 
         # Check if already mapped
@@ -1316,7 +1372,7 @@ class EvaluationWorkflowService:
             "extracted_text": resource.extracted_text
         }
 
-    def evaluate_answer(self, answer_id: UUID, user_id: UUID, progress_callback=None):
+    def evaluate_answer(self, answer_id: UUID, user_id: UUID, progress_callback=None, include_feedback: bool = False):
         """Evaluate answer with recursive sub-question support."""
         answer_doc = self._ensure_answer_owner(answer_id, user_id)
 
@@ -1353,17 +1409,9 @@ class EvaluationWorkflowService:
         if not eval_session:
             raise ValueError("Evaluation session not found")
 
-        # Get question paper hierarchy from Chat Session
-        question_papers = self.question_papers.get_question_papers_by_chat_session(
-            eval_session.session_id
-        )
-        if not question_papers:
-            raise ValueError("Question paper not found for this chat session")
-
-        question_paper = question_papers[0]  # Take the first question paper
-        
-        # Get full question objects for the prompt
-        questions = self.question_papers.get_questions_by_paper(question_paper.id)
+        # Get Evaluation Context (Syllabus, Rubric, Questions)
+        syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
+        question_map = self._build_question_map_helper(questions)
 
         # 1. Fix OCR errors in student answer
         if answer_doc.mapped_answers:
@@ -1401,9 +1449,60 @@ class EvaluationWorkflowService:
         logger.info("Starting grading process...")
         from app.services.evaluation.grading_service import GradingService
         grader = GradingService(self.db)
-        result = grader.grade_answer_document(answer_id, user_id, progress_callback)
+        result = grader.grade_answer_document(
+            answer_doc_id=answer_id,
+            user_id=user_id,
+            eval_session_id=eval_session.id,
+            syllabus_text=syllabus_text,
+            rubric_text=rubric_text,
+            question_map=question_map,
+            progress_callback=progress_callback,
+            include_feedback=include_feedback
+        )
         logger.info(f"Grading completed for answer document {answer_id}.")
         return result
+
+    def _get_evaluation_context(self, eval_session_id: UUID) -> Tuple[str, str, List[Question]]:
+        """Helper to load all context required for evaluation."""
+        eval_session = self.sessions.get_evaluation_session(eval_session_id)
+        if not eval_session:
+            raise ValueError("Evaluation session not found")
+
+        rubric_text = self.answers._load_rubric_text(eval_session)
+        syllabus_text = self.answers._load_syllabus_text(eval_session)
+
+        question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
+        if not question_papers:
+            raise ValueError("Question paper not found")
+        
+        questions = []
+        for qp in question_papers:
+            questions.extend(self.question_papers.get_questions_by_paper(qp.id))
+        
+        return syllabus_text, rubric_text, questions
+
+    def _build_question_map_helper(self, questions: List[Question]) -> Dict:
+        """Helper to build a map for quick question lookup."""
+        q_map = {}
+        for q in questions:
+            # Index by question number
+            q_map[str(q.question_number)] = q
+            # Index by ID
+            q_map[str(q.id)] = q
+            
+            for sq in getattr(q, "sub_questions", []) or []:
+                # Index by combination
+                key = f"{q.question_number}{sq.label}"
+                q_map[key] = sq
+                # Index by ID
+                q_map[str(sq.id)] = sq
+        return q_map
+
+    def generate_feedback(self, answer_id: UUID, user_id: UUID):
+        """On-demand feedback generation trigger."""
+        from app.services.evaluation.grading_service import GradingService
+        grader = GradingService(self.db)
+        return grader.generate_feedback_for_result(answer_id, user_id)
 
 
     def get_evaluation_result(self, answer_id: UUID, user_id: UUID):

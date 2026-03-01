@@ -67,6 +67,7 @@ async def upload_resource(
                 filename=file.filename,
                 content_type=file.content_type,
                 content=content,
+                resource_type=resource_type,
             )
             
             # Update user context if resource_type is provided (Legacy/Global Context)
