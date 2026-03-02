@@ -25,12 +25,24 @@ if ULTRALYTICS_AVAILABLE:
 
 lang = "sin+eng"  # Tesseract language setting for Sinhala and English
 
-def classify_text_type(image_path: str) -> Literal["handwritten", "printed", "unknown"]:
+def classify_text_type(image_input: str) -> Literal["handwritten", "printed", "unknown"]:
+    """
+    Classify text as handwritten or printed.
+    
+    Args:
+        image_input: Either a file path (str) or numpy array (from PIL/cv2)
+    """
     try:
-        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            logger.warning(f"Cannot read image for classification: {image_path}")
-            return "unknown"
+        # Handle both file path and numpy array inputs
+        if isinstance(image_input, str):
+            img = cv2.imread(image_input, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                logger.warning(f"Cannot read image for classification: {image_input}")
+                return "unknown"
+        else:
+            img = image_input
+            if len(img.shape) == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
         # Normalize contrast
         img = cv2.equalizeHist(img)

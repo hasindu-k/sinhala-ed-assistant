@@ -164,7 +164,7 @@ class ResourceProcessorService:
         """
         import numpy as np
 
-        img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+        img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2GRAY)
 
         text_type = classify_text_type(img_np)
 
