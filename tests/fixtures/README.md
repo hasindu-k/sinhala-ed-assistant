@@ -9,6 +9,15 @@ Optional environment variables for custom locations:
 - `NO_TABLE_IMAGE_PATH`
 - `TABLE_MODEL_PATH` (defaults to `utils/table_model.pt`)
 
+Resource processor integration fixtures:
+
+- `english_text.pdf`
+- `legacy_sinhala.pdf`
+
+Resource processor integration tests require `env.test` or `.env.test` in project root with:
+
+- `TEST_DATABASE_URL` (must point to a separate test database)
+
 Run only integration tests:
 
 ```powershell
