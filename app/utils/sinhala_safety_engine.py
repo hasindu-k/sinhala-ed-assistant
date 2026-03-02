@@ -2,6 +2,7 @@
  
 import logging
 import re
+import numpy as np
 
 logger = logging.getLogger(__name__)
  
@@ -94,50 +95,59 @@ def attach_evidence(
     flagged_sentences: list[dict],
     context: str
 ) -> list[dict]:
-
+    """
+    Optimized version that batches all similarity calculations.
+    """
     if not flagged_sentences or not context:
         return flagged_sentences
 
-    # Split context into sentences
+    # Split context into sentences once
     context_sentences = [
         s.strip()
         for s in re.split(r"[.!?]", context)
         if len(s.strip()) > 10
     ]
+    
+    if not context_sentences:
+        return flagged_sentences
 
+    # Extract all flagged sentences
+    flagged_texts = [item["sentence"] for item in flagged_sentences]
+    
+    # Get concept sets for all flagged sentences at once
+    flagged_concepts = [extract_concepts(s) for s in flagged_texts]
+    context_concepts = [extract_concepts(s) for s in context_sentences]
+    
+    # Batch compute all pairwise similarities at once
+    # This makes only ONE model call instead of N*M calls
+    similarity_matrix = SemanticSimilarityService.compute_pairwise_similarities(
+        flagged_texts, 
+        context_sentences
+    )
+    
     enriched = []
-
-    for item in flagged_sentences:
-        sentence = item["sentence"]
-
-        # --- Semantic alignment ---
-        best_match = None
-        best_similarity = 0.0
-
-        for ctx_sentence in context_sentences:
-            similarity = SemanticSimilarityService.similarity(
-                sentence,
-                ctx_sentence
-            )
-
-            if similarity > best_similarity:
-                best_similarity = similarity
-                best_match = ctx_sentence
-
-        # --- Concept overlap ---
-        sent_concepts = extract_concepts(sentence)
-        ctx_concepts = extract_concepts(best_match) if best_match else set()
-
+    
+    for i, item in enumerate(flagged_sentences):
+        # Get best matching context sentence from similarity matrix
+        similarities = similarity_matrix[i]  # Row for this flagged sentence
+        best_idx = int(np.argmax(similarities))
+        best_similarity = float(similarities[best_idx])
+        best_match = context_sentences[best_idx]
+        
+        # Calculate concept overlap
+        sent_concepts = flagged_concepts[i]
+        ctx_concepts = context_concepts[best_idx]
+        
         if sent_concepts:
             concept_overlap = len(sent_concepts & ctx_concepts) / len(sent_concepts)
         else:
             concept_overlap = 0.0
-
+        
         enriched.append({
             **item,
             "evidence": best_match,
             "semantic_similarity_score": round(best_similarity, 3),
             "concept_overlap": round(concept_overlap, 3),
         })
-
+    
     return enriched
