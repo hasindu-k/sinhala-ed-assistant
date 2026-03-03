@@ -252,33 +252,52 @@ class AnswerEvaluationService:
             else:
                 return "F"
 
-        # Generate marks summary grouped by paper part
+        # Calculate summary with leaf-node focus to prevent double-display
         marks_summary = {}
-        logger.debug(f"Generating marks summary for {len(scores)} scores")
-        for score in scores:
-            part = "Other"
-            if score.question and score.question.part_name:
-                part = score.question.part_name.replace("_", " ")
-            elif score.sub_question and score.sub_question.question and score.sub_question.question.part_name:
-                part = score.sub_question.question.part_name.replace("_", " ")
-
-            if part not in marks_summary:
-                marks_summary[part] = []
-            
-            label = ""
-            if score.question:
-                label = score.question.question_number
-            elif score.sub_question:
-                parent_num = score.sub_question.question.question_number if score.sub_question.question else ""
-                label = f"{parent_num}({score.sub_question.label})"
-
-            marks_summary[part].append({
-                "label": label,
-                "awarded": round(float(score.awarded_marks), 2) if score.awarded_marks is not None else 0,
-                "max": float(score.question.max_marks) if score.question else (float(score.sub_question.max_marks) if score.sub_question else 0)
-            })
+        # Get all unique parts
+        parts = sorted(list(set([
+            (s.question.part_name or "Other") if s.question else (s.sub_question.question.part_name or "Other") 
+            for s in scores if (s.question or (s.sub_question and s.sub_question.question))
+        ])))
         
-        logger.debug(f"Generated marks summary with {len(marks_summary)} parts: {list(marks_summary.keys())}")
+        for part in parts:
+            clean_part = part.replace("_", " ")
+            marks_summary[clean_part] = []
+            
+            # Filter scores for this part
+            part_scores = [
+                s for s in scores 
+                if ((s.question.part_name if s.question else s.sub_question.question.part_name) == part)
+            ]
+            
+            for score in part_scores:
+                # Leaf Logic: only show in summary if it's a leaf
+                is_leaf = True
+                if score.question and score.question.sub_questions:
+                    is_leaf = False
+                if score.sub_question and score.sub_question.children:
+                    is_leaf = False
+                
+                if not is_leaf:
+                    continue
+
+                label = ""
+                if score.question:
+                    label = score.question.question_number
+                elif score.sub_question:
+                    parent_num = score.sub_question.question.question_number if score.sub_question.question else ""
+                    label = f"{parent_num}({score.sub_question.label})"
+
+                awarded = float(score.awarded_marks or 0)
+                max_m = float(score.question.max_marks if score.question else (score.sub_question.max_marks or 0))
+                
+                marks_summary[clean_part].append({
+                    "label": label,
+                    "awarded": round(awarded, 2),
+                    "max": max_m
+                })
+        
+        logger.debug(f"Generated marks summary for {len(marks_summary)} parts.")
 
 
         # Extract missed concepts and improvement points from question feedbacks
