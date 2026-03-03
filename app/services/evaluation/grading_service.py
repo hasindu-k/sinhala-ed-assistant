@@ -4,6 +4,7 @@ import logging
 import re
 import json
 import time
+from math import floor
 from uuid import UUID
 from typing import Dict, Any, List, Tuple, Optional, Callable
 from decimal import Decimal
@@ -14,6 +15,7 @@ import torch
 from rank_bm25 import BM25Okapi
 from sentence_transformers import util
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.shared.models.answer_evaluation import (
     AnswerDocument,
@@ -80,22 +82,25 @@ class GradingService:
         if progress_callback:
             progress_callback("initializing_grading", "Preparing grading context...")
 
-        # Check for existing evaluation result
-        existing_result = (
+        # Check for existing evaluation result (Upsert pattern to prevent race conditions)
+        eval_result = (
             self.db.query(EvaluationResult)
             .filter(EvaluationResult.answer_document_id == answer_doc.id)
+            .order_by(EvaluationResult.evaluated_at.desc())
             .first()
         )
-
-        if existing_result:
-            logger.info(f"Updating existing evaluation result {existing_result.id}")
+        
+        if eval_result:
+            logger.info(f"Re-using existing evaluation result {eval_result.id} for doc {answer_doc.id}")
+            # Clear only children scores to avoid FK issues for parallel threads
             self.db.query(QuestionScore).filter(
-                QuestionScore.evaluation_result_id == existing_result.id
+                QuestionScore.evaluation_result_id == eval_result.id
             ).delete()
-            eval_result = existing_result
             eval_result.total_score = Decimal(0)
             eval_result.overall_feedback = "Grading in progress..."
+            eval_result.evaluated_at = func.now() # Reset timestamp
         else:
+            # Create fresh result
             eval_result = EvaluationResult(
                 answer_document_id=answer_doc.id,
                 total_score=Decimal(0),
@@ -103,7 +108,7 @@ class GradingService:
             )
             self.db.add(eval_result)
 
-        self.db.commit()
+        self.db.commit() # Save result ID immediately so FKs work in scoring loop
         self.db.refresh(eval_result)
 
         # ---- HOIST LOOP-INVARIANT WORK ----
@@ -128,6 +133,18 @@ class GradingService:
             if not target:
                 logger.error(f"UNRESOLVED mapping key: {key}")
                 continue
+
+            # SPECIFICITY CHECK: Skip parent question if sub-questions are also in the mapping
+            if isinstance(target, Question) and getattr(target, 'sub_questions', []):
+                sub_mapped = False
+                for sq in target.sub_questions:
+                    sq_id_str = str(sq.id)
+                    sq_label_key = f"{str(target.question_number)}{sq.label}".lower().replace("(", "").replace(")", "")
+                    if sq_id_str in answer_doc.mapped_answers or sq_label_key in answer_doc.mapped_answers:
+                        sub_mapped = True
+                        break
+                if sub_mapped:
+                    continue
 
             max_marks = self._resolve_max_marks(target)
             reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
@@ -154,28 +171,48 @@ class GradingService:
         scored_items: List[Dict] = []
         seen_question_ids = set() # To prevent duplicates in the final result
 
+        logger.info(f"Starting grading loop for {len(answer_doc.mapped_answers)} mapped items.")
+
         for key, student_text in answer_doc.mapped_answers.items():
             target = self._find_matching_question(key, question_map)
+            
             if not target:
+                logger.warning(f"No question target found for key: '{key}'")
                 continue
+
+            target_id = getattr(target, 'id', None)
+            display_number = self._resolve_display_number(target, key)
+            part_name = getattr(target, 'part_name', 'Unknown')
+            
+            logger.info(f"Processing question {key} -> ID: {target_id} (Part: {part_name}, Label: {display_number})")
 
             # Skip if we already graded this specific question/sub-question entry
-            # (prevents same question appearing twice if mapped by both ID and Label)
-            target_id = getattr(target, 'id', None)
             if target_id in seen_question_ids:
-                logger.warning(f"Skipping duplicate mapping for question: {key}")
+                logger.warning(f"Skipping duplicate mapping for question: {key} (ID: {target_id})")
                 continue
-            seen_question_ids.add(target_id)
+            
+            # SPECIFICITY CHECK
+            if isinstance(target, Question) and getattr(target, 'sub_questions', []):
+                sub_mapped = False
+                for sq in target.sub_questions:
+                    sq_id_str = str(sq.id)
+                    if sq_id_str in answer_doc.mapped_answers:
+                        sub_mapped = True
+                        break
+                
+                if sub_mapped:
+                    logger.info(f"Hierarchical overlap detected for {key}; scoring parent question.")
 
+            seen_question_ids.add(target_id)
+            
             max_marks = self._resolve_max_marks(target)
             reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
             
             processed_count += 1
             if progress_callback:
-                pct = 5 + int((processed_count / total_questions) * 65)  # scoring = 5-70%
-                progress_callback("evaluating_answers", f"Scoring question {key}...", percent=pct)
+                pct = 5 + int((processed_count / total_questions) * 65)
+                progress_callback("evaluating_answers", f"Scoring question {display_number}...", percent=pct)
 
-            # Pass cached embeddings to avoid re-encoding
             s_emb = student_emb_map.get(student_text)
             r_emb = ref_emb_map.get(reference_text)
 
@@ -188,7 +225,6 @@ class GradingService:
                 reference_emb=r_emb
             )
             awarded_marks = Decimal(str(system_score_ratio * max_marks)).quantize(Decimal("0.01"))
-            display_number = self._resolve_display_number(target, key)
 
             scored_items.append({
                 "key": key,
@@ -198,15 +234,16 @@ class GradingService:
                 "max_marks": max_marks,
                 "awarded_marks": awarded_marks,
                 "display_number": display_number,
-                "student_emb": s_emb # Pass for coverage scoring
+                "student_emb": s_emb
             })
 
+        logger.info(f"Scoring loop finished. Scored {len(scored_items)} items total.")
 
         # -------------------------------------------------------
         # PHASE 2: Batch Gemini feedback & relevance validation
         # -------------------------------------------------------
         eval_data_map: Dict[str, Dict] = {}
-        if include_feedback:
+        if include_feedback and scored_items:
             if progress_callback:
                 progress_callback("generating_feedback", "Generating feedback and validating relevance...", percent=70)
 
@@ -219,65 +256,69 @@ class GradingService:
                 progress_callback("generating_feedback", "Skipping feedback for now (scoring only).", percent=95)
 
         # -------------------------------------------------------
-        # PHASE 3: Persist QuestionScore rows
+        # PHASE 3: Persist QuestionScore rows (with Meaning-based Correction)
         # -------------------------------------------------------
-        total_score = Decimal(0)
+        if progress_callback:
+            progress_callback("finalizing_results", "Integrating meaning-based assessment...", percent=90)
+
+        total_score_val = Decimal(0)
+
+        # Merge Phase 1 (System) and Phase 2 (Gemini Meaning)
         for item in scored_items:
             key = item["key"]
             target = item["target"]
-            awarded_marks = item["awarded_marks"]
             
-            # Apply Gemini validation multiplier
-            gemini_data = eval_data_map.get(key, {})
-            multiplier = Decimal(str(gemini_data.get("relevance_multiplier", 1.0)))
-            awarded_marks = (awarded_marks * multiplier).quantize(Decimal("0.01"))
+            # Meaning Bridge: Gemini understands the "essence" better than XLM-R alone
+            meaning_data = eval_data_map.get(key, {})
+            meaning_score = float(meaning_data.get("meaning_score", 1.0))
             
-            feedback = gemini_data.get("feedback")  # May be None if include_feedback=False
+            # System score ratio (from Phase 1 metrics: XLM-R, Coverage, Relevance, Depth)
+            system_ratio = float(item["awarded_marks"]) / item["max_marks"]
+            
+            # Final Blend: Meaning is the "Hero" (60% weight)
+            # This captures correct meaning even if concise, resolving "Hero" request.
+            blended_ratio = (0.60 * meaning_score) + (0.40 * system_ratio)
+            
+            # Re-apply discrete bands to the blended ratio for final discrete marks
+            final_snapped_ratio = self._apply_discrete_bands(blended_ratio, item["max_marks"])
+            final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
 
-            total_score += awarded_marks
+            q_score_params = {
+                "evaluation_result_id": eval_result.id,
+                "awarded_marks": final_marks,
+                "feedback": meaning_data.get("feedback", "පිළිතුර අගය කරන ලදී."),
+            }
 
             if isinstance(target, SubQuestion):
-                qs = QuestionScore(
-                    evaluation_result_id=eval_result.id,
-                    sub_question_id=target.id,
-                    awarded_marks=awarded_marks,
-                    feedback=feedback,
-                )
+                q_score_params["sub_question_id"] = target.id
             elif isinstance(target, Question):
-                qs = QuestionScore(
-                    evaluation_result_id=eval_result.id,
-                    question_id=target.id,
-                    awarded_marks=awarded_marks,
-                    feedback=feedback,
-                )
-            else:
-                logger.error(f"Invalid target type for key {key}: {type(target)}")
-                continue
-
-            self.db.add(qs)
+                q_score_params["question_id"] = target.id
+            
+            logger.info(f"Adding QuestionScore: Question={display_number}, Marks={final_marks}/{item['max_marks']}, Part={part_name}")
+            
+            q_score = QuestionScore(**q_score_params)
+            self.db.add(q_score)
+            total_score_val += final_marks
 
         self.db.flush()
-
-        if progress_callback:
-            progress_callback("calculating_marks", "Calculating final score...", percent=96)
-
-        eval_result.total_score = sum(
-            qs.awarded_marks for qs in self.db.query(QuestionScore)
-            .filter(QuestionScore.evaluation_result_id == eval_result.id)
-        )
+        
+        # Final total score calculation
+        eval_result.total_score = total_score_val.quantize(Decimal("0.01"))
+        logger.info(f"Final Total Score calculated: {eval_result.total_score}")
 
         if include_feedback:
             if progress_callback:
                 progress_callback("generating_feedback", "Generating overall feedback...", percent=98)
 
             eval_result.overall_feedback = self._generate_overall_feedback(
-                total_score, eval_result.id
+                eval_result.total_score, eval_result.id
             )
 
         if progress_callback:
-            progress_callback("preparing_report", "Finalizing report...", percent=99)
+            progress_callback("completed", "Evaluation completed successfully.", percent=100)
 
         self.db.commit()
+        logger.info(f"Grading transaction committed for result ID: {eval_result.id}")
         return eval_result
 
     def generate_feedback_for_result(self, answer_doc_id: UUID, user_id: UUID) -> Optional[EvaluationResult]:
@@ -382,10 +423,12 @@ class GradingService:
             qs = item["db_score_obj"]
             gemini_data = eval_data_map.get(item["key"], {})
             
-            multiplier = Decimal(str(gemini_data.get("relevance_multiplier", 1.0)))
-            new_score = (item["awarded_marks"] * multiplier).quantize(Decimal("0.01"))
-            qs.awarded_marks = min(Decimal(str(item["max_marks"])), max(Decimal("0"), new_score))
-            
+            # multiplier = Decimal(str(gemini_data.get("relevance_multiplier", 1.0)))
+            # new_score = (item["awarded_marks"] * multiplier).quantize(Decimal("0.01"))
+            # qs.awarded_marks = min(Decimal(str(item["max_marks"])), max(Decimal("0"), new_score))
+            # Do NOT modify marks during feedback generation
+            qs.awarded_marks = item["awarded_marks"]
+
             feedback = gemini_data.get("feedback")
             if feedback:
                 qs.feedback = feedback
@@ -401,41 +444,91 @@ class GradingService:
     # ----------------------------------------------------------
 
     def _semantic_similarity(self, student_text: str, reference_text: str, student_emb=None, reference_emb=None) -> float:
+        """Optimized semantic similarity using sentence-level max-match to prevent dilution."""
         if not reference_text or not student_text:
             return 0.0
             
-        # Use cached embeddings if provided
-        emb1 = student_emb if student_emb is not None else xlmr.encode(student_text, convert_to_tensor=True)
-        emb2 = reference_emb if reference_emb is not None else xlmr.encode(reference_text, convert_to_tensor=True)
+        # Split reference into sentences for max-similarity matching
+        # This prevents a short correct answer from being penalized vs a long reference paragraph
+        sentences = [s.strip() for s in re.split(r'[.!?\n]', reference_text) if len(s.strip()) > 10]
+        if not sentences:
+            # Fallback to whole-text if splitting fails
+            emb1 = student_emb if student_emb is not None else xlmr.encode(student_text, convert_to_tensor=True)
+            emb2 = reference_emb if reference_emb is not None else xlmr.encode(reference_text, convert_to_tensor=True)
+            raw_sim = util.cos_sim(emb1, emb2).item()
+            return self._sinhala_sigmoid_boost(raw_sim)
+
+        # Encode student text
+        s_emb = student_emb if student_emb is not None else xlmr.encode(student_text, convert_to_tensor=True)
         
-        raw_sim = util.cos_sim(emb1, emb2).item()
+        # Identify missing sentences from global cache
+        missing = [s for s in sentences if s not in self._sentence_cache]
+        if missing:
+            with ml_semaphore:
+                new_embs = xlmr.encode(missing, batch_size=min(len(missing), 32), convert_to_tensor=True)
+                for i, s in enumerate(missing):
+                    self._sentence_cache[s] = new_embs[i]
+        
+        # Batch compare against all reference sentences
+        ref_embs = torch.stack([self._sentence_cache[s] for s in sentences])
+        sims = util.cos_sim(s_emb, ref_embs)[0]
+        max_sim = sims.max().item()
+        
+        return self._sinhala_sigmoid_boost(max_sim)
 
-        # Semantic boost for Sinhala (more aggressive 1.4 for short-answer accuracy)
-        boosted = min(1.0, max(0.0, raw_sim * 1.4))
-
-        if boosted > 0.50: 
-            return 0.50 + (boosted - 0.50) * (0.50 / 0.50)
-
-        return boosted
+    def _sinhala_sigmoid_boost(self, sim: float) -> float:
+        """Map Sinhala cosine similarity [0.35-0.65] to marks [0.10-1.0] with smooth linear-piecewise interpolation."""
+        if sim >= 0.60: return 1.0  # Perfect/Full meaning match
+        if sim >= 0.45: return 0.40 + (sim - 0.45) * (0.60 / 0.15) # 0.45 -> 0.4, 0.60 -> 1.0 (Steeper)
+        if sim >= 0.30: return 0.0 + (sim - 0.30) * (0.40 / 0.15)  # 0.30 -> 0.0, 0.45 -> 0.4
+        return 0.0 # Below 0.30 is factually/semantically unrelated for sentence-level matching
 
 
     # ----------------------------------------------------------
     # MARKING BANDS
     # ----------------------------------------------------------
+    def _apply_discrete_bands(self, ratio: float, max_marks: int) -> float:
+        """
+        Convert a continuous similarity ratio into discrete marking bands.
+        BALANCED: Relaxed to award full marks for 'Good' answers while staying firm on 'Partial' ones.
+        """
+        if max_marks <= 2:
+            # Paper I / Short Answer (2 marks)
+            # 0.87+ -> 2 marks, 0.58+ -> 1 mark, else 0
+            if ratio >= 0.87:
+                return 1.0
+            elif ratio >= 0.58:
+                return 0.5
+            else:
+                return 0.0
+        else:
+            # Paper II / Essay Type (4 marks)
+            # 0.90+ -> 4/4, 0.75+ -> 3/4, 0.55+ -> 2/4, 0.35+ -> 1/4, else 0
+            if ratio >= 0.90:
+                return 1.0
+            elif ratio >= 0.75:
+                return 0.75
+            elif ratio >= 0.55:
+                return 0.5
+            elif ratio >= 0.35:
+                return 0.25
+            else:
+                return 0.0
+
     def _apply_marking_band(self, semantic: float, coverage: float) -> float:
         combined = (0.6 * semantic) + (0.4 * coverage)
 
         # Stricter, more proportional bands to avoid inflating poor answers
         if combined >= 0.85:
-            return 0.90 + (combined - 0.85) * (0.10 / 0.15)  # 0.85 -> 0.90, 1.0 -> 1.0
+            return 1.0
         if combined >= 0.70:
-            return 0.75 + (combined - 0.70) * (0.15 / 0.15)  # 0.70 -> 0.75, 0.85 -> 0.90
+            return 0.75
         if combined >= 0.55:
-            return 0.60 + (combined - 0.55) * (0.15 / 0.15)  # 0.55 -> 0.60, 0.70 -> 0.75
+            return 0.50
         if combined >= 0.40:
-            return 0.45 + (combined - 0.40) * (0.15 / 0.15)  # 0.40 -> 0.45, 0.55 -> 0.60
+            return 0.25
 
-        return combined
+        return 0.0
 
     # ----------------------------------------------------------
     # CONTEXT & COVERAGE
@@ -492,11 +585,11 @@ class GradingService:
         # Cosine similarities in one matrix operation
         sims = util.cos_sim(s_emb, sentence_embs)[0]  # shape: (num_sentences,)
 
-        # Stricter hit threshold (0.45) for Sinhala concept matching
-        hits = int((sims >= 0.45).sum().item())
+        # STIFFENED: Threshold from 0.45 -> 0.60 for Sinhala concept matching
+        hits = int((sims >= 0.60).sum().item())
 
-        # Stricter divisor (0.75 instead of 0.5)
-        ratio = hits / max(1, len(sentences) * 0.75)
+        # STIFFENED: Divisor from 0.75 -> 0.90
+        ratio = hits / max(1, len(sentences) * 0.90)
         return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
 
 
@@ -505,16 +598,37 @@ class GradingService:
     # QUESTION MAPPING
     # ----------------------------------------------------------
     def _build_question_map(self, questions: List[Question]) -> Dict[str, Any]:
+        """Build a robust map of question IDs and human-readable identifiers."""
         q_map = {}
         for q in questions:
-            q_num = str(q.question_number).lower().replace(".", "")
-            q_map[q_num] = q
-            q_map[str(q.id)] = q
+            q_id_str = str(q.id)
+            q_num = str(q.question_number).lower().replace(".", "").strip()
+            part_name = getattr(q, 'part_name', '').lower().replace(" ", "_").strip()
+            
+            # 1. UUID Priority (Used by Gemini Mapping)
+            q_map[q_id_str] = q
+            
+            # 2. Part-Specific Names (e.g., 'paper_i_1', 'paper_ii_q1')
+            if part_name:
+                q_map[f"{part_name}_{q_num}"] = q
+            
+            # 3. Global Number (Risky, but kept for simple papers)
+            # Only add if not already present to avoid overwriting UUIDs or Prefixed keys
+            if q_num not in q_map:
+                q_map[q_num] = q
 
-            for sq in q.sub_questions or []:
-                key = f"{q_num}{sq.label}".replace("(", "").replace(")", "")
-                q_map[key] = sq
-                q_map[str(sq.id)] = sq
+            for sq in getattr(q, 'sub_questions', []) or []:
+                sq_id_str = str(sq.id)
+                sq_label = str(sq.label).lower().replace("(", "").replace(")", "").strip()
+                composite_key = f"{q_num}{sq_label}"
+                
+                q_map[sq_id_str] = sq
+                if part_name:
+                    q_map[f"{part_name}_{composite_key}"] = sq
+                
+                if composite_key not in q_map:
+                    q_map[composite_key] = sq
+                    
         return q_map
 
     def _find_matching_question(self, key: str, q_map: Dict[str, Any]):
@@ -526,21 +640,6 @@ class GradingService:
     # ----------------------------------------------------------
     # These methods are now in AnswerEvaluationService and are no longer needed here.
     
-    def _build_question_map(self, questions: List[Question]) -> Dict[str, Any]:
-        """Backward compatibility for building question map."""
-        q_map = {}
-        for q in questions:
-            q_num = str(q.question_number).lower().replace(".", "")
-            # Composite keys for AI mapping strings
-            q_map[q_num] = q
-            # Direct ID keys for precise mapping
-            q_map[str(q.id)] = q
-
-            for sq in getattr(q, "sub_questions", []) or []:
-                key = f"{q_num}{sq.label}".replace("(", "").replace(")", "")
-                q_map[key] = sq
-                q_map[str(sq.id)] = sq
-        return q_map
 
     # ----------------------------------------------------------
     # SYSTEM SCORING & RUBRIC WEIGHTS
@@ -571,6 +670,34 @@ class GradingService:
 
         return weights
 
+    def _calculate_depth_penalty(self, student_text: str, reference_text: str, max_marks: int) -> float:
+        """
+        Calculate a penalty factor based on the relative length of the student answer.
+        Paper II (4 marks) requires depth. If the student answer is too short compared to 
+        the reference context, it shouldn't get full marks even if keywords match.
+        """
+        if max_marks <= 2:
+            return 1.0 # Less strict for short answers
+            
+        student_words = len(re.findall(r'\w+', student_text))
+        # Use a more realistic reference length (avg of context sentences) if context is huge
+        ref_words = len(re.findall(r'\w+', reference_text))
+        
+        if ref_words == 0:
+            return 1.0
+            
+        # For history essays, soften penalty to not crush correct concise answers
+        if student_words < 12:
+            return 0.80 # Was 0.65
+        elif student_words < 25:
+            return 0.90 # Was 0.85
+            
+        ratio = student_words / max(1, ref_words * 0.4) 
+        if ratio < 0.2:
+            return 0.85
+            
+        return 1.0
+
     def _calculate_system_score(self, student_text: str, reference_text: str, weights: Dict[str, float], max_marks: int = 1, student_emb=None, reference_emb=None) -> float:
         """Calculate score using discrete snapping for short answers and weighted metrics for essays."""
         if not reference_text or not student_text:
@@ -581,12 +708,10 @@ class GradingService:
 
         # Handle Short Factual Answers (Paper I Style: <= 2 marks)
         if max_marks <= 2:
-            # Discrete snapping for short factual items
-            # Sinhala embeddings are naturally lower: use more lenient thresholds
-            # If meaning is mostly correct (>0.50), give full marks. If partially correct (>0.35), give half.
-            if semantic >= 0.50: return 1.0
-            if semantic >= 0.35: return 0.5
-            return semantic # Raw score for very low matches
+            # Combined semantic (80%) and keyword (20%)
+            relevance = self._calculate_relevance_score(student_text, reference_text)
+            combined = (0.8 * semantic) + (0.2 * relevance)
+            return self._apply_discrete_bands(float(combined), max_marks)
 
         # Handle Essay/Structured Answers (Paper II Style: > 2 marks)
         # 2. Coverage Score (normalized for concise correct answers)
@@ -595,25 +720,27 @@ class GradingService:
         # 3. Relevance Score
         relevance = self._calculate_relevance_score(student_text, reference_text)
 
-        # 4. Weighted Integration (Meaning-First: 75% Semantic)
-        # Shift weights to prioritize semantic meaning over word-count metrics
-        s_w = 0.75
-        c_w = 0.125
-        r_w = 0.125
-        
-        total = (s_w * semantic) + (c_w * coverage) + (r_w * relevance)
-
-        # Apply marking bands for distribution smoothing
-        banded_score = self._apply_marking_band(semantic, coverage)
-        
-        if semantic >= 0.85:
-            final_score = max(banded_score, total, 0.85)
-        elif semantic >= 0.60:
-            final_score = (banded_score * 0.60) + (total * 0.40)
+        # Phase 4: Integration (Balanced weighting)
+        # STIFFENED: Reduced semantic dominance for Paper II to require depth
+        if max_marks > 2:
+            if semantic >= 0.95:
+                s_w, c_w, r_w = 0.70, 0.15, 0.15
+            else:
+                s_w, c_w, r_w = 0.50, 0.25, 0.25
         else:
-            final_score = (banded_score * 0.20) + (total * 0.80)
+            if semantic >= 0.92:
+                s_w, c_w, r_w = 0.80, 0.10, 0.10
+            else:
+                s_w, c_w, r_w = 0.60, 0.20, 0.20
+            
+        score = (s_w * semantic) + (c_w * coverage) + (r_w * relevance)
 
-        return max(0.0, min(1.0, final_score))
+        # Apply Depth Penalty
+        depth_mult = self._calculate_depth_penalty(student_text, reference_text, max_marks)
+        score = score * depth_mult
+
+        # Apply Band-Based Scoring for discrete marks
+        return self._apply_discrete_bands(float(score), max_marks)
 
 
     def _calculate_relevance_score(self, student_text: str, reference_text: str) -> float:
@@ -633,8 +760,8 @@ class GradingService:
             return 1.0
 
         overlap = len(student_words & ref_words)
-        # Stricter recall divisor (0.7)
-        recall = overlap / max(1, len(ref_words) * 0.7)
+        # STIFFENED: recall divisor (0.95 instead of 0.7)
+        recall = overlap / max(1, len(ref_words) * 0.95)
 
         return min(1.0, recall)
 
@@ -661,21 +788,26 @@ class GradingService:
             return {}
 
         base_prompt = """
-You are an expert teacher in Sri Lanka. A system has already graded several student answers based on meaning and keyword coverage.
-Provide short, helpful feedback in Sinhala for each question, explaining why the student gained those marks, and what could be improved based on the reference.
+You are an expert teacher in Sri Lanka. A system has already graded several student answers based on semantic similarity and keyword coverage.
+Your goal is to provide a qualitative "Meaning Assessment" to ensure the student's core idea is captured, even if their wording is concise.
 
-**CRITICAL INSTRUCTION:**
-1. You MUST also validate the core meaning and relevance of the answer. Provide a `relevance_multiplier`:
-   - `1.0` if the student's answer is highly relevant and the core meaning answers the question properly. Note: Short correct answers (e.g. naming 2 items) MUST get `1.0`.
-   - `0.5` if the answer is partially relevant but flawed or incomplete.
-   - `0.0` if the answer is complete gibberish, hallucinates, or does not address the question at all.
-2. If the student missed certain concepts, you MUST explicitly state the missing points using phrases like "අඩංගු විය යුතුය", "මඟ හැරී ඇත", "සඳහන් කළ යුතුය", or "පැහැදිලි කළ යුතුය". The system relies on these keywords to extract 'Missing Concepts' and 'Improvement Points'. Be encouraging but accurate.
-3. Return the results as a JSON object where names are the question keys, and values are objects containing strictly 'feedback' and 'relevance_multiplier'.
+**EVALUATION TASKS:**
+1. **Meaning Score (`meaning_score`)**: Provide a float between 1.0 and 0.0.
+   - `1.0`: The student's answer captures the essential meaning/fact required by the reference.
+   - `0.8`: Mostly correct meaning, minor technical detail missing.
+   - `0.5`: Only partially correct; right topic but missing the central point.
+   - `0.0`: Factually wrong or unrelated.
+   *NOTE: If the meaning is correct but the answer is just short, still give a high meaning_score (0.9-1.0).*
+
+2. **Helpful Feedback (`feedback`)**: Provide short, helpful feedback in Sinhala.
+   - Example: "පිළිතුර නිවැරදියි. මූලික කරුණ අඩංගු වේ."
+
+3. Return as JSON where keys are question keys, and values are objects with strictly 'feedback' and 'meaning_score'.
 
 Example format:
 {
-  "1": { "feedback": "මාතෘකාවට අදාළයි. නමුත් [X] අඩංගු විය යුතුය...", "relevance_multiplier": 1.0 },
-  "2අ": { "feedback": "මෙම පිළිතුර ප්රශ්නයට අදාළ නැත...", "relevance_multiplier": 0.0 }
+  "1": { "feedback": "මාතෘකාවට අදාළයි...", "meaning_score": 1.0 },
+  "2අ": { "feedback": "සාවද්‍ය තොරතුරු අඩංගු වේ...", "meaning_score": 0.0 }
 }
 
 Questions to evaluate:
@@ -720,16 +852,16 @@ Questions to evaluate:
                 except Exception as exc:
                     logger.error(f"Chunk processing generated an exception: {exc}")
 
-        # Wrap feedback with question identifiers, keep multiplier isolated
+        # Wrap feedback with question identifiers, keep meaning_score isolated
         final_map = {}
         for item in items:
             key = item["key"]
-            eval_result = evaluation_data.get(key, {})
-            multiplier = eval_result.get("relevance_multiplier", 1.0)
-            raw_feedback = eval_result.get("feedback", "(ප්‍රතිපෝෂණ ලබා ගත නොහැක)")
+            eval_res_json = evaluation_data.get(key, {})
+            meaning_score = eval_res_json.get("meaning_score", 1.0)
+            raw_feedback = eval_res_json.get("feedback", "(ප්‍රතිපෝෂණ ලබා ගත නොහැක)")
             
             final_map[key] = {
-                "relevance_multiplier": multiplier,
+                "meaning_score": meaning_score,
                 "feedback": f"**ප්‍රශ්නය {item['display_number']}**\n\n{raw_feedback}"
             }
         

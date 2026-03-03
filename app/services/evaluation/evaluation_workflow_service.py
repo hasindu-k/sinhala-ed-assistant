@@ -361,7 +361,10 @@ class EvaluationWorkflowService:
         question_map = self._build_question_map_helper(questions)
 
         # Fix OCR / Map
-        if answer_doc.mapped_answers:
+        # DEBUG: Force remap once to ensure new question map logic (prefixes) applies
+        needs_remap = True 
+
+        if answer_doc.mapped_answers and not needs_remap:
             yield ("processing_documents", "Using existing answer mapping...", 30)
             answer_mapping = answer_doc.mapped_answers
             if not answer_resource.extracted_text:
@@ -369,10 +372,14 @@ class EvaluationWorkflowService:
             else:
                  cleaned_answer_text = answer_resource.extracted_text
         else:
-            yield ("processing_documents", "Correcting OCR errors...", 30)
+            if answer_doc.mapped_answers:
+                yield ("processing_documents", "Refreshing partial mapping...", 30)
+            else:
+                yield ("processing_documents", "Correcting OCR errors...", 30)
+                
             cleaned_answer_text = fix_sinhala_ocr(ocr_text)
             
-            yield ("processing_documents", "Mapping answers to questions...", 40)
+            yield ("processing_documents", f"Mapping answers to {len(questions)} questions...", 40)
             answer_mapping = map_student_answers(cleaned_answer_text, questions)
             self.answers.update_mapped_answers(answer_id, answer_mapping)
         
@@ -1469,15 +1476,35 @@ class EvaluationWorkflowService:
         rubric_text = self.answers._load_rubric_text(eval_session)
         syllabus_text = self.answers._load_syllabus_text(eval_session)
 
-        question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
+        # Try evaluation-specific papers first
+        question_papers = self.question_papers.get_question_papers_by_evaluation_session(eval_session_id)
+        
+        # Fallback to chat-session papers if none found (backwards compatibility)
+        if not question_papers:
+            question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
+        
         if not question_papers:
             raise ValueError("Question paper not found")
         
-        questions = []
+        # Deduplicate papers by resource_id to prevent duplicates from multiple uploads
+        unique_papers = {}
         for qp in question_papers:
+            if qp.resource_id not in unique_papers:
+                unique_papers[qp.resource_id] = qp
+        
+        questions = []
+        for qp in unique_papers.values():
             questions.extend(self.question_papers.get_questions_by_paper(qp.id))
         
-        return syllabus_text, rubric_text, questions
+        # Final unique check on question IDs
+        seen_qids = set()
+        unique_questions = []
+        for q in questions:
+            if q.id not in seen_qids:
+                unique_questions.append(q)
+                seen_qids.add(q.id)
+
+        return syllabus_text, rubric_text, unique_questions
 
     def _build_question_map_helper(self, questions: List[Question]) -> Dict:
         """Helper to build a map for quick question lookup."""

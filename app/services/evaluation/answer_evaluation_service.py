@@ -210,7 +210,15 @@ class AnswerEvaluationService:
             return None
 
         scores = self.repository.get_question_scores_by_result(evaluation_result_id)
+        # Remove duplicates safely (defensive layer)
+        unique_scores = {}
+        for s in scores:
+            key = (s.question_id, s.sub_question_id)
+            if key not in unique_scores:
+                unique_scores[key] = s
 
+        scores = list(unique_scores.values())
+        
         # Sort scores naturally by question number
         def sort_key(score):
             q_num = ""
@@ -266,7 +274,7 @@ class AnswerEvaluationService:
 
             marks_summary[part].append({
                 "label": label,
-                "awarded": float(score.awarded_marks) if score.awarded_marks is not None else 0,
+                "awarded": round(float(score.awarded_marks), 2) if score.awarded_marks is not None else 0,
                 "max": float(score.question.max_marks) if score.question else (float(score.sub_question.max_marks) if score.sub_question else 0)
             })
         

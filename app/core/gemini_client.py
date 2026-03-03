@@ -12,8 +12,8 @@ _client = genai.Client(api_key=settings.GOOGLE_API_KEY)
 MODEL_NAME = "gemini-2.0-flash"
 
 # Increased from 5 → 10 to support parallel per-question Gemini feedback calls
-# REVERTED: Reduce 10 → 5 to prevent aggressive 429 Resource Exhausted errors
-_ai_semaphore = threading.Semaphore(5)
+# SAFER: Reduced from 4 -> 2 to prevent frequent 429 Resource Exhausted errors
+_ai_semaphore = threading.Semaphore(2)
 
 class GeminiClient:
     @classmethod
@@ -67,14 +67,13 @@ class GeminiClient:
                 is_overloaded = "503" in error_msg or "overloaded" in error_msg or "deadline exceeded" in error_msg
 
                 if (is_rate_limit or is_overloaded) and attempt < max_retries:
-                    # Exponential backoff: base_wait * (attempt+1) + jitter
-                    # capped to avoid huge wait times that frustrate users
-                    base_wait = 3 if is_rate_limit else 2
-                    wait_time = min(30, (base_wait * (attempt + 1)) + random.uniform(1, 5))
+                    # More aggressive wait for rate limits (429) to allow quota window reset
+                    base_wait = 10 if is_rate_limit else 3
+                    wait_time = min(30, (base_wait * (attempt + 1)) + random.uniform(2, 5))
                     
                     logger.warning(
                         f"Gemini API {'rate limited' if is_rate_limit else 'overloaded'} (Attempt {attempt+1}/{max_retries+1}). "
-                        f"Retrying in {wait_time:.2f}s (Capped at 30s)... Error: {e}"
+                        f"Retrying in {wait_time:.2f}s (Capped at 30s)..."
                     )
                     time.sleep(wait_time)
                     continue
