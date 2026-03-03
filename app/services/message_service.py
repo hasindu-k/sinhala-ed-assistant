@@ -288,7 +288,7 @@ class MessageService:
             grade_level=message.grade_level,
         )
 
-        logger.info("RAG response generated for message %s: %s", message_id, result.get("xai_explanation"))
+        logger.info("RAG response generated for message %s", message_id)
         
         # Get the created assistant message
         assistant_message = self.db.query(Message).filter(
