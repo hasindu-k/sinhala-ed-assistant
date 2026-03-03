@@ -17,6 +17,7 @@ from app.schemas.message import (
     MessageAttachmentWithResource,
     MessageContextChunkResponse,
     MessageSafetyReportResponse,
+    XAIExplanationResponse,
     GenerateResponseRequest
 )
 from app.schemas.resource import ResourceProcessResponse
@@ -834,7 +835,7 @@ def get_message_safety_report(
         message_service.get_message_with_ownership_check(message_id, current_user.id)
         
         safety_service = MessageSafetyService(db)
-        safety_report = safety_service.get_safety_report(message_id)
+        safety_report = safety_service.get_safety_report_with_xai(message_id)
         
         if not safety_report:
             logger.warning(f"Safety report not found for message {message_id} by user {current_user.id}")
@@ -866,6 +867,48 @@ def get_message_safety_report(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve safety report"
         )
+
+@router.get("/{message_id}/xai", response_model= XAIExplanationResponse)
+def get_message_xai_explanation(
+    message_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Fetch only the XAI explanation attached to a safety report."""
+    try:
+        message_service = MessageService(db)
+        message_service.get_message_with_ownership_check(message_id, current_user.id)
+
+        safety_service = MessageSafetyService(db)
+        report = safety_service.get_safety_report_with_xai(message_id)
+        if not report or report.xai_explanation is None:
+            logger.warning(f"XAI explanation not found for message {message_id} by user {current_user.id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="XAI explanation not available for this message"
+            )
+        return {"xai_explanation": report.xai_explanation}
+    except ValueError as e:
+        logger.warning(f"Message {message_id} not found for XAI request by user {current_user.id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except PermissionError as e:
+        logger.warning(f"User {current_user.id} attempted unauthorized access to XAI for message {message_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving XAI for message {message_id} for user {current_user.id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve XAI explanation"
+        )
+
 
 @router.get(
     "/{message_id}/safety-summary",

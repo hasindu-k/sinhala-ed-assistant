@@ -15,6 +15,7 @@ from app.services.message_safety_service import MessageSafetyService
 from app.core.gemini_client import GeminiClient
 from app.services.intent_detection_service import IntentDetectionService
 from app.services.answerability_service import AnswerabilityService
+from app.services.xai_service import XAIService
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +325,24 @@ class RAGService:
         from app.services.safety_summary_service import SafetySummaryService
         
         computed_values = SafetySummaryService.compute_from_flagged(flagged, is_unanswerable)
-        
+
+        # Build retrieval metadata for XAI generation
+        retrieval_metadata = {"bm25_k": bm25_k, "final_k": final_k, "used_chunks": len(hits)}
+
+        # Generate XAI explanation BEFORE saving so it gets persisted with the safety report
+        xai_explanation = XAIService.generate_explanation(
+            user_query=user_query,
+            generated_answer=generated,
+            retrieved_chunks=hits,
+            safety_report={
+                "flagged": flagged,
+                "missing_concepts": list(missing),
+                "extra_concepts": list(extra),
+                "confidence_score": computed_values.get("computed_confidence_score", 1.0) if not is_unanswerable else 1.0,
+            } if not is_unanswerable else None,
+            retrieval_metadata=retrieval_metadata,
+        )
+
         self.safety_service.create_safety_report(
             assistant_msg.id,
             {
@@ -334,6 +352,7 @@ class RAGService:
                 "reasoning": "Hybrid RAG with Sinhala QA/Summary",
                 # Cache computed values
                 **computed_values,
+                "xai_explanation": xai_explanation,
             },
         )
 
@@ -343,6 +362,20 @@ class RAGService:
         # 9. Return full response with metadata
         # -----------------------------
         retrieval_metadata = {"bm25_k": bm25_k, "final_k": final_k, "used_chunks": len(hits)}
+
+        # Generate XAI explanation
+        xai_explanation = XAIService.generate_explanation(
+            user_query=user_query,
+            generated_answer=generated,
+            retrieved_chunks=hits,
+            safety_report={
+                "flagged": flagged,
+                "missing_concepts": list(missing),
+                "extra_concepts": list(extra),
+                "confidence_score": computed_values.get("computed_confidence_score", 1.0) if not is_unanswerable else 1.0
+            } if not is_unanswerable else None,
+            retrieval_metadata=retrieval_metadata
+        )
 
         return {
             "assistant_message_id": assistant_msg.id,
@@ -355,4 +388,5 @@ class RAGService:
                 "extra_concepts": list(extra)[:10],
                 "flagged": flagged,
             },
+            "xai_explanation": xai_explanation
         }

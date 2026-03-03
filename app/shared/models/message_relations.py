@@ -57,6 +57,7 @@ class MessageSafetyReport(Base):
     extra_concepts = Column(JSONB, nullable=True)  # JSONB stored as string
     flagged_sentences = Column(JSONB, nullable=True)  # JSONB stored as string
     reasoning = Column(JSONB, nullable=True)  # JSONB stored as string
+    xai_explanation = Column(JSONB, nullable=True)
 
     # Cached computed summary values (for performance)
     computed_severity = Column(String, nullable=True)  # "low", "medium", "high"
