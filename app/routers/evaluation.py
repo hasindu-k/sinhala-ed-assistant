@@ -110,13 +110,10 @@ def list_evaluation_results(
             }
             if result:
                 total_score = result.get("total_score") or 0
-                max_marks = 0
-                percent = None
-                # Try to get max marks from question scores if available
-                if "question_scores" in result and result["question_scores"]:
-                    max_marks = sum([qs.get("max_marks", 0) for qs in result["question_scores"]])
-                    if max_marks:
-                        percent = float(total_score) / float(max_marks) * 100 if max_marks else None
+                max_marks = result.get("total_max") or 0
+                percent = result.get("percentage_score")
+                if percent is None and max_marks:
+                    percent = float(total_score) / float(max_marks) * 100
                 entry.update({
                     "total_score": float(total_score),
                     "percentage_score": round(percent, 2) if percent is not None else None,

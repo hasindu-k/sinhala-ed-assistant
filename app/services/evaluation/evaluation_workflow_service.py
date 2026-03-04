@@ -383,9 +383,11 @@ class EvaluationWorkflowService:
 
         # Fix OCR / Map
         # DEBUG: Force remap once to ensure new question map logic (prefixes) applies
-        needs_remap = True 
-
+        # Use existing mapping if available; remap only if no mapping exists
+        needs_remap = False  # Was True for debug: now use cached mapping for consistency
+        
         if answer_doc.mapped_answers and not needs_remap:
+
             yield ("processing_documents", "Using existing answer mapping...", 30)
             answer_mapping = answer_doc.mapped_answers
             if not answer_resource.extracted_text:
@@ -1348,12 +1350,9 @@ class EvaluationWorkflowService:
         question_paper = question_papers[0]
         questions = self.question_papers.get_questions_by_paper(question_paper.id)
 
-        # 1. Fix OCR errors (Stable AI step with persistence)
-        if not answer_resource.extracted_text or len(answer_resource.extracted_text) < 10:
-            cleaned_answer_text = fix_sinhala_ocr(ocr_text)
-            self.resource_files.update_resource_extracted_text(answer_resource.id, cleaned_answer_text)
-        else:
-            cleaned_answer_text = answer_resource.extracted_text
+        # OCR text is already extracted above.
+        # We now skip the separate fix_sinhala_ocr call as cleaning is handled in map_student_answers.
+        cleaned_answer_text = ocr_text
         
         # 2. Map answers
         answer_mapping = map_student_answers(cleaned_answer_text, questions)

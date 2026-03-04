@@ -48,11 +48,51 @@ def _safe_json_loads(text: str) -> dict:
     
     try:
         # Strip potential Markdown backticks
-        clean_text = re.sub(r'^```json\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
-        return json.loads(clean_text)
+        clean_text = text.strip()
+        if clean_text.startswith("```"):
+            clean_text = re.sub(r'^```json\s*|\s*```$', '', clean_text, flags=re.MULTILINE)
+        
+        try:
+            return json.loads(clean_text)
+        except json.JSONDecodeError:
+            # Try to repair truncated JSON
+            repaired = _repair_json(clean_text)
+            return json.loads(repaired)
     except Exception as e:
         logger.error(f"Failed to parse JSON response: {e}. Raw content: {text[:500]}...")
         return {}
+
+def _repair_json(text: str) -> str:
+    """Basic recovery for truncated JSON (unterminated strings/objects)."""
+    text = text.strip()
+    if not text: return "{}"
+    
+    # 1. Close unterminated string if it ends abruptly
+    # If the last character is NOT a quote but there's an odd number of quotes in the last line
+    # or if it ends with backslash escape
+    if text.count('"') % 2 != 0:
+        text += '"'
+    
+    # 2. Close open braces/brackets
+    open_braces = text.count('{') - text.count('}')
+    open_brackets = text.count('[') - text.count(']')
+    
+    # Add closing markers in reverse order of opening
+    # This is a naive stack-based approach
+    stack = []
+    for char in text:
+        if char == '{': stack.append('}')
+        elif char == '[': stack.append(']')
+        elif char == '}': 
+            if stack and stack[-1] == '}': stack.pop()
+        elif char == ']':
+            if stack and stack[-1] == ']': stack.pop()
+    
+    # Append missing closers
+    while stack:
+        text += stack.pop()
+        
+    return text
     
 
 # 1. Specialized Prompt for Sinhala Exam Extraction
@@ -405,40 +445,42 @@ def extract_complete_exam_data(text: str):
         return {}
 
 ANSWER_MAPPING_PROMPT = """
-You are an expert AI for mapping student answers to exam questions.
-Your task is to map the student's handwritten answer text (OCR output) to the correct Question ID from the provided question structure.
+You are a precision text-mapping and OCR correction AI. Your task is to extract answer text from the STUDENT ANSWER TEXT, clean it, and map it to the correct Question ID.
+
+========================
+OCR CLEANING RULES
+========================
+Before extracting, mentally fix OCR errors in the Sinhala text:
+- Fix broken conjunct letters (ex: ක් ෂ → ක්‍ෂ).
+- Properly align misplaced diacritics.
+- Remove unnecessary spaces inside words.
+- Ensure the resulting text is natural, readable Sinhala.
 
 ========================
 INPUTS
 ========================
 1. QUESTION STRUCTURE (JSON):
-   - Contains the hierarchy of questions and sub-questions.
-   - Each question has a unique "id" and a "label" (e.g., "1", "a", "i").
+   - A list of questions with IDs, labels (e.g. "1", "a", "i"), and question text (topic context).
 
 2. STUDENT ANSWER TEXT (OCR):
-   - Raw text extracted from the student's answer script.
-   - May contain noise, broken characters, or be out of order.
-   - Students usually write the question number before the answer (e.g., "1. Answer...", "2(a) Answer...").
+   - Raw text from the student's script. 
+   - Context for identifying correct mappings should be derived from the question text provided.
 
 ========================
-TASK
+STRICT RULES
 ========================
-- Analyze the student's text to identify which part corresponds to which question.
-- Map the extracted answer text to the corresponding "id" from the Question Structure.
-- If a question is NOT answered, do NOT include it in the output (or map it to null).
-- If an answer spans multiple lines, combine them.
-- Ignore irrelevant text (headers, footers, noise).
+1. **DO NOT ANSWER THE QUESTIONS.** If you generate an answer that isn't in the OCR, you have failed.
+2. **CLEAN EXTRACTION**: Extract the student's answer but apply the OCR CLEANING RULES above. Do NOT fix the student's actual spelling mistakes, only OCR-induced garbage.
+3. **MAPPING LOGIC**: 
+   - Use question numbers and context to find the relevant answer.
+   - For every ID in the provided structure, you MUST return a value: either the cleaned text or `null` if unattempted.
+4. **NO HALLUCINATION**: If an answer is not present, return `null`.
 
 ========================
 OUTPUT FORMAT (STRICT JSON)
 ========================
-Return a single JSON object where keys are the "id" of the question/sub-question and values are the student's answer text.
-
-Example:
-{{
-  "uuid-of-question-1": "Student's answer for question 1...",
-  "uuid-of-subquestion-1a": "Student's answer for 1(a)..."
-}}
+Return a raw JSON object: {{"id": "cleaned student text", ...}}
+EVERY ID provided in the input structure MUST be a key in your output.
 
 ========================
 QUESTION STRUCTURE
@@ -451,87 +493,119 @@ STUDENT ANSWER TEXT
 {answer_text}
 """
 
-def map_student_answers(answer_text: str, question_structure: dict) -> dict:
+def map_student_answers(answer_text: str, question_structure: list) -> dict:
     """
     Maps student answer text to question IDs using Gemini.
+    Processes questions in batches for robustness.
     """
     if not answer_text or not answer_text.strip():
         return {}
 
     try:
-        logger.info("Starting student answer mapping.")
-        # Convert structure to a simplified format for the prompt to save tokens
-        simplified_structure = _simplify_structure_for_prompt(question_structure)
+        logger.info("Starting student answer mapping by parts.")
+        flat_structure = _simplify_structure_for_prompt(question_structure)
         
-        response_text = gemini_generate(
-            ANSWER_MAPPING_PROMPT.format(
-                structure=json.dumps(
-                    simplified_structure,
-                    ensure_ascii=False,
-                    indent=2
-                ),
-                answer_text=answer_text[:30000],
-            ),
-            json_mode=True,
-        )
-
-        if not response_text:
-            logger.error("Empty response from Gemini.")
-            return {}
-
-        result = _safe_json_loads(response_text)
-
-        if not isinstance(result, dict):
-            logger.error("Mapping output is not a JSON object.")
-            return {}
+        # Group by part to maintain context
+        parts_map = {}
+        for item in flat_structure:
+            part = item.get("part") or "Unknown"
+            if part not in parts_map:
+                parts_map[part] = []
+            parts_map[part].append(item)
+            
+        all_mappings = {}
+        batch_size = 15 # Even smaller batch for safety
         
-        logger.info("Mapped %d answers successfully.", len(result))
-        return result
+        for part_name, part_items in parts_map.items():
+            logger.info("Mapping part: %s (%d items)", part_name, len(part_items))
+            for i in range(0, len(part_items), batch_size):
+                chunk = part_items[i : i + batch_size]
+                logger.info("Processing batch %d for %s", (i // batch_size) + 1, part_name)
+                
+                response_text = gemini_generate(
+                    ANSWER_MAPPING_PROMPT.format(
+                        structure=json.dumps(chunk, ensure_ascii=False, indent=2),
+                        answer_text=answer_text[:35000],
+                    ),
+                    json_mode=True,
+                )
 
-    except json.JSONDecodeError:
-        logger.error("❌ Model output was not valid JSON.")
-        return {}
-    
+                if response_text:
+                    batch_result = _safe_json_loads(response_text)
+                    if isinstance(batch_result, dict):
+                        # Merge results, keeping only the IDs we asked for in this chunk
+                        chunk_ids = {item["id"] for item in chunk}
+                        filtered_result = {k: v for k, v in batch_result.items() if k in chunk_ids}
+                        all_mappings.update(filtered_result)
+                    else:
+                        logger.warning("Batch mapping for %s returned invalid type", part_name)
+                else:
+                    # Retry once on empty response
+                    logger.warning("Empty response for %s batch - retrying...", part_name)
+                    retry_response = gemini_generate(
+                        ANSWER_MAPPING_PROMPT.format(
+                            structure=json.dumps(chunk, ensure_ascii=False, indent=2),
+                            answer_text=answer_text[:35000],
+                        ),
+                        json_mode=True,
+                    )
+                    if retry_response:
+                        retry_result = _safe_json_loads(retry_response)
+                        if isinstance(retry_result, dict):
+                            chunk_ids = {item["id"] for item in chunk}
+                            filtered_result = {k: v for k, v in retry_result.items() if k in chunk_ids}
+                            all_mappings.update(filtered_result)
+                            logger.info("Retry successful for %s batch: %d items", part_name, len(filtered_result))
+                        else:
+                            logger.error("Retry for %s batch returned invalid type", part_name)
+                    else:
+                        logger.error("Retry also failed for %s batch - skipping", part_name)
+
+
+        logger.info("Mapped %d answers total across all parts.", len(all_mappings))
+        return all_mappings
+
     except Exception as e:
         logger.error(f"❌ Error in answer mapping: {e}")
         return {}
 
 def _simplify_structure_for_prompt(questions: list) -> list:
     """
-    Helper to create a lightweight structure for the AI prompt.
+    Helper to create a flat list of all questions and sub-questions for the AI prompt.
     """
-    simple = []
+    flat_list = []
+    
+    def process_sub_questions(sub_qs, parent_label, parent_part):
+        for sq in sub_qs:
+            full_label = f"{parent_label}({sq.label})"
+            flat_list.append({
+                "id": str(sq.id),
+                "label": full_label,
+                "part": parent_part,  # inherit parent's part for correct grouping
+                "text": sq.sub_question_text[:200] if sq.sub_question_text else ""
+            })
+            # Handle recursive children
+            children = getattr(sq, "children", [])
+            if children:
+                process_sub_questions(children, full_label, parent_part)
+
     for q in questions:
-        q_obj = {
+        q_part = getattr(q, "part_name", "") or ""
+        # Add the main question
+        flat_list.append({
             "id": str(q.id),
             "label": q.question_number,
-            "text": q.question_text[:50] if q.question_text else ""
-        }
-        # Add sub-questions if any
-        # Note: This assumes the input 'questions' list contains SQLAlchemy objects or dicts
-        # We need to handle both or ensure consistent input. 
-        # Assuming SQLAlchemy objects based on usage context, but let's be safe.
+            "part": q_part,
+            "text": q.question_text[:200] if q.question_text else ""
+        })
         
+        # Add all sub-questions recursively, inheriting parent's part
         sub_qs = getattr(q, "sub_questions", [])
         if sub_qs:
-            q_obj["sub_questions"] = _simplify_sub_questions(sub_qs)
-            
-        simple.append(q_obj)
-    return simple
+            process_sub_questions(sub_qs, q.question_number, q_part)
 
-def _simplify_sub_questions(sub_questions: list) -> list:
-    simple_subs = []
-    for sq in sub_questions:
-        sq_obj = {
-            "id": str(sq.id),
-            "label": sq.label,
-            "text": sq.sub_question_text[:50] if sq.sub_question_text else ""
-        }
-        children = getattr(sq, "children", [])
-        if children:
-            sq_obj["children"] = _simplify_sub_questions(children)
-        simple_subs.append(sq_obj)
-    return simple_subs
+            
+    return flat_list
 
 RUBRIC_EXTRACT_PROMPT = """
 You are an expert examiner. Extract the marking scheme (correct answers) from the provided text.

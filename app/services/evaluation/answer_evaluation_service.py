@@ -253,9 +253,22 @@ class AnswerEvaluationService:
                 return "F"
 
         # Fetch selection rules for correct "Total Available" summary
-        from app.shared.models.evaluation_session import PaperConfig
-        paper_configs = self.repository.db.query(PaperConfig).filter(PaperConfig.evaluation_session_id == result.answer_document.evaluation_session_id).all()
-        selection_map = {c.paper_part: c.selection_rules for c in paper_configs if c.selection_rules}
+        from app.shared.models.evaluation_session import PaperConfig, EvaluationSession
+        eval_session = self.repository.db.query(EvaluationSession).filter(EvaluationSession.id == result.answer_document.evaluation_session_id).first()
+        chat_session_id = eval_session.session_id if eval_session else None
+        
+        paper_configs = self.repository.db.query(PaperConfig).filter(
+            (PaperConfig.evaluation_session_id == result.answer_document.evaluation_session_id) |
+            (PaperConfig.chat_session_id == chat_session_id)
+        ).all()
+        # NORMALIZE keys to paper_i, paper_ii for robust matching
+        selection_map = {}
+        for c in paper_configs:
+            if c.selection_rules:
+                norm_key = c.paper_part.lower().replace(" ", "_").replace("paper_", "paper_")
+                if "i" in norm_key and "ii" not in norm_key: norm_key = "paper_i"
+                elif "ii" in norm_key: norm_key = "paper_ii"
+                selection_map[norm_key] = c.selection_rules
 
         # Calculate summary with leaf-node focus to prevent double-display
         total_awarded = 0
@@ -315,8 +328,14 @@ class AnswerEvaluationService:
                 mq_data[mq_id]["max"] += max_m
 
             # Apply selection rules to calculate REAL Part Total
-            rules = selection_map.get(part) or {}
-            required_count = rules.get('total') or rules.get(part)
+            # Normalize current part for lookup
+            norm_part = part.lower().replace(" ", "_").replace("paper_", "paper_")
+            if "i" in norm_part and "ii" not in norm_part: norm_part = "paper_i"
+            elif "ii" in norm_part: norm_part = "paper_ii"
+
+            rules = selection_map.get(norm_part) or {}
+            # Use 'count' or 'total' as count key
+            required_count = rules.get('count') or rules.get('total')
             
             if required_count and len(mq_data) > int(required_count):
                 # Sort by awarded descending for best-of-N, but for MAX we just take N best available maxes

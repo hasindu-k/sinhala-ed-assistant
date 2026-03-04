@@ -57,6 +57,35 @@ class GradingService:
 
         return 1
 
+    def _resolve_part_name(self, target) -> str:
+        """
+        Correctly resolve the part name for any question or sub-question.
+        Sub-questions do not have part_name directly, so we traverse the parent chain.
+        """
+        # Direct Question object has part_name
+        part = getattr(target, 'part_name', None)
+        if part:
+            return part
+        
+        # SubQuestion: try .question attribute (direct parent Question)
+        if hasattr(target, 'question') and target.question:
+            part = getattr(target.question, 'part_name', None)
+            if part:
+                return part
+        
+        # Nested SubQuestion: traverse parent chain
+        curr = target
+        while hasattr(curr, 'parent') and curr.parent:
+            curr = curr.parent
+            if hasattr(curr, 'question') and curr.question:
+                part = getattr(curr.question, 'part_name', None)
+                if part:
+                    return part
+        
+        return 'Unknown'
+
+
+
     # ----------------------------------------------------------
     # PUBLIC ENTRY
     # ----------------------------------------------------------
@@ -131,7 +160,7 @@ class GradingService:
         # Note: rubric_text is no longer used as context sentences because it contains weights/config, not content.
         
         for key, student_text in answer_doc.mapped_answers.items():
-            if student_text:
+            if isinstance(student_text, str) and student_text.strip().lower() not in ["null", "none", ""]:
                 all_context_sentences.append(student_text)
             target = self._find_matching_question(key, question_map)
             if target:
@@ -157,6 +186,9 @@ class GradingService:
             target = self._find_matching_question(key, question_map)
             if not target:
                 logger.error(f"UNRESOLVED mapping key: {key}")
+                continue
+
+            if not student_text or str(student_text).strip().lower() in ["null", "none", ""]:
                 continue
 
             # SPECIFICITY CHECK: Skip parent question if sub-questions are also in the mapping
@@ -193,11 +225,19 @@ class GradingService:
                 logger.warning(f"No question target found for key: '{key}'")
                 continue
 
+            # CRITICAL FIX: Ignore empty answers so they are treated as "Unattempted"
+            # instead of being scored and getting default AI meaning marks.
+            if not student_text or str(student_text).strip().lower() in ["null", "none", ""]:
+                logger.info(f"Skipping empty answer for key: '{key}'")
+                continue
+
+            # Resolve part_name correctly for sub-questions by traversing parent chain
             target_id = getattr(target, 'id', None)
             display_number = self._resolve_display_number(target, key)
-            part_name = getattr(target, 'part_name', 'Unknown')
+            part_name = self._resolve_part_name(target)
             
             logger.info(f"Processing question {key} -> ID: {target_id} (Part: {part_name}, Label: {display_number})")
+
 
             # Skip if we already graded this specific question/sub-question entry
             if target_id in seen_question_ids:
@@ -281,9 +321,27 @@ class GradingService:
 
         # 1. Load Paper Config for selection rules
         from app.services.evaluation.paper_config_service import PaperConfigService
+        eval_session = self.db.query(EvaluationSession).filter(EvaluationSession.id == eval_session_id).first()
+        chat_session_id = eval_session.session_id if eval_session else None
+        
         config_service = PaperConfigService(self.db)
-        paper_configs = self.db.query(PaperConfig).filter(PaperConfig.evaluation_session_id == eval_session_id).all()
-        selection_map = {c.paper_part: c.selection_rules for c in paper_configs if c.selection_rules}
+        # Fetch by both IDs to ensure we get the confirmed config from the chat session
+        paper_configs = self.db.query(PaperConfig).filter(
+            (PaperConfig.evaluation_session_id == eval_session_id) | 
+            (PaperConfig.chat_session_id == chat_session_id)
+        ).all()
+        # NORMALIZE keys to paper_i, paper_ii for robust matching
+        selection_map = {}
+        for c in paper_configs:
+            if c.selection_rules:
+                norm_key = c.paper_part.lower().replace(" ", "_")
+                # FIX: Use endswith to avoid 'paper_ii'.contains('i') ambiguity
+                if norm_key.endswith("_ii") or norm_key == "paper_ii":
+                    norm_key = "paper_ii"
+                elif norm_key.endswith("_i") or norm_key == "paper_i":
+                    norm_key = "paper_i"
+
+                selection_map[norm_key] = c.selection_rules
 
         # 2. Add unattempted questions to scored_items so they show up in summary
         # We use question_map to find all available questions
@@ -310,47 +368,45 @@ class GradingService:
             # Find matching item if attempted
             item = next((it for it in scored_items if str(it["target"].id) == q_id), None)
             
-            # Normalize part name for grouping and rules
-            raw_part = getattr(target, 'part_name', None)
-            if not raw_part and hasattr(target, 'question'):
-                # It's a SubQuestion, inherit from parent Question
-                raw_part = getattr(target.question, 'part_name', 'Unknown')
-            elif not raw_part:
-                raw_part = 'Unknown'
+            # Normalize part name for grouping and rules - use helper for sub-questions
+            raw_part = self._resolve_part_name(target)
             
-            part_name = raw_part.lower().replace(" ", "_").replace("paper_", "paper_")
-            if "i" in part_name and "ii" not in part_name: part_name = "paper_i"
-            elif "ii" in part_name: part_name = "paper_ii"
+            part_name = raw_part.lower().replace(" ", "_")
+            # FIX: Use endswith to avoid 'paper_ii'.contains('i') being True
+            if part_name.endswith("_ii") or part_name == "paper_ii":
+                part_name = "paper_ii"
+            elif part_name.endswith("_i") or part_name == "paper_i":
+                part_name = "paper_i"
+            # else: keep as-is (unknown, etc.)
+
 
             if item:
                 # Attempted
                 meaning_data = eval_data_map.get(item["key"], {})
-                meaning_score = float(meaning_data.get("meaning_score", 0.5))
+                # Use relevance_multiplier as the meaning core logic check.
+                meaning_score = float(meaning_data.get("relevance_multiplier", 0.5))
                 system_ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
                 
                 # UNIVERSAL BLENDING STRATEGY (Accuracy & Weights):
-                # We use rubric_weights (Semantic, Coverage, Relevance) from the DB
-                # and apply meaning_score (Gemini) as a logical Correctness Factor.
-                
-                s_w = float(rubric_weights.get("semantic", 0.80))
-                c_w = float(rubric_weights.get("coverage", 0.10))
-                r_w = float(rubric_weights.get("relevance", 0.10))
-
-                # Meaning score (Gemini) helps identify logical correctness (Correctness Helper)
-                # It acts to validate the system's semantic/coverage assessment.
+                # The System (XLM-R) is the HERO. Gemini validates logical correctness.
                 system_score_ratio = system_ratio 
                 
-                # LOGIC: If Gemini says it is logically perfectly correct, we can trust the marks.
-                # If Gemini says it is logically wrong (unrelated/false), marks should be low.
-                if meaning_score >= 0.85:
-                    # AI confirms logic: Jump to 100% marks if logically sound
-                    blended_ratio = 1.0
-                elif meaning_score <= 0.15:
-                    # AI identifies factual failure; marks are capped by the AI meaning score
+                # LOGIC:
+                # 1. If Gemini says Meaning is Correct (>=0.75), trust the system's semantic match.
+                # 2. If Gemini says Meaning is Wrong (<=0.20), cap the score.
+                # 3. Otherwise, blend heavily towards the System for consistency.
+                
+                if meaning_score >= 0.75:
+                    # AI confirms logic matches reference meaning
+                    # We boost the system score to full marks if the system also found a strong match (>0.5)
+                    # or keep the system score if it was already high.
+                    blended_ratio = max(system_score_ratio, 1.0 if system_score_ratio > 0.4 else system_score_ratio)
+                elif meaning_score <= 0.20:
+                    # AI identifies factual failure; marks are capped tightly
                     blended_ratio = min(system_score_ratio, meaning_score)
                 else:
-                    # Fair blend where AI "helps" the system score
-                    blended_ratio = (0.50 * meaning_score) + (0.50 * system_score_ratio)
+                    # Blend with System leading (60% System, 40% AI)
+                    blended_ratio = (0.4 * meaning_score) + (0.6 * system_score_ratio)
                 
                 final_snapped_ratio = self._apply_discrete_bands(blended_ratio, item["max_marks"])
                 final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
@@ -366,7 +422,8 @@ class GradingService:
                 }
 
             # Save QuestionScore
-            part_name = getattr(target, 'part_name', 'Unknown')
+            # BUG FIX: Do NOT re-assign part_name here as it overwrites normalized values (paper_i, paper_ii)
+            
             q_score_params = {
                 "evaluation_result_id": eval_result.id,
                 "awarded_marks": final_marks,
@@ -627,9 +684,9 @@ class GradingService:
         Map Sinhala cosine similarity to marks with conservative thresholds.
         Sinhala embeddings often cluster; we need to be strict but fair.
         """
-        if sim >= 0.65: return 1.0  # Fairer: Was 0.72
-        if sim >= 0.52: return 0.50 + (sim - 0.52) * (0.50 / 0.13) # 0.52 -> 0.5, 0.65 -> 1.0
-        if sim >= 0.40: return 0.0 + (sim - 0.40) * (0.50 / 0.12)  # 0.40 -> 0.0, 0.52 -> 0.5
+        if sim >= 0.60: return 1.0  # Fairer: Was 0.65
+        if sim >= 0.48: return 0.50 + (sim - 0.48) * (0.50 / 0.12) # 0.48 -> 0.5, 0.60 -> 1.0
+        if sim >= 0.35: return 0.0 + (sim - 0.35) * (0.50 / 0.13)  # 0.35 -> 0.0, 0.48 -> 0.5
         return 0.0
 
 
@@ -641,10 +698,10 @@ class GradingService:
         Dynamically snap to available mark steps (1.0) based on max_marks.
         For Short Answers (<=2 marks), we force whole-mark steps (0, 1, 2) to avoid 1.5/2.
         """
-        # Thresholding: 0.70+ for full marks (relaxed from 0.80)
+        # Thresholding: 0.65+ for full marks (relaxed from 0.70 -> 0.80)
         # Sinhala meaning is often captured at lower similarity values due to script complexity.
-        if ratio >= 0.70: return 1.0
-        if ratio < 0.10: return 0.0
+        if ratio >= 0.65: return 1.0
+        if ratio < 0.05: return 0.0
         
         # Scaling [0.10, 0.70] to [0.0, 1.0] for fair distribution
         scaled_ratio = (ratio - 0.10) / 0.60
@@ -692,7 +749,6 @@ class GradingService:
         )
         
         # PRECEDENCE: Searching Syllabus is the source of knowledge.
-        # Rubric document (if uploaded) is no longer used for context retrieval.
         source = syllabus_text
         if not source:
             return ""
@@ -761,11 +817,12 @@ class GradingService:
         # Cosine similarities in one matrix operation
         sims = util.cos_sim(s_emb, sentence_embs)[0]  # shape: (num_sentences,)
 
-        # RELAXED: Threshold from 0.60 -> 0.55 for Sinhala concept matching
-        hits = int((sims >= 0.55).sum().item())
+        # RELAXED: Threshold from 0.55 -> 0.45 for Sinhala concept matching (Short Answers)
+        threshold = 0.45 if max_marks <= 2 else 0.55
+        hits = int((sims >= threshold).sum().item())
 
-        # RELAXED: Divisor from 0.90 -> 0.80
-        ratio = hits / max(1, len(sentences) * 0.80)
+        # RELAXED: Divisor from 0.80 -> 0.70
+        ratio = hits / max(1, len(sentences) * 0.70)
         return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
 
 
@@ -975,16 +1032,27 @@ You are a senior examiner specializing in Sinhala language and logical assessmen
 Your role is to help the scoring system by determining if a student's answer is **logically correct** and matches the **meaning** of the reference context, regardless of phrasing.
 
 **SCORING CRITERIA (`meaning_score`):**
-- `1.0`: Perfect logic. The meaning is exactly what is required.
-- `0.8`: Logically sound but missing slightly more than a minor detail.
-- `0.5`: Partially correct logic, or only one of many required points.
-- `0.2`: Related topic but contains logical fallacies or factual errors.
+- `1.0`: Perfect logic and accuracy. The meaning is exactly what is required.
+- `0.8`: Logically sound and correct, even if phrasing or minor details differ.
+- `0.5`: Partially correct logic, or mentions only one of several required points.
+- `0.2`: Related topic but contains logical fallacies or serious factual errors.
 - `0.0`: Completely unrelated, logically wrong, or factually false.
 
+**SPECIAL RULE FOR SHORT ANSWERS (Target Marks <= 2):**
+- These questions usually require only a single name, fact, or short phrase.
+- DO NOT penalize for lack of elaboration or brevity.
+- If the student provides the correct fact/name as per the context, give `meaning_score: 1.0`.
+
 **IMPORTANT:**
-- Reward the **meaning**. Do not penalize for handwriting OCR artifacts or synonyms.
-- For short answers, be concise. If they gave the right word, it's 1.0.
-- return JSON with 'feedback' (in Sinhala) and 'meaning_score'.
+1. Focus on **Meaning** over literal text matches. Sinhala has many synonyms and grammatical variations.
+2. If the student missed certain concepts, you MUST explicitly state the missing points using phrases like "අඩංගු විය යුතුය", "මඟ හැරී ඇත", "සඳහන් කළ යුතුය", or "පැහැදිලි කළ යුතුය". The system relies on these keywords to extract 'Missing Concepts' and 'Improvement Points'. Be encouraging but accurate.
+3. Return the results as a JSON object strictly using the exact UUID "Key" provided for each question as the property name.
+
+Example format:
+{
+  "550e8400-e29b-41d4-a716-446655440000": { "feedback": "මාතෘකාවට අදාළයි. නමුත් [X] අඩංගු විය යුතුය...", "relevance_multiplier": 1.0 },
+  "123e4567-e89b-12d3-a456-426614174000": { "feedback": "මෙම පිළිතුර ප්රශ්නයට අදාළ නැත...", "relevance_multiplier": 0.0 }
+}
 
 Questions to evaluate:
 """
@@ -1000,8 +1068,9 @@ Questions to evaluate:
                 chunk_prompt += f"Question Number: {item['display_number']}\n"
                 chunk_prompt += f"Question: {q_text}\n"
                 chunk_prompt += f"Target Marks: {item['max_marks']}\n"
-                chunk_prompt += f"Student Answer: {item['student_text']}\n"
-                chunk_prompt += f"Reference Context: {item['reference_text']}\n"
+                chunk_prompt += f"Student Answer: {str(item['student_text'])[:500]}\n"  # Cap to 500 chars
+                chunk_prompt += f"Reference Context: {str(item['reference_text'])[:600]}\n"  # Cap to 600 chars
+
             
             try:
                 # Log keys being sent
@@ -1026,6 +1095,18 @@ Questions to evaluate:
                     missing_keys = [k for k in sent_keys if k not in received_keys]
                     if missing_keys:
                         logger.warning(f"Gemini missed keys in response: {missing_keys}")
+                    
+                    # SANITIZE: truncate overly long or corrupted feedback fields
+                    import re as _re
+                    if isinstance(data, dict):
+                        for q_key, q_val in data.items():
+                            if isinstance(q_val, dict):
+                                fb = q_val.get("feedback", "")
+                                if fb:
+                                    # Remove repeated single-character sequences (corruption pattern)
+                                    fb = _re.sub(r'(.)\1{10,}', r'\1\1\1', fb)
+                                    # Cap feedback to 600 chars
+                                    q_val["feedback"] = fb[:600]
                     
                     return data
                 except Exception as e:
