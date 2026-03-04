@@ -189,7 +189,7 @@ class XAIService:
             "concepts_with_sources": len(concept_sources),
             "concept_details": concept_sources[:10]  # Limit display
         }
-        
+    
     @staticmethod
     def _generate_summary(confidence: Dict, chunks: List[Dict], safety: Optional[Dict]) -> str:
         """Generate a human-readable summary without misleading numbers."""
@@ -216,3 +216,4 @@ class XAIService:
             summary += "All content appears consistent with the source material."
         
         return summary
+
