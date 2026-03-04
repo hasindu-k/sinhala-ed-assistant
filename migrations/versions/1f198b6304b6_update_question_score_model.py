@@ -17,16 +17,34 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('question_scores', sa.Column('question_id', sa.UUID(), nullable=True))
+    op.add_column(
+        'question_scores',
+        sa.Column('question_id', sa.UUID(), nullable=True),
+        if_not_exists=True,
+    )
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'question_scores_question_id_fkey'
+            ) THEN
+                ALTER TABLE question_scores
+                ADD CONSTRAINT question_scores_question_id_fkey
+                FOREIGN KEY (question_id) REFERENCES questions(id);
+            END IF;
+        END $$;
+    """)
     op.alter_column('question_scores', 'sub_question_id',
                existing_type=sa.UUID(),
                nullable=True)
-    op.create_foreign_key(None, 'question_scores', 'questions', ['question_id'], ['id'])
 
 
 def downgrade() -> None:
-    op.drop_constraint(None, 'question_scores', type_='foreignkey')
+    op.execute("""
+        ALTER TABLE question_scores
+        DROP CONSTRAINT IF EXISTS question_scores_question_id_fkey;
+    """)
     op.alter_column('question_scores', 'sub_question_id',
                existing_type=sa.UUID(),
                nullable=False)
-    op.drop_column('question_scores', 'question_id')
+    op.drop_column('question_scores', 'question_id', if_exists=True)

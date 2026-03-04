@@ -18,8 +18,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('answer_documents', sa.Column('mapped_answers', postgresql.JSONB(astext_type=sa.Text()), nullable=True))
+    op.add_column(
+        'answer_documents',
+        sa.Column('mapped_answers', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        if_not_exists=True,
+    )
 
 
 def downgrade() -> None:
-    op.drop_column('answer_documents', 'mapped_answers')
+    op.drop_column('answer_documents', 'mapped_answers', if_exists=True)
