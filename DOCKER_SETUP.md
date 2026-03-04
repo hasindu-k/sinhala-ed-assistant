@@ -67,3 +67,34 @@ DATABASE_URL=postgresql://sinhala_learn_user:sinlearn@localhost:5432/SinhalaLear
 ```
 
 **Note:** Update the port number if using Option 2 (5433)
+
+---
+
+## 🚀 Backend Docker Commands (This Project)
+
+### Build backend image
+
+```bash
+docker build -t sinhala-learn-backend:latest .
+```
+
+### Start full stack (API + Postgres + Qdrant)
+
+```bash
+docker compose -f docker/docker-compose.yml up --build
+```
+
+### Stop stack
+
+```bash
+docker compose -f docker/docker-compose.yml down
+```
+
+### Optional PowerShell helper
+
+```powershell
+./scripts/docker.ps1 build
+./scripts/docker.ps1 rebuild
+./scripts/docker.ps1 logs
+./scripts/docker.ps1 down
+```
