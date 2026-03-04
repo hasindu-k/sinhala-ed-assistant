@@ -281,6 +281,14 @@ SECTION 2: QUESTION STRUCTURE RULES
 - **Rule:** Never assign 0 marks. Use null if unknown.
 
 ========================
+SECTION 3: ROBUST LAYOUT & TEXT REPAIR
+========================
+You are receiving text from a system OCR or digital extraction which may have jumbled line orders due to multi-column layouts or PDF encoding issues.
+1. **Restore Logical Flow**: Use linguistic context to re-order the questions. If sub-question (b) appears before (a) in the text, logically group them correctly in the JSON.
+2. **Exhaustive Detection**: Every numbered (1, 2...) or lettered ((a), (b)... / (අ), (ආ)...) item MUST be captured. If sub-questions span multiple pages or are interrupted by tables, bridge the gap and include them all.
+3. **Sinhala Repair**: Fix broken conjuncts (ක් ෂ → ක්‍ෂ), diacritic drifts, and accidental spaces within words.
+
+========================
 OUTPUT FORMAT (STRICT JSON)
 ========================
 Return a single JSON object with keys "Paper_I" and "Paper_II". 

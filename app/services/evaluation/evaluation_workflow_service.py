@@ -377,7 +377,14 @@ class EvaluationWorkflowService:
             else:
                 yield ("processing_documents", "Correcting OCR errors...", 30)
                 
-            cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+            # PERSISTENCE: Only fix if not already fixed/extracted
+            if not answer_resource.extracted_text or len(answer_resource.extracted_text) < 10:
+                cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+                # Save the fixed version back to the resource so we don't fix it again
+                self.resource_files.update_resource_extracted_text(answer_resource.id, cleaned_answer_text)
+            else:
+                cleaned_answer_text = answer_resource.extracted_text
+                logger.info("Using previously extracted/fixed answer text.")
             
             yield ("processing_documents", f"Mapping answers to {len(questions)} questions...", 40)
             answer_mapping = map_student_answers(cleaned_answer_text, questions)
@@ -969,15 +976,20 @@ class EvaluationWorkflowService:
 
         logger.info(f"Parsing syllabus: {resource_id}")
 
-        # OCR
+        # 1. Extraction Persistence Check
+        if resource.extracted_text:
+            logger.info(f"Syllabus already has extracted text. Skipping OCR and Fix.")
+            return
+
+        # 2. OCR (Local)
         cleaned_text, _ = extract_and_clean_text_from_file(resource.storage_path)
         logger.info(f"OCR complete for syllabus. Length: {len(cleaned_text)}")
         
-        # AI Fix
+        # 3. AI Fix (Helper)
         cleaned_text = fix_sinhala_ocr(cleaned_text)
         logger.info(f"AI correction complete for syllabus. Length: {len(cleaned_text)}")
         
-        # Save
+        # 4. Save
         resource.extracted_text = cleaned_text
         self.resource_files.db.commit()
 
@@ -993,15 +1005,20 @@ class EvaluationWorkflowService:
 
         logger.info(f"Parsing rubric: {resource_id}")
 
-        # OCR
+        # 1. Extraction Persistence Check
+        if resource.extracted_text:
+            logger.info(f"Rubric already has extracted text. Skipping OCR and Fix.")
+            return
+
+        # 2. OCR (Local)
         cleaned_text, _ = extract_and_clean_text_from_file(resource.storage_path)
         logger.info(f"OCR complete for rubric. Length: {len(cleaned_text)}")
         
-        # AI Fix
+        # 3. AI Fix (Helper)
         cleaned_text = fix_sinhala_ocr(cleaned_text)
         logger.info(f"AI correction complete for rubric. Length: {len(cleaned_text)}")
         
-        # Save
+        # 4. Save
         resource.extracted_text = cleaned_text
         self.resource_files.db.commit()
 
@@ -1042,23 +1059,28 @@ class EvaluationWorkflowService:
         if not resource.storage_path:
             raise ValueError("Resource file not found on disk")
 
-        # Extract and clean text from file
-        try:
-            cleaned_text, page_count = extract_and_clean_text_from_file(resource.storage_path)
-            logger.info("Extracted %s characters from %d pages in question paper", len(cleaned_text), page_count)
+        # 1. Extract and clean text from file (Only if not already done)
+        if resource.extracted_text:
+            logger.info("Question paper already has extracted text. Skipping OCR and Fix.")
+            cleaned_text = resource.extracted_text
+        else:
+            try:
+                # Local Extraction (Core process)
+                cleaned_text, page_count = extract_and_clean_text_from_file(resource.storage_path)
+                logger.info("Extracted %s characters from %d pages in question paper", len(cleaned_text), page_count)
 
-            # Fix Sinhala OCR errors using AI
-            logger.info("Running AI correction on extracted text...")
-            cleaned_text = fix_sinhala_ocr(cleaned_text)
-            logger.info("AI correction complete. Final text length: %s", len(cleaned_text))
+                # AI Correction (Helper process - persisted to avoid repetition)
+                logger.info("Running AI correction on extracted text...")
+                cleaned_text = fix_sinhala_ocr(cleaned_text)
+                logger.info("AI correction complete. Final text length: %s", len(cleaned_text))
 
-        # Persist OCR text back to ResourceFile (CRITICAL)
-            resource.extracted_text = cleaned_text
-            self.resource_files.db.commit()
+                # Persist result immediately
+                resource.extracted_text = cleaned_text
+                self.resource_files.db.commit()
 
-        except Exception as e:
-            logger.error(f"Failed to extract text from resource {resource.id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to extract text from question paper: {e}")
+            except Exception as e:
+                logger.error(f"Failed to extract text from resource {resource.id}: {e}", exc_info=True)
+                raise ValueError(f"Failed to extract text from question paper: {e}")
 
         # Parse and structure content using AI
         try:
@@ -1303,8 +1325,12 @@ class EvaluationWorkflowService:
         question_paper = question_papers[0]
         questions = self.question_papers.get_questions_by_paper(question_paper.id)
 
-        # 1. Fix OCR errors
-        cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+        # 1. Fix OCR errors (Stable AI step with persistence)
+        if not answer_resource.extracted_text or len(answer_resource.extracted_text) < 10:
+            cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+            self.resource_files.update_resource_extracted_text(answer_resource.id, cleaned_answer_text)
+        else:
+            cleaned_answer_text = answer_resource.extracted_text
         
         # 2. Map answers
         answer_mapping = map_student_answers(cleaned_answer_text, questions)
@@ -1433,7 +1459,13 @@ class EvaluationWorkflowService:
             if progress_callback:
                 progress_callback("processing_documents", "Correcting OCR errors...")
             logger.info("Running AI correction on student answer script...")
-            cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+            
+            # PERSISTENCE: Save fixed text to avoid repeating expensive AI calls
+            if not answer_resource.extracted_text or len(answer_resource.extracted_text) < 10:
+                cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+                self.resource_files.update_resource_extracted_text(answer_resource.id, cleaned_answer_text)
+            else:
+                cleaned_answer_text = answer_resource.extracted_text
             
             # 2. Map answers to questions using AI
             if progress_callback:
