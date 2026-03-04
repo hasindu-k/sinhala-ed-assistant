@@ -252,7 +252,14 @@ class AnswerEvaluationService:
             else:
                 return "F"
 
+        # Fetch selection rules for correct "Total Available" summary
+        from app.shared.models.evaluation_session import PaperConfig
+        paper_configs = self.repository.db.query(PaperConfig).filter(PaperConfig.evaluation_session_id == result.answer_document.evaluation_session_id).all()
+        selection_map = {c.paper_part: c.selection_rules for c in paper_configs if c.selection_rules}
+
         # Calculate summary with leaf-node focus to prevent double-display
+        total_awarded = 0
+        total_max_allowed = 0
         marks_summary = {}
         # Get all unique parts
         parts = sorted(list(set([
@@ -270,16 +277,20 @@ class AnswerEvaluationService:
                 if ((s.question.part_name if s.question else s.sub_question.question.part_name) == part)
             ]
             
+            # Group by main question for selection logic
+            mq_data = {} # {mq_id: {"awarded": x, "max": y}}
+            
             for score in part_scores:
                 # Leaf Logic: only show in summary if it's a leaf
                 is_leaf = True
-                if score.question and score.question.sub_questions:
-                    is_leaf = False
-                if score.sub_question and score.sub_question.children:
-                    is_leaf = False
+                main_q = score.question
+                if score.question:
+                    if score.question.sub_questions: is_leaf = False
+                elif score.sub_question:
+                    if score.sub_question.children: is_leaf = False
+                    main_q = score.sub_question.question
                 
-                if not is_leaf:
-                    continue
+                if not is_leaf: continue
 
                 label = ""
                 if score.question:
@@ -296,8 +307,32 @@ class AnswerEvaluationService:
                     "awarded": round(awarded, 2),
                     "max": max_m
                 })
+                
+                # Track for Total Available logic (Selection Aware)
+                mq_id = str(main_q.id) if main_q else "orphan"
+                if mq_id not in mq_data: mq_data[mq_id] = {"awarded": 0, "max": 0}
+                mq_data[mq_id]["awarded"] += awarded
+                mq_data[mq_id]["max"] += max_m
+
+            # Apply selection rules to calculate REAL Part Total
+            rules = selection_map.get(part) or {}
+            required_count = rules.get('total') or rules.get(part)
+            
+            if required_count and len(mq_data) > int(required_count):
+                # Sort by awarded descending for best-of-N, but for MAX we just take N best available maxes
+                # Usually maxes are the same (e.g. 12 marks each), so we take N * 12
+                all_maxes = sorted([v["max"] for v in mq_data.values()], reverse=True)
+                part_max_allowed = sum(all_maxes[:int(required_count)])
+            else:
+                part_max_allowed = sum([v["max"] for v in mq_data.values()])
+            
+            total_max_allowed += part_max_allowed
         
-        logger.debug(f"Generated marks summary for {len(marks_summary)} parts.")
+        # Override result.total_score if needed? 
+        # No, result.total_score is already calculated best-of-N in GradingService.
+        # We just need the UI to show the correct /Total.
+        
+        logger.debug(f"Generated marks summary. Total Available: {total_max_allowed}")
 
 
         # Extract missed concepts and improvement points from question feedbacks
@@ -331,13 +366,15 @@ class AnswerEvaluationService:
         }
 
         return {
-            "id": result.id,
+            "evaluation_result_id": result.id,
             "answer_document_id": result.answer_document_id,
-            "total_score": float(result.total_score) if result.total_score is not None else None,
+            "total_score": round(float(result.total_score or 0), 2),
+            "total_max": total_max_allowed,
             "grade": calc_grade(result.total_score),
-            "feedback": feedback_obj,
+            "overall_feedback": result.overall_feedback,
+            "evaluated_at": result.evaluated_at.isoformat() if result.evaluated_at else None,
             "marks_summary": marks_summary,
-            "evaluated_at": result.evaluated_at,
+            "improvement_points": list(set(improvement_points))[:5],
             "question_feedbacks": [
                 {
                     "id": score.id,

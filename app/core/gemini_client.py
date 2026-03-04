@@ -12,8 +12,8 @@ _client = genai.Client(api_key=settings.GOOGLE_API_KEY)
 MODEL_NAME = "gemini-2.0-flash"
 
 # Increased from 5 → 10 to support parallel per-question Gemini feedback calls
-# SAFER: Reduced from 4 -> 2 to prevent frequent 429 Resource Exhausted errors
-_ai_semaphore = threading.Semaphore(2)
+# SAFER: Increased from 2 -> 5 to speed up batch evaluations
+_ai_semaphore = threading.Semaphore(5)
 
 class GeminiClient:
     @classmethod

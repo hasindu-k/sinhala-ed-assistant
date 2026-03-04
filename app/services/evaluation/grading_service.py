@@ -272,6 +272,9 @@ class GradingService:
 
         # 2. Add unattempted questions to scored_items so they show up in summary
         # We use question_map to find all available questions
+        all_objs = {id(v): v for v in question_map.values()}.values()
+        questions = [q for q in all_objs if isinstance(q, Question)]
+        
         all_target_ids = {str(q.id) for q in questions if not isinstance(q, SubQuestion)}
         all_target_ids.update({str(sq.id) for q in questions for sq in getattr(q, 'sub_questions', []) or []})
         
@@ -559,14 +562,10 @@ class GradingService:
     # ----------------------------------------------------------
     def _apply_discrete_bands(self, ratio: float, max_marks: int) -> float:
         """
-        Convert a continuous similarity ratio into discrete marking bands.
-        BALANCED: Relaxed to award full marks for 'Good' answers while staying firm on 'Partial' ones.
+        Dynamically snap to available mark steps (1.0) based on max_marks.
+        For Short Answers (<=2 marks), we force whole-mark steps (0, 1, 2) to avoid 1.5/2.
         """
-    def _apply_discrete_bands(self, ratio: float, max_marks: int) -> float:
-        """
-        Dynamically snap to available mark steps (0.5 or 1.0) based on max_marks.
-        This provides 'Dynamic Paper Evaluation' by adapting to any mark scheme.
-        """
+        from decimal import Decimal, ROUND_HALF_UP
         # Thresholding: 0.85+ for full marks, <0.30 for 0 marks
         if ratio >= 0.85: return 1.0
         if ratio < 0.30: return 0.0
@@ -575,15 +574,11 @@ class GradingService:
         scaled_ratio = (ratio - 0.30) / 0.55
         actual_marks = scaled_ratio * max_marks
         
-        # Determine step: 0.5 for small (Paper I), 1.0 for large (Paper II)
-        step = 0.5 if max_marks <= 3 else 1.0
+        # Force whole marks (1.0 step) for small questions and Paper II defaults
+        step = Decimal("1.0")
         
-        # Round to nearest valid mark
-        snapped_marks = round(actual_marks / step) * step
-        
-        # Clamp to bounds
-        final_marks = max(0.0, min(float(max_marks), snapped_marks))
-        return final_marks / max_marks
+        snapped_marks = (Decimal(str(actual_marks)) / step).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * step
+        return float(snapped_marks / Decimal(str(max_marks)))
 
     def _apply_marking_band(self, semantic: float, coverage: float) -> float:
         combined = (0.6 * semantic) + (0.4 * coverage)
@@ -924,8 +919,15 @@ Questions to evaluate:
                 logger.error(f"Batch Gemini feedback failed: {e}")
                 return {}
 
-        batch_size = 5
-        chunks = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+        # Filter: Skip Gemini for MCQ/Short Answer questions (typically Paper I)
+        # to reduce time from 30m to 5m.
+        ai_items = [
+            it for it in items 
+            if getattr(it["target"], "part_name", "").lower() != "paper_i"
+        ]
+        
+        batch_size = 10 # Increased from 5 -> 10
+        chunks = [ai_items[i:i + batch_size] for i in range(0, len(ai_items), batch_size)]
         
         evaluation_data = {}
         with ThreadPoolExecutor(max_workers=min(len(chunks), 4)) as executor:
@@ -938,12 +940,22 @@ Questions to evaluate:
                 except Exception as exc:
                     logger.error(f"Chunk processing generated an exception: {exc}")
 
-        # Wrap feedback with question identifiers, keep meaning_score isolated
+        # Wrap feedback with question identifiers
         final_map = {}
         for item in items:
             key = item["key"]
+            part_name = getattr(item["target"], "part_name", "").lower()
+            
+            # If it was skipped (Paper I), meaning_score acts as a 1.0 pass-through
+            if part_name == "paper_i":
+                final_map[key] = {
+                    "meaning_score": 1.0, 
+                    "feedback": f"**ප්‍රශ්නය {item['display_number']}**\n\nස්වයංක්‍රීයව ලකුණු ලබා දෙන ලදී."
+                }
+                continue
+
             eval_res_json = evaluation_data.get(key, {})
-            meaning_score = eval_res_json.get("meaning_score", 1.0)
+            meaning_score = eval_res_json.get("meaning_score", 0.5) # Default to 0.5 for stability
             raw_feedback = eval_res_json.get("feedback", "(ප්‍රතිපෝෂණ ලබා ගත නොහැක)")
             
             final_map[key] = {
