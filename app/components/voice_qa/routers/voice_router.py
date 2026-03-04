@@ -67,24 +67,21 @@ async def transcribe(audio: UploadFile = File(...)):
         "standard": standard,
     }
 
-@router.post("/evaluate-wer")
-async def evaluate_wer(
+@router.post("/evaluate-asr")
+async def evaluate_asr(
     audio: UploadFile = File(...),
     reference_text: str = Form(...)
 ):
     temp_path = "temp.wav"
+
     with open(temp_path, "wb") as f:
         f.write(await audio.read())
 
-    predicted = VoiceService.transcribe_audio(temp_path)
+    result = VoiceService.evaluate_audio(temp_path, reference_text)
 
-    error_rate = wer(reference_text, predicted)
+    os.remove(temp_path)
 
-    return {
-        "prediction": predicted,
-        "reference": reference_text,
-        "wer": round(error_rate, 4)
-    }
+    return result
 # The heavier pipeline helpers live in `VoiceQAService` (in whisper_service.py).
 
 
