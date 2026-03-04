@@ -366,7 +366,7 @@ class AnswerEvaluationService:
         }
 
         return {
-            "evaluation_result_id": result.id,
+            "id": result.id,
             "answer_document_id": result.answer_document_id,
             "total_score": round(float(result.total_score or 0), 2),
             "total_max": total_max_allowed,

@@ -22,7 +22,7 @@ from app.shared.models.question_papers import Question, SubQuestion
 from app.shared.models.evaluation_session import EvaluationSession
 from app.services.chat_session_service import ChatSessionService
 from app.services.resource_service import ResourceService
-from app.components.document_processing.services.classifier_service import extract_complete_exam_data, fix_sinhala_ocr, map_student_answers
+from app.components.document_processing.services.classifier_service import extract_complete_exam_data, fix_sinhala_ocr, map_student_answers, extract_rubric_answers
 from app.components.document_processing.services.ocr_service import extract_and_clean_text_from_file
 from app.shared.models.answer_evaluation import QuestionScore
 import logging
@@ -58,6 +58,7 @@ class EvaluationWorkflowService:
         if not label:
             return label
         # Remove parens, dots and convert to lowercase
+        # FIX: Keep 'ඈ' as distinct from 'අ' if applicable, but standard stripping is fine
         clean = re.sub(r'[().]', '', str(label)).strip().lower()
         return clean
 
@@ -75,12 +76,32 @@ class EvaluationWorkflowService:
         if not self.chat_sessions.validate_ownership(session_id, user_id):
             raise PermissionError("You don't have permission to access this session")
 
-    def _get_eval_session_with_owner_check(self, evaluation_id: UUID, user_id: UUID):
+    def _get_eval_session_with_owner_check(self, evaluation_id: UUID, user_id: UUID) -> EvaluationSession:
         eval_session = self.sessions.get_evaluation_session(evaluation_id)
         if not eval_session:
             raise ValueError("Evaluation session not found")
         self._ensure_chat_session_owner(eval_session.session_id, user_id)
         return eval_session
+
+    def _resolve_to_eval_session(self, session_id: UUID, user_id: UUID) -> EvaluationSession:
+        """
+        Smart resolver: Tries to find an EvaluationSession first, 
+        then a ChatSession's most recent EvaluationSession.
+        """
+        # 1. Try as Evaluation ID
+        eval_session = self.sessions.get_evaluation_session(session_id)
+        if eval_session:
+            self._ensure_chat_session_owner(eval_session.session_id, user_id)
+            return eval_session
+        
+        # 2. Try as Chat ID
+        if self.chat_sessions.validate_ownership(session_id, user_id):
+            recent_evals = self.sessions.get_evaluation_sessions_by_chat_session(session_id)
+            if recent_evals:
+                # Get the most recent one
+                return sorted(recent_evals, key=lambda x: x.created_at, reverse=True)[0]
+        
+        raise ValueError(f"No evaluation session found for ID {session_id}")
 
     def _ensure_resource_owner(self, resource_id: UUID, user_id: UUID):
         # Will raise PermissionError / ValueError if unauthorized or missing
@@ -1145,7 +1166,8 @@ class EvaluationWorkflowService:
                         max_marks=q_data.get("marks"),
                         part_name=paper_key,
                         shared_stem=q_data.get("shared_stem"),
-                        inherits_shared_stem_from=q_data.get("inherits_shared_stem_from")
+                        inherits_shared_stem_from=q_data.get("inherits_shared_stem_from"),
+                        correct_answer=q_data.get("correct_answer")
                     )
 
                     # 3️⃣ Create SubQuestions (Recursive)
@@ -1159,7 +1181,8 @@ class EvaluationWorkflowService:
                                 label=normalized_label,
                                 sub_question_text=data.get("text"),
                                 max_marks=data.get("marks"),
-                                parent_sub_question_id=parent_sq_id
+                                parent_sub_question_id=parent_sq_id,
+                                correct_answer=data.get("correct_answer")
                             )
                             # Recurse for children
                             if "sub_questions" in data:
@@ -1278,9 +1301,9 @@ class EvaluationWorkflowService:
             student_identifier=payload.student_identifier,
         )
 
-    def list_answer_documents(self, evaluation_id: UUID, user_id: UUID):
-        self._get_eval_session_with_owner_check(evaluation_id, user_id)
-        return self.answers.get_answer_documents_by_evaluation_session(evaluation_id)
+    def list_answer_documents(self, session_id: UUID, user_id: UUID):
+        eval_session = self._resolve_to_eval_session(session_id, user_id)
+        return self.answers.get_answer_documents_by_evaluation_session(eval_session.id)
 
     def parse_answer_document(self, answer_id: UUID, user_id: UUID):
         """
@@ -1440,8 +1463,8 @@ class EvaluationWorkflowService:
         if not eval_session:
             raise ValueError("Evaluation session not found")
 
-        # Get Evaluation Context (Syllabus, Rubric, Questions)
         syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
+        
         question_map = self._build_question_map_helper(questions)
 
         # 1. Fix OCR errors in student answer
@@ -1473,6 +1496,10 @@ class EvaluationWorkflowService:
             logger.info("Mapping student answers to questions...")
             answer_mapping = map_student_answers(cleaned_answer_text, questions)
             
+            if not answer_mapping:
+                logger.error("Mapping failed: Gemini returned an empty response.")
+                raise ValueError("නිරවද්‍ය ලෙස පිළිතුරු හඳුනා ගැනීමට නොහැකි විය. කරුණාකර නැවත උත්සාහ කරන්න. (AI Rate Limited)")
+
             # Save mapping for future use
             self.answers.update_mapped_answers(answer_id, answer_mapping)
         
@@ -1542,16 +1569,18 @@ class EvaluationWorkflowService:
         """Helper to build a map for quick question lookup."""
         q_map = {}
         for q in questions:
-            # Index by question number
+            q_num = str(q.question_number).lstrip('0')
+            # Index by question number variants
+            q_map[q_num] = q
             q_map[str(q.question_number)] = q
             # Index by ID
             q_map[str(q.id)] = q
             
             for sq in getattr(q, "sub_questions", []) or []:
-                # Index by combination
-                key = f"{q.question_number}{sq.label}"
-                q_map[key] = sq
-                # Index by ID
+                sq_label = str(sq.label).lower().strip()
+                # Index by combinations: "1a", "1(a)", etc.
+                q_map[f"{q_num}{sq_label}"] = sq
+                q_map[f"{q_num}({sq_label})"] = sq
                 q_map[str(sq.id)] = sq
         return q_map
 

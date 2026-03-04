@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from app.shared.ai.gemini_client import gemini_generate
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,19 @@ def classify_document(text: str) -> str:
     except Exception as e:
         print(f"Error classifying document: {e}")
         return "unknown"
+
+def _safe_json_loads(text: str) -> dict:
+    """Robust JSON parsing that handles Markdown code blocks and whitespace."""
+    if not text:
+        return {}
+    
+    try:
+        # Strip potential Markdown backticks
+        clean_text = re.sub(r'^```json\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
+        return json.loads(clean_text)
+    except Exception as e:
+        logger.error(f"Failed to parse JSON response: {e}. Raw content: {text[:500]}...")
+        return {}
     
 
 # 1. Specialized Prompt for Sinhala Exam Extraction
@@ -127,7 +141,8 @@ OUTPUT FORMAT (STRICT JSON)
           "type": "mcq",
           "text": "question text",
           "options": ["option 1", "option 2", "option 3", "option 4"],
-          "marks": null
+          "correct_answer": "2",
+          "marks": 1
         }},
         "2": {{{{ ... }}}}
       }}
@@ -140,9 +155,9 @@ OUTPUT FORMAT (STRICT JSON)
           "text": "main question text",
           "marks": 20,
           "sub_questions": {{
-            "a": {{{{"text": "sub-question a", "marks": 5}}}},
-            "b": {{{{"text": "sub-question b", "marks": 5}}}},
-            "c": {{{{"text": "sub-question c", "marks": 10}}}}
+            "a": {{{{"text": "sub-question a", "marks": 5, "correct_answer": "Expected key facts..."}}}},
+            "b": {{{{"text": "sub-question b", "marks": 5, "correct_answer": "..."}}}},
+            "c": {{{{"text": "sub-question c", "marks": 10, "correct_answer": "..."}}}}
           }}
         }},
         "2": {{{{ ... }}}}
@@ -186,7 +201,10 @@ def separate_paper_content(text: str):
             logger.error("Empty response from Gemini.")
             return {}
 
-        result = json.loads(response_text)
+        result = _safe_json_loads(response_text)
+        if not result:
+            return {}
+        
         logger.info("Sinhala structure extraction completed successfully.")
 
         paper_structure = result.get("PaperStructure", {
@@ -328,8 +346,8 @@ If a paper is missing, set it to null.
         "text": "Main question text",
         "marks": 20,
         "sub_questions": {{
-          "a": {{"text": "Sub Q text", "marks": 5}},
-          "b": {{"text": "Sub Q text", "marks": 5}}
+          "a": {{"text": "Sub Q text", "marks": 5, "correct_answer": "fact 1, fact 2"}},
+          "b": {{"text": "Sub Q text", "marks": 5, "correct_answer": "..."}}
         }}
       }}
     }}
@@ -357,7 +375,10 @@ def extract_complete_exam_data(text: str):
             json_mode=True
         )
 
-        result = json.loads(response_text)
+        result = _safe_json_loads(response_text)
+        if not result:
+            return {}
+            
         logger.info("Combined exam extraction completed successfully.")
         
         # 🔒 Defensive Normalization
@@ -458,7 +479,7 @@ def map_student_answers(answer_text: str, question_structure: dict) -> dict:
             logger.error("Empty response from Gemini.")
             return {}
 
-        result = json.loads(response_text)
+        result = _safe_json_loads(response_text)
 
         if not isinstance(result, dict):
             logger.error("Mapping output is not a JSON object.")
@@ -511,3 +532,39 @@ def _simplify_sub_questions(sub_questions: list) -> list:
             sq_obj["children"] = _simplify_sub_questions(children)
         simple_subs.append(sq_obj)
     return simple_subs
+
+RUBRIC_EXTRACT_PROMPT = """
+You are an expert examiner. Extract the marking scheme (correct answers) from the provided text.
+Identify each question number/label and its corresponding "Correct Answer" or "Acceptable Point".
+
+Format: STRICT JSON object where keys are question labels (e.g., "1", "1(a)", "1.ii") and values are the correct answer string.
+
+Guidelines:
+- MCQs: Use the option number (1, 2, 3, 4) or text.
+- Essays: Concise bullet points of the expected answer.
+- Preserve original labels as they appear (e.g., 1අ, 1a).
+
+TEXT:
+{content}
+"""
+
+def extract_rubric_answers(text: str) -> dict:
+    """
+    Extracts a mapping of question identifiers to correct answers from rubric text.
+    """
+    if not text or len(text.strip()) < 10:
+        return {}
+        
+    try:
+        logger.info("Extracting structured answers from rubric.")
+        response_text = gemini_generate(
+            RUBRIC_EXTRACT_PROMPT.format(content=text[:20000]),
+            json_mode=True
+        )
+        if not response_text:
+            return {}
+            
+        return _safe_json_loads(response_text)
+    except Exception as e:
+        logger.error(f"Error extracting rubric answers: {e}")
+        return {}

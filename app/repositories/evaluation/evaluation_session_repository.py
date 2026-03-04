@@ -171,6 +171,13 @@ class EvaluationSessionRepository:
         is_confirmed: Optional[bool] = False,
     ) -> PaperConfig:
         """Create paper configuration for an evaluation session or chat session."""
+        import json
+        if selection_rules and isinstance(selection_rules, str):
+            try:
+                selection_rules = json.loads(selection_rules)
+            except:
+                selection_rules = {"mode": "all", "raw": selection_rules}
+
         paper_config = PaperConfig(
             chat_session_id=chat_session_id,
             evaluation_session_id=evaluation_session_id,
@@ -236,6 +243,12 @@ class EvaluationSessionRepository:
         if total_main_questions is not None:
             config.total_main_questions = total_main_questions
         if selection_rules is not None:
+            import json
+            if isinstance(selection_rules, str):
+                try:
+                    selection_rules = json.loads(selection_rules)
+                except:
+                    selection_rules = {"mode": "all", "raw": selection_rules}
             config.selection_rules = selection_rules
         if is_confirmed is not None:
             config.is_confirmed = is_confirmed

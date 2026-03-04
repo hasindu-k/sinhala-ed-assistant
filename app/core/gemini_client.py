@@ -9,7 +9,7 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 _client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME = "gemini-2.5-flash-lite"
 
 # Increased from 5 → 10 to support parallel per-question Gemini feedback calls
 # SAFER: Reduced from 5 -> 2 to prevent slamming Gemini API and triggering 429s (especially during batch evaluation)
@@ -22,7 +22,7 @@ class GeminiClient:
         return _client
 
     @classmethod
-    def generate_content(cls, prompt: str, max_retries: int = 10, safety_settings: list = None, json_mode: bool = False) -> dict:
+    def generate_content(cls, prompt: str, max_retries: int = 15, safety_settings: list = None, json_mode: bool = False) -> dict:
         """
         Generate content from Gemini and return text + token usage.
         Includes rate limiting (semaphore) and retry logic (exponential backoff).
@@ -33,7 +33,8 @@ class GeminiClient:
         from google.genai import types
         config = types.GenerateContentConfig(
             safety_settings=safety_settings,
-            response_mime_type="application/json" if json_mode else "text/plain"
+            response_mime_type="application/json" if json_mode else "text/plain",
+            max_output_tokens=8192
         )
 
         # Estimate prompt tokens locally — avoids one API round-trip per call
@@ -68,12 +69,13 @@ class GeminiClient:
 
                 if (is_rate_limit or is_overloaded) and attempt < max_retries:
                     # More aggressive wait for rate limits (429) to allow quota window reset
-                    base_wait = 10 if is_rate_limit else 3
-                    wait_time = min(30, (base_wait * (attempt + 1)) + random.uniform(2, 5))
+                    # FREE TIER: 15 RPM. Let's wait more blocks.
+                    base_wait = 20 if is_rate_limit else 5
+                    wait_time = min(60, (base_wait * (attempt + 1)) + random.uniform(5, 15))
                     
                     logger.warning(
                         f"Gemini API {'rate limited' if is_rate_limit else 'overloaded'} (Attempt {attempt+1}/{max_retries+1}). "
-                        f"Retrying in {wait_time:.2f}s (Capped at 30s)..."
+                        f"Retrying in {wait_time:.2f}s (Capped at 60s)..."
                     )
                     time.sleep(wait_time)
                     continue

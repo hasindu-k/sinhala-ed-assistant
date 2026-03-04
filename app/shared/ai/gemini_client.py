@@ -2,7 +2,7 @@
 
 from app.core.gemini_client import GeminiClient
 
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME = "gemini-2.5-flash-lite"
 
 def gemini_generate(
     prompt: str,
