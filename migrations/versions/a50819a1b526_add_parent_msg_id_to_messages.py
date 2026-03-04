@@ -19,9 +19,26 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.add_column(
         'messages',
-        sa.Column('parent_msg_id', sa.UUID(), sa.ForeignKey('messages.id'), nullable=True)
+        sa.Column('parent_msg_id', sa.UUID(), nullable=True),
+        if_not_exists=True,
     )
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'messages_parent_msg_id_fkey'
+            ) THEN
+                ALTER TABLE messages
+                ADD CONSTRAINT messages_parent_msg_id_fkey
+                FOREIGN KEY (parent_msg_id) REFERENCES messages(id);
+            END IF;
+        END $$;
+    """)
 
 
 def downgrade() -> None:
-    op.drop_column('messages', 'parent_msg_id')
+    op.execute("""
+        ALTER TABLE messages
+        DROP CONSTRAINT IF EXISTS messages_parent_msg_id_fkey;
+    """)
+    op.drop_column('messages', 'parent_msg_id', if_exists=True)
