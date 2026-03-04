@@ -2,7 +2,7 @@
 
 import json
 import logging
-from app.shared.ai.gemini_client import gemini_generate
+from app.shared.ai.gemini_client import gemini_generate, gemini_generate_lightweight
 
 logger = logging.getLogger(__name__)
 
@@ -503,3 +503,26 @@ def _simplify_sub_questions(sub_questions: list) -> list:
             sq_obj["children"] = _simplify_sub_questions(children)
         simple_subs.append(sq_obj)
     return simple_subs
+
+def generate_session_title(message_content: str) -> str:
+    """
+    Generate an intelligent session title using a lightweight Gemini model.
+    Uses gemini-1.5-flash-8b for faster processing and reduced rate limiting.
+    """
+    if not message_content or not message_content.strip():
+        return "New Chat"
+    
+    try:
+        # Use lightweight model for title generation to avoid rate limits
+        title = gemini_generate_lightweight(message_content[:500])  # Shorter input
+        
+        # Fallback if generation fails or returns empty
+        if not title or len(title) > 80:  # Stricter length limit
+            return "New Chat"
+            
+        logger.info(f"Generated session title: {title}")
+        return title
+        
+    except Exception as e:
+        logger.error(f"Error generating session title: {e}")
+        return "New Chat"

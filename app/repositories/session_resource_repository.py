@@ -44,3 +44,29 @@ class SessionResourceRepository:
         )
         self.db.commit()
         return rows
+
+    def detach_resource_from_session(self, session_id: UUID, resource_id: UUID, label: str = None) -> bool:
+        """Remove a single resource link from a session. Returns True if a row was deleted."""
+        query = self.db.query(SessionResource).filter(
+            SessionResource.session_id == session_id,
+            SessionResource.resource_id == resource_id,
+        )
+        if label:
+            query = query.filter(SessionResource.label == label)
+        rows_deleted = query.delete(synchronize_session=False)
+        self.db.commit()
+        return rows_deleted > 0
+
+    def detach_resources_by_label(self, session_id: UUID, label: str) -> bool:
+        """Remove all resource links with a specific label from a session. Returns True if rows were deleted."""
+        rows_deleted = (
+            self.db.query(SessionResource)
+            .filter(
+                SessionResource.session_id == session_id,
+                SessionResource.label == label
+            )
+            .delete(synchronize_session=False)
+        )
+        self.db.commit()
+        return rows_deleted > 0
+

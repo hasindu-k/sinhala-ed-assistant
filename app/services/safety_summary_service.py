@@ -45,12 +45,16 @@ class SafetySummaryService:
         # -----------------------------
         # Sentence-level semantic check (BATCH)
         # -----------------------------
-        # Prepare pairs for batch processing
-        pairs = [(item.get("sentence", ""), item.get("evidence", "")) for item in flagged]
+        # # Prepare pairs for batch processing
+        # pairs = [(item.get("sentence", ""), item.get("evidence", "")) for item in flagged]
         
-        # Batch compute all similarities at once (MUCH faster)
-        similarities = SemanticSimilarityService.similarity_batch(pairs)
+        # # Batch compute all similarities at once (MUCH faster)
+        # similarities = SemanticSimilarityService.similarity_batch(pairs)
         
+        similarities = [
+            item.get("semantic_similarity_score", 0.0)
+            for item in flagged[:10]
+        ]
         severities = []
         for similarity in similarities:
             if similarity >= 0.80:

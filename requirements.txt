@@ -26,3 +26,5 @@ librosa
 jiwer
 google-genai
 python-multipart
+
+ultralytics

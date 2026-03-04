@@ -13,6 +13,7 @@ from app.shared.models.session_resources import SessionResource
 from app.shared.models.evaluation_session import EvaluationResource
 from app.shared.models.question_papers import QuestionPaper
 from app.shared.models.answer_evaluation import AnswerDocument
+from app.shared.models.user_evaluation_context import UserEvaluationContext
 import logging
 
 logger = logging.getLogger(__name__)
@@ -162,10 +163,20 @@ class ChatSessionService:
                         remaining_refs += self.db.query(EvaluationResource).filter(EvaluationResource.resource_id == rid).count()
                         remaining_refs += self.db.query(QuestionPaper).filter(QuestionPaper.resource_id == rid).count()
                         remaining_refs += self.db.query(AnswerDocument).filter(AnswerDocument.resource_id == rid).count()
+                        remaining_refs += (
+                            self.db.query(UserEvaluationContext)
+                            .filter(
+                                (UserEvaluationContext.active_syllabus_id == rid)
+                                | (UserEvaluationContext.active_question_paper_id == rid)
+                                | (UserEvaluationContext.active_rubric_resource_id == rid)
+                            )
+                            .count()
+                        )
 
                         if remaining_refs == 0:
                             try:
-                                resource_service.delete_resource(rid, session.user_id, commit=False)
+                                with self.db.begin_nested():
+                                    resource_service.delete_resource(rid, session.user_id, commit=False)
                             except Exception:
                                 # If deletion fails for one resource, continue; final commit/rollback will handle transaction
                                 logger.warning("Failed to delete resource %s during session cleanup", rid)
@@ -203,4 +214,15 @@ class ChatSessionService:
                 context_service.update_question_paper(user_id, resource_id)
             
         return {"detail": f"Resource attached as {role} successfully"}
+    
+    def update_session_title(self, session_id: UUID, user_id: UUID, new_title: str):
+        """Update session title after ownership validation."""
+        session = self.get_session_with_ownership_check(session_id, user_id)
+        
+        session.title = new_title
+        self.db.commit()
+        self.db.refresh(session)
+        
+        logger.info(f"Updated session {session_id} title to: {new_title}")
+        return session
 

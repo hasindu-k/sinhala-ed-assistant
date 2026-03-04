@@ -28,6 +28,7 @@ class Question(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     question_paper_id = Column(UUID(as_uuid=True), ForeignKey("question_papers.id"), nullable=False, index=True)
     question_number = Column(String, nullable=True)
+    part_name = Column(String, nullable=True)  # e.g., 'Paper_I', 'Paper_II'
     question_text = Column(Text, nullable=True)
     max_marks = Column(Integer, nullable=True)
     shared_stem = Column(Text, nullable=True)

@@ -47,6 +47,16 @@ class QuestionPaperRepository:
             QuestionPaper.chat_session_id == chat_session_id
         ).all()
 
+    def delete_question_papers_by_chat_session(
+        self,
+        chat_session_id: UUID
+    ) -> None:
+        """Delete all question papers for a chat session."""
+        self.db.query(QuestionPaper).filter(
+            QuestionPaper.chat_session_id == chat_session_id
+        ).delete()
+        self.db.commit()
+
     def get_question_papers_by_evaluation_session(
         self,
         evaluation_session_id: UUID
@@ -62,6 +72,7 @@ class QuestionPaperRepository:
         question_number: str,
         question_text: str,
         max_marks: Optional[int] = None,
+        part_name: Optional[str] = None,
         shared_stem: Optional[str] = None,
         inherits_shared_stem_from: Optional[str] = None,
     ) -> Question:
@@ -71,6 +82,7 @@ class QuestionPaperRepository:
             question_number=question_number,
             question_text=question_text,
             max_marks=max_marks,
+            part_name=part_name,
             shared_stem=shared_stem,
             inherits_shared_stem_from=inherits_shared_stem_from,
         )
