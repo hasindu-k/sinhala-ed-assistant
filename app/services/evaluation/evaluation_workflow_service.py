@@ -381,10 +381,12 @@ class EvaluationWorkflowService:
         syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
         question_map = self._build_question_map_helper(questions)
 
-        # Fix OCR / Map
-        # DEBUG: Force remap once to ensure new question map logic (prefixes) applies
-        # Use existing mapping if available; remap only if no mapping exists
-        needs_remap = False  # Was True for debug: now use cached mapping for consistency
+        # Use cached mapping from the document processing step.
+        # The mapping prompt now retries on JSON parse failures, so the cached mapping
+        # is reliable. Do NOT remap here to avoid double evaluation.
+        needs_remap = False
+
+
         
         if answer_doc.mapped_answers and not needs_remap:
 

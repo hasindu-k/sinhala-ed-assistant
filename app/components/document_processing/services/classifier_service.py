@@ -445,42 +445,50 @@ def extract_complete_exam_data(text: str):
         return {}
 
 ANSWER_MAPPING_PROMPT = """
-You are a precision text-mapping and OCR correction AI. Your task is to extract answer text from the STUDENT ANSWER TEXT, clean it, and map it to the correct Question ID.
+You are a STRICT answer extraction AI for Sri Lankan exam papers.
+Your ONLY job: find the text the student wrote under each question number. Nothing else.
 
 ========================
-OCR CLEANING RULES
+CRITICAL RULES — READ CAREFULLY
 ========================
-Before extracting, mentally fix OCR errors in the Sinhala text:
-- Fix broken conjunct letters (ex: ක් ෂ → ක්‍ෂ).
-- Properly align misplaced diacritics.
-- Remove unnecessary spaces inside words.
-- Ensure the resulting text is natural, readable Sinhala.
+1. **QUESTION NUMBER FIRST**: The ONLY way to assign an answer to a question is if the student wrote that question's number BEFORE the answer text (e.g., "1(a)", "2.a", "3", "(b)", etc.). Look for these number markers in the student's handwriting/OCR.
+
+2. **DO NOT USE TOPIC/MEANING**: NEVER assign an answer based on what the question asks about or what topic the answer covers. If a student wrote about "European colonization" under marker "4(a)", that text belongs to 4(a) ONLY — even if question 7(a) also asks about European colonization.
+
+3. **ONE ANSWER PER SECTION**: Each physical section of the student's paper (identified by a question number marker) maps to EXACTLY ONE question. The same text CANNOT appear under multiple question IDs.
+
+4. **NULL if no marker found**: If you cannot find a question number marker that clearly matches a given question ID, return `null` for that ID. DO NOT guess or infer based on topic.
+
+5. **DO NOT ANSWER**: Never generate or fabricate any answer text. Only extract what the student actually wrote.
+
+6. **OCR CLEANING ONLY**: Fix obvious Sinhala OCR errors (broken conjunct letters, misplaced diacritics, unnecessary spaces inside words). Do NOT correct the student's actual content.
+
+========================
+HOW TO FIND QUESTION MARKERS
+========================
+Sri Lankan students write one of these before each answer:
+- Main question: "1.", "2.", "3.", "4." etc.
+- Sub-question: "1(a)", "1.(a)", "1a", "(a)", "a)", "1.a" etc.
+- Sinhala labels: the student may write the number in Sinhala or Roman numerals.
+
+Steps:
+1. First scan the entire student text for question number markers.
+2. Build a list: which markers appear, and what text follows each marker (until the next marker).
+3. Then assign: match each question label in the structure to a marker you found.
+4. If no marker found for a question → return `null`.
 
 ========================
 INPUTS
 ========================
-1. QUESTION STRUCTURE (JSON):
-   - A list of questions with IDs, labels (e.g. "1", "a", "i"), and question text (topic context).
-
-2. STUDENT ANSWER TEXT (OCR):
-   - Raw text from the student's script. 
-   - Context for identifying correct mappings should be derived from the question text provided.
-
-========================
-STRICT RULES
-========================
-1. **DO NOT ANSWER THE QUESTIONS.** If you generate an answer that isn't in the OCR, you have failed.
-2. **CLEAN EXTRACTION**: Extract the student's answer but apply the OCR CLEANING RULES above. Do NOT fix the student's actual spelling mistakes, only OCR-induced garbage.
-3. **MAPPING LOGIC**: 
-   - Use question numbers and context to find the relevant answer.
-   - For every ID in the provided structure, you MUST return a value: either the cleaned text or `null` if unattempted.
-4. **NO HALLUCINATION**: If an answer is not present, return `null`.
+QUESTION STRUCTURE (JSON): Question IDs, labels, and the question text (for your reference only — not for answer matching).
+STUDENT ANSWER TEXT (OCR): Raw OCR text from the student's answer script.
 
 ========================
 OUTPUT FORMAT (STRICT JSON)
 ========================
-Return a raw JSON object: {{"id": "cleaned student text", ...}}
-EVERY ID provided in the input structure MUST be a key in your output.
+Return a raw JSON object: {{"id": "cleaned student text or null", ...}}
+EVERY ID in the input structure MUST be a key in your output.
+Use `null` (not the string "null") for unattempted questions.
 
 ========================
 QUESTION STRUCTURE
@@ -492,6 +500,7 @@ STUDENT ANSWER TEXT
 ========================
 {answer_text}
 """
+
 
 def map_student_answers(answer_text: str, question_structure: list) -> dict:
     """
@@ -514,52 +523,43 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
             parts_map[part].append(item)
             
         all_mappings = {}
-        batch_size = 15 # Even smaller batch for safety
+        batch_size = 10  # Reduced batch size to prevent JSON truncation
         
         for part_name, part_items in parts_map.items():
             logger.info("Mapping part: %s (%d items)", part_name, len(part_items))
             for i in range(0, len(part_items), batch_size):
                 chunk = part_items[i : i + batch_size]
                 logger.info("Processing batch %d for %s", (i // batch_size) + 1, part_name)
+                chunk_ids = {item["id"] for item in chunk}
                 
-                response_text = gemini_generate(
-                    ANSWER_MAPPING_PROMPT.format(
-                        structure=json.dumps(chunk, ensure_ascii=False, indent=2),
-                        answer_text=answer_text[:35000],
-                    ),
-                    json_mode=True,
-                )
-
-                if response_text:
-                    batch_result = _safe_json_loads(response_text)
-                    if isinstance(batch_result, dict):
-                        # Merge results, keeping only the IDs we asked for in this chunk
-                        chunk_ids = {item["id"] for item in chunk}
-                        filtered_result = {k: v for k, v in batch_result.items() if k in chunk_ids}
-                        all_mappings.update(filtered_result)
-                    else:
-                        logger.warning("Batch mapping for %s returned invalid type", part_name)
-                else:
-                    # Retry once on empty response
-                    logger.warning("Empty response for %s batch - retrying...", part_name)
-                    retry_response = gemini_generate(
+                def _call_mapping(c):
+                    return gemini_generate(
                         ANSWER_MAPPING_PROMPT.format(
-                            structure=json.dumps(chunk, ensure_ascii=False, indent=2),
+                            structure=json.dumps(c, ensure_ascii=False, indent=2),
                             answer_text=answer_text[:35000],
                         ),
                         json_mode=True,
                     )
-                    if retry_response:
-                        retry_result = _safe_json_loads(retry_response)
-                        if isinstance(retry_result, dict):
-                            chunk_ids = {item["id"] for item in chunk}
-                            filtered_result = {k: v for k, v in retry_result.items() if k in chunk_ids}
-                            all_mappings.update(filtered_result)
-                            logger.info("Retry successful for %s batch: %d items", part_name, len(filtered_result))
-                        else:
-                            logger.error("Retry for %s batch returned invalid type", part_name)
-                    else:
-                        logger.error("Retry also failed for %s batch - skipping", part_name)
+
+                response_text = _call_mapping(chunk)
+                batch_result = _safe_json_loads(response_text) if response_text else None
+
+                # Retry on BOTH empty response AND JSON parse failure
+                if not isinstance(batch_result, dict):
+                    reason = "empty response" if not response_text else "JSON parse failure"
+                    logger.warning("Batch mapping for %s batch %d: %s — retrying...",
+                                   part_name, (i // batch_size) + 1, reason)
+                    response_text = _call_mapping(chunk)
+                    batch_result = _safe_json_loads(response_text) if response_text else None
+
+                if isinstance(batch_result, dict):
+                    filtered_result = {k: v for k, v in batch_result.items() if k in chunk_ids}
+                    all_mappings.update(filtered_result)
+                    logger.info("Batch %d for %s: got %d/%d mappings.",
+                                (i // batch_size) + 1, part_name, len(filtered_result), len(chunk))
+                else:
+                    logger.error("Batch %d for %s: FAILED after retry — skipping batch.",
+                                 (i // batch_size) + 1, part_name)
 
 
         logger.info("Mapped %d answers total across all parts.", len(all_mappings))

@@ -214,7 +214,8 @@ class GradingService:
         ref_emb_map = {text: _embedding_cache.get(text) for text in all_ref_texts}
 
         scored_items: List[Dict] = []
-        seen_question_ids = set() # To prevent duplicates in the final result
+        seen_question_ids = set()  # To prevent duplicates in the final result
+        seen_keys = set()          # Also track by key to catch mapping noise
 
         logger.info(f"Starting grading loop for {len(answer_doc.mapped_answers)} mapped items.")
 
@@ -238,25 +239,27 @@ class GradingService:
             
             logger.info(f"Processing question {key} -> ID: {target_id} (Part: {part_name}, Label: {display_number})")
 
-
-            # Skip if we already graded this specific question/sub-question entry
-            if target_id in seen_question_ids:
+            # Skip if we already graded this specific question/sub-question entry (Fix 3)
+            if target_id in seen_question_ids or key in seen_keys:
                 logger.warning(f"Skipping duplicate mapping for question: {key} (ID: {target_id})")
                 continue
             
-            # SPECIFICITY CHECK
+            # SPECIFICITY CHECK — skip parent if sub-questions are mapped (Fix 1)
             if isinstance(target, Question) and getattr(target, 'sub_questions', []):
                 sub_mapped = False
                 for sq in target.sub_questions:
                     sq_id_str = str(sq.id)
-                    if sq_id_str in answer_doc.mapped_answers:
+                    sq_label_key = f"{str(target.question_number)}{sq.label}".lower().replace("(", "").replace(")", "")
+                    if sq_id_str in answer_doc.mapped_answers or sq_label_key in answer_doc.mapped_answers:
                         sub_mapped = True
                         break
                 
                 if sub_mapped:
-                    logger.info(f"Hierarchical overlap detected for {key}; scoring parent question.")
+                    logger.info(f"Skipping parent question {key} because sub-questions are mapped.")
+                    continue  # <-- CRITICAL: was missing, causing parent to still be scored
 
             seen_question_ids.add(target_id)
+            seen_keys.add(key)
             
             max_marks = self._resolve_max_marks(target)
             reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
@@ -383,8 +386,8 @@ class GradingService:
             if item:
                 # Attempted
                 meaning_data = eval_data_map.get(item["key"], {})
-                # Use relevance_multiplier as the meaning core logic check.
-                meaning_score = float(meaning_data.get("relevance_multiplier", 0.5))
+                # FIX: Gemini returns 'meaning_score', not 'relevance_multiplier'
+                meaning_score = float(meaning_data.get("meaning_score", meaning_data.get("relevance_multiplier", 0.5)))
                 system_ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
                 
                 # UNIVERSAL BLENDING STRATEGY (Accuracy & Weights):
@@ -453,8 +456,12 @@ class GradingService:
             if is_leaf:
                 main_q_id = str(main_q.id) if main_q else "orphan"
                 if main_q_id not in part_scores[part_name]:
-                    part_scores[part_name][main_q_id] = []
-                part_scores[part_name][main_q_id].append(final_marks)
+                    part_scores[part_name][main_q_id] = {"marks": [], "attempted": 0}
+                part_scores[part_name][main_q_id]["marks"].append(final_marks)
+                # Count as "attempted" if the student actually submitted an answer
+                if item and item in scored_items:
+                    part_scores[part_name][main_q_id]["attempted"] += 1
+
 
         self.db.flush()
 
@@ -465,25 +472,30 @@ class GradingService:
         norm_selection_map = {k.lower().replace(" ", "_"): v for k, v in selection_map.items()}
 
         for part_name, section_map in part_scores.items():
-            # Calculate total per main question
-            main_q_totals = []
-            for mq_id, leaf_marks in section_map.items():
-                main_q_totals.append(sum(leaf_marks))
+            # Calculate total per main question, tracking attempt status
+            main_q_entries = []
+            for mq_id, data in section_map.items():
+                total = sum(data["marks"])
+                attempted = data["attempted"]  # number of sub-questions actually answered
+                main_q_entries.append((total, attempted))
             
             # Apply selection rules (Best of N)
-            # Gemini-extracted format: {"mode": "any", "count": 3} or {"mode": "all"}
             part_rules = norm_selection_map.get(part_name) or {}
             mode = part_rules.get('mode', 'all')
             count = part_rules.get('count') or part_rules.get('total')
             
-            if mode == 'any' and count and len(main_q_totals) > int(count):
-                # Sort descending and take top N
-                main_q_totals.sort(reverse=True)
-                selected_totals = main_q_totals[:int(count)]
-                logger.info(f"Part {part_name}: Selected {count}/{len(main_q_totals)} best questions.")
+            if mode == 'any' and count and len(main_q_entries) > int(count):
+                # CRITICAL: Sort by (attempted DESC, score DESC)
+                # Questions the student actually answered always rank above unanswered ones,
+                # regardless of score. This prevents mapping noise from displacing real answers.
+                main_q_entries.sort(key=lambda x: (x[1], x[0]), reverse=True)
+                selected = main_q_entries[:int(count)]
+                selected_totals = [e[0] for e in selected]
+                attempted_count = sum(1 for e in selected if e[1] > 0)
+                logger.info(f"Part {part_name}: Selected {count}/{len(main_q_entries)} best questions ({attempted_count} attempted).")
                 total_score_val += sum(selected_totals)
             else:
-                total_score_val += sum(main_q_totals)
+                total_score_val += sum(e[0] for e in main_q_entries)
 
         eval_result.total_score = total_score_val.quantize(Decimal("0.01"))
         logger.info(f"Final Total Score calculated (selection-aware): {eval_result.total_score}")
@@ -681,12 +693,14 @@ class GradingService:
 
     def _sinhala_sigmoid_boost(self, sim: float) -> float:
         """
-        Map Sinhala cosine similarity to marks with conservative thresholds.
-        Sinhala embeddings often cluster; we need to be strict but fair.
+        Map Sinhala cosine similarity to marks.
+        XLM-R on Sinhala OCR text vs clean syllabus text clusters lower than
+        Indo-European languages, so we use more lenient thresholds.
         """
-        if sim >= 0.60: return 1.0  # Fairer: Was 0.65
-        if sim >= 0.48: return 0.50 + (sim - 0.48) * (0.50 / 0.12) # 0.48 -> 0.5, 0.60 -> 1.0
-        if sim >= 0.35: return 0.0 + (sim - 0.35) * (0.50 / 0.13)  # 0.35 -> 0.0, 0.48 -> 0.5
+        # CALIBRATED: Lowered full-marks threshold to be more realistic for Sinhala OCR
+        if sim >= 0.52: return 1.0          # Was 0.60
+        if sim >= 0.40: return 0.50 + (sim - 0.40) * (0.50 / 0.12)  # Was 0.48
+        if sim >= 0.28: return 0.0 + (sim - 0.28) * (0.50 / 0.12)   # Was 0.35
         return 0.0
 
 
@@ -698,13 +712,13 @@ class GradingService:
         Dynamically snap to available mark steps (1.0) based on max_marks.
         For Short Answers (<=2 marks), we force whole-mark steps (0, 1, 2) to avoid 1.5/2.
         """
-        # Thresholding: 0.65+ for full marks (relaxed from 0.70 -> 0.80)
-        # Sinhala meaning is often captured at lower similarity values due to script complexity.
-        if ratio >= 0.65: return 1.0
+        # CALIBRATED: 0.55+ for full marks (was 0.65)
+        # Sinhala OCR produces lower similarity scores against clean syllabus text.
+        if ratio >= 0.55: return 1.0
         if ratio < 0.05: return 0.0
         
-        # Scaling [0.10, 0.70] to [0.0, 1.0] for fair distribution
-        scaled_ratio = (ratio - 0.10) / 0.60
+        # Scaling [0.05, 0.55] to [0.0, 1.0]
+        scaled_ratio = (ratio - 0.05) / 0.50
         actual_marks = scaled_ratio * max_marks
         
         # Snap to marks (1.0 step for whole, 0.5 for half)
@@ -938,6 +952,9 @@ class GradingService:
 
         semantic = self._semantic_similarity(student_text, reference_text, student_emb, reference_emb)
         relevance = self._calculate_relevance_score(student_text, reference_text)
+
+        # DEBUG: Log raw scores to help calibrate thresholds
+        logger.debug(f"[SCORE] semantic={semantic:.3f} relevance={relevance:.3f} max_marks={max_marks} | answer='{student_text[:60]}'")
 
         s_w = float(weights.get("semantic", 0.70))
         c_w = float(weights.get("coverage", 0.15))

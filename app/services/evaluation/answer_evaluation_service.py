@@ -314,38 +314,63 @@ class AnswerEvaluationService:
 
                 awarded = float(score.awarded_marks or 0)
                 max_m = float(score.question.max_marks if score.question else (score.sub_question.max_marks or 0))
-                
+
+                # Compute mq_id BEFORE using it in the entry
+                mq_id = str(main_q.id) if main_q else "orphan"
+
                 marks_summary[clean_part].append({
                     "label": label,
                     "awarded": round(awarded, 2),
-                    "max": max_m
+                    "max": max_m,
+                    "_mq_id": mq_id  # internal field used for selection tagging below
                 })
-                
+
                 # Track for Total Available logic (Selection Aware)
-                mq_id = str(main_q.id) if main_q else "orphan"
-                if mq_id not in mq_data: mq_data[mq_id] = {"awarded": 0, "max": 0}
+                if mq_id not in mq_data:
+                    mq_data[mq_id] = {"awarded": 0, "max": 0, "attempted": 0}
                 mq_data[mq_id]["awarded"] += awarded
                 mq_data[mq_id]["max"] += max_m
+                if awarded > 0:
+                    mq_data[mq_id]["attempted"] += 1
 
-            # Apply selection rules to calculate REAL Part Total
-            # Normalize current part for lookup
-            norm_part = part.lower().replace(" ", "_").replace("paper_", "paper_")
-            if "i" in norm_part and "ii" not in norm_part: norm_part = "paper_i"
-            elif "ii" in norm_part: norm_part = "paper_ii"
+
+
+            # Apply selection rules to calculate REAL Part Total (awarded AND max)
+            norm_part = part.lower().replace(" ", "_")
+            if norm_part.endswith("_ii") or norm_part == "paper_ii":
+                norm_part = "paper_ii"
+            elif norm_part.endswith("_i") or norm_part == "paper_i":
+                norm_part = "paper_i"
 
             rules = selection_map.get(norm_part) or {}
-            # Use 'count' or 'total' as count key
             required_count = rules.get('count') or rules.get('total')
-            
-            if required_count and len(mq_data) > int(required_count):
-                # Sort by awarded descending for best-of-N, but for MAX we just take N best available maxes
-                # Usually maxes are the same (e.g. 12 marks each), so we take N * 12
-                all_maxes = sorted([v["max"] for v in mq_data.values()], reverse=True)
-                part_max_allowed = sum(all_maxes[:int(required_count)])
+            mode = rules.get('mode', 'all')
+
+            selected_mq_ids = set(mq_data.keys())  # default: all selected
+
+            if mode == 'any' and required_count and len(mq_data) > int(required_count):
+                # Mirror GradingService: sort by (attempted DESC, awarded DESC)
+                sorted_entries = sorted(
+                    mq_data.items(),
+                    key=lambda x: (x[1].get("attempted", 0), x[1]["awarded"]),
+                    reverse=True
+                )
+                selected_entries = sorted_entries[:int(required_count)]
+                selected_mq_ids = {e[0] for e in selected_entries}
+                part_max_allowed = sum(e[1]["max"] for e in selected_entries)
+                part_awarded = sum(e[1]["awarded"] for e in selected_entries)
             else:
-                part_max_allowed = sum([v["max"] for v in mq_data.values()])
-            
+                part_max_allowed = sum(v["max"] for v in mq_data.values())
+                part_awarded = sum(v["awarded"] for v in mq_data.values())
+
             total_max_allowed += part_max_allowed
+            total_awarded += part_awarded
+
+            # Tag each score entry with is_selected so the frontend can highlight them
+            for entry in marks_summary[clean_part]:
+                entry["is_selected"] = entry.get("_mq_id") in selected_mq_ids
+
+
         
         # Override result.total_score if needed? 
         # No, result.total_score is already calculated best-of-N in GradingService.
