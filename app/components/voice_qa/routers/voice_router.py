@@ -93,6 +93,11 @@ async def qa_from_voice(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    
+    logger.info("Entered qa_from_voice function")  # This will confirm if the function is being hit.
+    
+    logger.info(f"Received session_id: {session_id}, resource_ids: {resource_ids}, user_id: {current_user.id}")
+    
     chat_session_service = ChatSessionService(db)
     message_service = MessageService(db)
 
@@ -162,6 +167,8 @@ async def qa_from_voice(
             resource_id=rid,
         )
 
+    logger.info(f"Message ID: {user_message.id}")
+    logger.info(f"Session ID: {parsed_session_id}")
     # ----------------------------------------------------
     # 7️⃣ RESOLVE ALLOWED RESOURCES
     # ----------------------------------------------------
@@ -170,6 +177,8 @@ async def qa_from_voice(
         session_id=parsed_session_id,
         message_id=user_message.id,
     )
+    
+    print(f"Allowed Resource IDs: {allowed_resource_ids}")
 
     # ----------------------------------------------------
     # 8️⃣ GENERATE ANSWER (DELEGATE TO TEXT RAG)
