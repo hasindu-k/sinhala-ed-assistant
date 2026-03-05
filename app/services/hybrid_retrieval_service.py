@@ -39,9 +39,9 @@ class HybridRetrievalService:
         resource_ids: List[UUID],
         query: str,
         query_embedding: List[float],
-        bm25_k: int = 10,      # top documents for BM25 fallback
+        bm25_k: int = 30,      # top documents for BM25 fallback
         final_k: int = 8,      # top chunks after dense re-rank
-        top_doc_k: int = 5,    # top documents from document embeddings
+        top_doc_k: int = 8,   # top documents from document embeddings
     ) -> List[Dict]:
         """
         Step 1: Filter top documents using document embeddings

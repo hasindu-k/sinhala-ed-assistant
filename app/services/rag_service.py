@@ -161,7 +161,7 @@ class RAGService:
         # -----------------------------
         # ANSWERABILITY GUARD (CRITICAL)
         # -----------------------------
-        if intent in ["summary", "qa_generate"]:
+        if intent in ["summary", "qa_generate", "qa_answer", "explanation"]:
             is_unanswerable = False
         else:
             is_unanswerable = not AnswerabilityService.is_answerable(user_query, context)
@@ -224,8 +224,8 @@ class RAGService:
             elif intent == "explanation":
                 prompt = build_direct_answer_prompt(
                     context=context,
-                    grade_level=grade_level,
-                    query=user_query
+                    query=user_query,
+                    grade=grade_level,
                 )
                 message_grade_level = grade_level
 

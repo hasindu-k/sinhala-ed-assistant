@@ -192,19 +192,20 @@ class XAIService:
     
     @staticmethod
     def _generate_summary(confidence: Dict, chunks: List[Dict], safety: Optional[Dict]) -> str:
-        """Generate a human-readable summary."""
-        
-        overall_confidence = confidence.get("overall", 0)
-        
-        if overall_confidence >= 0.85:
-            quality = "highly confident"
-        elif overall_confidence >= 0.65:
-            quality = "moderately confident"
-        else:
-            quality = "cautious"
+        """Generate a human-readable summary without misleading numbers."""
         
         chunk_count = len(chunks)
         has_safety_issues = safety.get("has_issues", False) if safety else False
+        
+        # Determine quality level without using the numeric confidence
+        if chunk_count >= 3 and not has_safety_issues:
+            quality = "highly confident"
+        elif chunk_count >= 1 and not has_safety_issues:
+            quality = "confident"
+        elif chunk_count >= 1 and has_safety_issues:
+            quality = "cautious"
+        else:
+            quality = "limited confidence"
         
         summary = f"I'm {quality} about this answer. "
         summary += f"It was generated from {chunk_count} relevant content chunks. "
@@ -215,3 +216,4 @@ class XAIService:
             summary += "All content appears consistent with the source material."
         
         return summary
+
