@@ -12,6 +12,7 @@ class Settings:
 
     # Gemini
     GOOGLE_API_KEY: Optional[str] = os.getenv("GOOGLE_API_KEY")
+    GOOGLE_API_KEY_V2: Optional[str] = os.getenv("GOOGLE_API_KEY_V2")
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
     EMBEDDING_API_KEY: Optional[str] = os.getenv("EMBEDDING_API_KEY")
 
