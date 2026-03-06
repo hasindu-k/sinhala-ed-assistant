@@ -13,13 +13,7 @@ from app.routers import (
 )
 
 from app.components.voice_qa.routers.voice_router import router as voice_router
-
-# from app.components.evaluation.routers.evaluation_router import (
-#     router as evaluation_router,
-# )
 from app.components.evaluation.temporary.temporary_evaluation_router import router as temporary_evaluation_router
-# from app.components.text_qa_summary.routers.qa_router import router as qa_router
-# from app.components.voice_qa.routers.voice_router import router as voice_router
 
 api_router = APIRouter()
 
@@ -33,11 +27,6 @@ api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
 
 # Temporary Evaluation
 api_router.include_router(temporary_evaluation_router, prefix="/temporary-evaluation", tags=["Temporary Evaluation"])
-
 api_router.include_router(voice_router, prefix="/voice", tags=["Voice Q&A"])
-
-# # Evaluation
-# api_router.include_router(evaluation_router, prefix="/evaluation", tags=["Evaluation"])
-
 
 print("API Router configured with all components")
