@@ -78,7 +78,7 @@ DATABASE_URL=postgresql://sinhala_learn_user:sinlearn@localhost:5432/SinhalaLear
 docker build -t sinhala-learn-backend:latest .
 ```
 
-### Start full stack (API + Postgres + Qdrant)
+### Start full stack (API + Postgres)
 
 ```bash
 docker compose -f docker/docker-compose.yml up --build

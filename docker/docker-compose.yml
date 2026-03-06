@@ -16,13 +16,7 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
     depends_on:
       - postgres
-      - qdrant
 
-  qdrant:
-    image: qdrant/qdrant:v1.12.1
-    ports: ["${QDRANT_PORT:-6333}:6333"]
-    volumes:
-      - qdrant_storage:/qdrant/storage
   postgres:
     image: ankane/pgvector:latest
     environment:
@@ -33,5 +27,4 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
 volumes:
-  qdrant_storage:
   pg_data:

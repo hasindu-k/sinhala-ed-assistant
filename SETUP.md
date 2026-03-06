@@ -54,7 +54,7 @@ If you need to install dependencies manually:
 python -m pip install \
   "fastapi" "uvicorn[standard]" "pydantic" "python-multipart" \
   "torch" "transformers" "sentence-transformers" "onnxruntime" \
-  "faiss-cpu" "qdrant-client" "opencv-python" "pytesseract" \
+  "faiss-cpu" "opencv-python" "pytesseract" \
   "scikit-learn" "pandas" "indic-nlp-library" "python-dotenv" "psycopg[binary]"
 ```
 
