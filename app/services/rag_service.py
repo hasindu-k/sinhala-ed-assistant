@@ -3,6 +3,7 @@ import logging
 from typing import List, Dict, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
+import re 
 
 from app.services.hybrid_retrieval_service import HybridRetrievalService
 from app.services.resource_chunk_service import ResourceChunkService
@@ -30,6 +31,12 @@ class RAGService:
         self.context_service = MessageContextService(db)
         self.message_service = MessageService(db)
         self.safety_service = MessageSafetyService(db)
+
+    def extract_question_count(query: str) -> int:
+        match = re.search(r"\d+", query)
+        if match:
+            return int(match.group())
+        return 5
 
     def generate_response(
         self,
@@ -66,6 +73,12 @@ class RAGService:
         # 0. Check for greetings/chit-chat (no RAG needed)
         # -----------------------------
 
+        def extract_question_count(query: str) -> int:
+            match = re.search(r"\d+", query)
+            if match:
+                return int(match.group())
+            return 5
+        
         intent = IntentDetectionService.detect_intent(user_query)
 
         if intent == "greeting":
@@ -205,11 +218,18 @@ class RAGService:
 
             # 🟢 Q&A GENERATION (lesson practice)
             elif intent == "qa_generate":
+
+                count = extract_question_count(user_query)
+
+                # limit range for safety
+                count = max(1, min(count, 10))
+
                 prompt = build_qa_prompt(
                     context=context,
-                    count=5,
+                    count=count,
                     query=user_query
                 )
+
                 message_grade_level = None
 
             # 🟢 DIRECT ANSWER (NEW)
