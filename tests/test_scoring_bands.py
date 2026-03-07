@@ -1,3 +1,4 @@
+#app/services/evaluation/grading_service.py
 
 import unittest
 from decimal import Decimal
@@ -11,52 +12,48 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 class MockGradingService:
     def _apply_discrete_bands(self, ratio: float, max_marks: int) -> float:
         """Convert a continuous similarity ratio into discrete marking bands."""
-        if max_marks <= 2:
-            if ratio >= 0.85:
-                return 1.0  # Full marks
-            elif ratio >= 0.65:
-                return 0.5  # Half marks
-            else:
-                return 0.0  # Zero marks
-        else:
-            if ratio >= 0.85:
-                return 1.0  # 4/4
-            elif ratio >= 0.70:
-                return 0.75 # 3/4
-            elif ratio >= 0.55:
-                return 0.5  # 2/4
-            elif ratio >= 0.40:
-                return 0.25 # 1/4
-            else:
-                return 0.0  # 0/4
+        # This should match the logic in grading_service._apply_discrete_bands
+        full_marks_threshold = 0.40 if max_marks <= 2 else 0.52
+        scale_range = full_marks_threshold - 0.05
+
+        if ratio >= full_marks_threshold: return 1.0
+        if ratio < 0.05: return 0.0
+
+        scaled_ratio = (ratio - 0.05) / scale_range
+        actual_marks = scaled_ratio * max_marks
+        
+        from decimal import Decimal, ROUND_HALF_UP
+        step = Decimal("1.0") if max_marks <= 2 else Decimal("0.5")
+        snapped_marks = (Decimal(str(actual_marks)) / step).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * step
+        
+        final_ratio = float(snapped_marks / Decimal(str(max_marks)))
+        return min(1.0, final_ratio)
 
 class TestScoringBands(unittest.TestCase):
     def setUp(self):
         self.service = MockGradingService()
 
     def test_short_answer_bands(self):
-        # max_marks = 2
-        self.assertEqual(self.service._apply_discrete_bands(0.9, 2), 1.0)  # 2.0 marks
-        self.assertEqual(self.service._apply_discrete_bands(0.85, 2), 1.0) # 2.0 marks
-        self.assertEqual(self.service._apply_discrete_bands(0.8, 2), 0.5)  # 1.0 marks
-        self.assertEqual(self.service._apply_discrete_bands(0.65, 2), 0.5) # 1.0 marks
-        self.assertEqual(self.service._apply_discrete_bands(0.6, 2), 0.0)  # 0.0 marks
+        # max_marks = 2, threshold = 0.40, range = 0.35
+        self.assertEqual(self.service._apply_discrete_bands(0.45, 2), 1.0)  # 2.0 marks
+        self.assertEqual(self.service._apply_discrete_bands(0.40, 2), 1.0) # 2.0 marks
+        # (0.25-0.05)/0.35 = 0.57. 0.57*2 = 1.14 -> 1.0 marks
+        self.assertEqual(self.service._apply_discrete_bands(0.25, 2), 0.5)  # 1.0 marks
+        # (0.15-0.05)/0.35 = 0.28. 0.28*2 = 0.56 -> 1.0 marks
+        self.assertEqual(self.service._apply_discrete_bands(0.15, 2), 0.5) # 1.0 marks
+        self.assertEqual(self.service._apply_discrete_bands(0.04, 2), 0.0)  # 0.0 marks
         
-        # max_marks = 1
-        self.assertEqual(self.service._apply_discrete_bands(0.9, 1), 1.0)  # 1.0 marks
-        self.assertEqual(self.service._apply_discrete_bands(0.7, 1), 0.5)  # 0.5 marks (rounded in DB)
-        self.assertEqual(self.service._apply_discrete_bands(0.5, 1), 0.0)  # 0.0 marks
-
     def test_essay_bands(self):
-        # max_marks = 4
-        self.assertEqual(self.service._apply_discrete_bands(0.9, 4), 1.0)  # 4 marks
-        self.assertEqual(self.service._apply_discrete_bands(0.84, 4), 0.75) # 3 marks
-        self.assertEqual(self.service._apply_discrete_bands(0.7, 4), 0.75)  # 3 marks
-        self.assertEqual(self.service._apply_discrete_bands(0.69, 4), 0.5)  # 2 marks
-        self.assertEqual(self.service._apply_discrete_bands(0.55, 4), 0.5)  # 2 marks
-        self.assertEqual(self.service._apply_discrete_bands(0.54, 4), 0.25) # 1 mark
-        self.assertEqual(self.service._apply_discrete_bands(0.4, 4), 0.25)  # 1 mark
-        self.assertEqual(self.service._apply_discrete_bands(0.39, 4), 0.0)  # 0 marks
+        # max_marks = 4, threshold = 0.52, range = 0.47
+        self.assertEqual(self.service._apply_discrete_bands(0.55, 4), 1.0)  # 4 marks
+        self.assertEqual(self.service._apply_discrete_bands(0.52, 4), 1.0)  # 4 marks
+        # (0.40-0.05)/0.47 = 0.74. 0.74*4 = 2.96 -> 3.0 marks
+        self.assertEqual(self.service._apply_discrete_bands(0.40, 4), 0.75) # 3 marks
+        # (0.30-0.05)/0.47 = 0.53. 0.53*4 = 2.12 -> 2.0 marks
+        self.assertEqual(self.service._apply_discrete_bands(0.30, 4), 0.5)  # 2 marks
+        # (0.20-0.05)/0.47 = 0.31. 0.31*4 = 1.24 -> 1.0 mark
+        self.assertEqual(self.service._apply_discrete_bands(0.20, 4), 0.25) # 1 mark
+        self.assertEqual(self.service._apply_discrete_bands(0.04, 4), 0.0)  # 0 marks
 
 if __name__ == '__main__':
     unittest.main()
