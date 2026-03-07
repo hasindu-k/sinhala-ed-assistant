@@ -569,8 +569,7 @@ Changes are merged into `main` through reviewed Pull Requests.
 # ** Running the Backend**
 
 ```
-cd api
-pip install -r requirements.txt
+python -m pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
