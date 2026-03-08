@@ -795,16 +795,16 @@ class GradingService:
         RECALIBRATED for HIGH scores, but safe because of OCR cleaning:
         """
         if max_marks > 2:
-            # ESSAY thresholds 
+            # ESSAY thresholds (calibrated for proper coverage, no artificial high scores)
             if sim >= 0.40:   return 1.0
-            if sim >= 0.25:   return 0.50 + (sim - 0.25) * (0.50 / 0.15)   
-            if sim >= 0.10:   return 0.0  + (sim - 0.10) * (0.50 / 0.15)   
+            if sim >= 0.30:   return 0.50 + (sim - 0.30) * (0.50 / 0.10)   
+            if sim >= 0.15:   return 0.0  + (sim - 0.15) * (0.50 / 0.15)   
             return 0.0
         else:
             # SHORT ANSWER thresholds 
-            if sim >= 0.45:   return 1.0
-            if sim >= 0.30:   return 0.50 + (sim - 0.30) * (0.50 / 0.15)   
-            if sim >= 0.10:   return 0.0  + (sim - 0.10) * (0.50 / 0.20)   
+            if sim >= 0.40:   return 1.0
+            if sim >= 0.25:   return 0.50 + (sim - 0.25) * (0.50 / 0.15)   
+            if sim >= 0.10:   return 0.0  + (sim - 0.10) * (0.50 / 0.15)   
             return 0.0
 
 
@@ -813,22 +813,16 @@ class GradingService:
     # ----------------------------------------------------------
     def _apply_discrete_bands(self, ratio: float, max_marks: int) -> float:
         """
-        Snaps the continuous system_score_ratio to clean mark steps.
+        Snaps the continuous system_score_ratio to clean 0.5 mark steps.
 
-        THRESHOLD DESIGN (March 2026 — raised to 0.70):
-        - Full marks require system_ratio >= 0.70
-        - Below 0.05 gives zero
-        - Between 0.05-0.70 is linearly scaled then snapped to 0.5 mark steps
+        THRESHOLD DESIGN (March 2026 — removed artificial inflation):
+        - Below 0.20 gives zero
+        - Everything else is strictly mapped to its proportional 0.5 step without scaling inflation.
         """
-        full_marks_threshold = 0.70
-        scale_range = full_marks_threshold - 0.05
+        if ratio >= 0.78: return 1.0 # Reduced from 0.82 to accommodate minor spelling typos
+        if ratio < 0.20: return 0.0
 
-        if ratio >= full_marks_threshold: return 1.0
-        if ratio < 0.05: return 0.0
-
-        # Scale [0.05, threshold] → [0.0, 1.0] then snap to mark steps
-        scaled_ratio = (ratio - 0.05) / scale_range
-        actual_marks = scaled_ratio * max_marks
+        actual_marks = ratio * max_marks
 
         # Always use 0.5 mark steps to avoid inflation from rounding
         step = Decimal("0.5")
@@ -937,16 +931,20 @@ Questions:
 
         def process_chunk(chunk: List[Dict]) -> Dict[str, str]:
             chunk_prompt = base_prompt
-            for q in chunk:
-                chunk_prompt += f"\n--- Key: {q['key']} ---\n"
+            # Robust mapping: index -> UUID
+            index_to_uuid = {}
+            for i, q in enumerate(chunk):
+                idx_key = f"ref_{i+1}"
+                index_to_uuid[idx_key] = q['key']
+                chunk_prompt += f"\n--- Key: {idx_key} ---\n"
                 chunk_prompt += f"Question Number: {q['display_number']}\n"
                 chunk_prompt += f"Question: {q['question_text']}\n"
                 chunk_prompt += f"Max Marks: {q['max_marks']}\n"
                 chunk_prompt += f"Type: {'essay' if q['max_marks'] > 2 else 'short answer'}\n"
 
             try:
-                sent_keys = [q['key'] for q in chunk]
-                logger.info(f"[GEMINI_REF] Extracting references for keys: {sent_keys}")
+                sent_indices = list(index_to_uuid.keys())
+                logger.info(f"[GEMINI_REF] Extracting references for surrogate keys: {sent_indices}")
 
                 response_json = self.gemini.generate_content(
                     chunk_prompt, json_mode=True
@@ -967,26 +965,34 @@ Questions:
                 # Validate and clean results
                 result = {}
                 if isinstance(data, dict):
-                    for key, value in data.items():
+                    for idx_key, value in data.items():
+                        # Map back to original UUID key
+                        original_key = index_to_uuid.get(idx_key)
+                        if not original_key:
+                            # Fallback: maybe Gemini returned the original key or something else
+                            logger.warning(f"[GEMINI_REF] Unexpected key in response: {idx_key}")
+                            continue
+
                         if isinstance(value, str) and value.strip() and value.strip() != "NOT_FOUND":
                             # Cap reference text length
                             clean_val = value.strip()[:1500]
-                            result[key] = clean_val
+                            result[original_key] = clean_val
                             logger.info(
-                                f"[GEMINI_REF] Key={key}: extracted {len(clean_val)} chars"
+                                f"[GEMINI_REF] Key={original_key}: extracted {len(clean_val)} chars"
                             )
                         elif isinstance(value, dict):
                             # Handle if Gemini returns nested object
                             text_val = value.get("answer", "") or value.get("points", "") or str(value)
                             if text_val.strip() and text_val.strip() != "NOT_FOUND":
-                                result[key] = text_val.strip()[:1500]
+                                result[original_key] = text_val.strip()[:1500]
                         else:
-                            logger.info(f"[GEMINI_REF] Key={key}: NOT_FOUND in syllabus")
+                            logger.info(f"[GEMINI_REF] Key={original_key}: NOT_FOUND in syllabus")
 
                 received_keys = list(result.keys())
-                missing_keys = [k for k in sent_keys if k not in received_keys]
+                sent_uuids = list(index_to_uuid.values())
+                missing_keys = [k for k in sent_uuids if k not in received_keys]
                 if missing_keys:
-                    logger.warning(f"[GEMINI_REF] Missing keys in response: {missing_keys}")
+                    logger.warning(f"[GEMINI_REF] Missing UUIDs in response: {missing_keys}")
 
                 return result
 
@@ -1015,6 +1021,30 @@ Questions:
                     logger.error(f"[GEMINI_REF] Chunk extraction exception: {exc}")
 
         logger.info(f"[GEMINI_REF] Total extracted: {len(all_refs)} references")
+
+        # PERSISTENCE: Save extracted references to DB to heal missing context
+        if all_refs:
+            try:
+                updated_count = 0
+                for q_info in questions:
+                    key = q_info['key']
+                    extracted_text = all_refs.get(key)
+                    if not extracted_text:
+                        continue
+                    
+                    target = q_info['target']
+                    # Only persist if current correct_answer is empty
+                    if not getattr(target, 'correct_answer', None):
+                        target.correct_answer = extracted_text
+                        updated_count += 1
+                
+                if updated_count > 0:
+                    self.db.commit()
+                    logger.info(f"[GEMINI_REF] Persisted {updated_count} references to database.")
+            except Exception as e:
+                self.db.rollback()
+                logger.error(f"[GEMINI_REF] Failed to persist references: {e}")
+
         return all_refs
 
     def _batch_clean_student_answers(self, mapped_answers: Dict[str, Any]) -> Dict[str, Any]:
@@ -1057,9 +1087,14 @@ Return ONLY a valid JSON object mirroring the keys provided.
 
             # Re-merge with original
             final_map = dict(mapped_answers)
-            for k, v in cleaned_map.items():
-                if isinstance(v, str) and v.strip():
-                    final_map[k] = v
+            for k, original_text in to_clean.items():
+                cleaned_text = cleaned_map.get(k)
+                if isinstance(cleaned_text, str) and cleaned_text.strip():
+                    final_map[k] = cleaned_text
+                    if original_text.strip() != cleaned_text.strip():
+                        logger.info(f"[OCR_CLEAN_DIFF] Key '{k}'\nOriginal: {original_text}\nCleaned : {cleaned_text}")
+                else:
+                    final_map[k] = original_text
 
             logger.info(f"[OCR_CLEAN] Cleaned in {time.time() - start_t:.2f}s")
             return final_map
@@ -1103,13 +1138,14 @@ Return ONLY a valid JSON object mirroring the keys provided.
         sims = util.cos_sim(s_emb, sentence_embs)[0]
 
         # Threshold: how similar must a sentence be to count as "covered"
-        threshold = 0.40 if max_marks <= 2 else 0.42
+        # Relaxed from 0.32 to 0.28 to reward pooled concise bullet items without dilution.
+        threshold = 0.28 if max_marks <= 2 else 0.28
         hits = int((sims >= threshold).sum().item())
 
         # KEY FIX: Cap denominator to expected concept count for this question.
-        # Ensure deep essays (e.g. 18 marks) don't unreasonably penalize excellent answers 
-        # by expecting 36 discrete points to score a 1.0 coverage. Cap to max_marks.
-        expected_concepts = min(len(sentences), max_marks)
+        # Ensure deep essays (e.g. 18 marks) don't unreasonably penalize excellent answers
+        # by expecting 36 discrete points to score a 1.0 coverage. Cap to max_marks * 0.8.
+        expected_concepts = min(len(sentences), max_marks * 0.80)
         ratio = hits / max(1, expected_concepts)
 
         return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
@@ -1183,7 +1219,7 @@ Return ONLY a valid JSON object mirroring the keys provided.
         return weights
 
 
-    def _calculate_depth_penalty(self, student_text: str, reference_text: str, max_marks: int) -> float:
+    def _calculate_depth_penalty(self, student_text: str, reference_text: str, max_marks: int, coverage: float = 0.0) -> float:
         """
         Soft penalty for very short essay answers.
         Only applies to Paper II (max_marks > 2).
@@ -1192,15 +1228,65 @@ Return ONLY a valid JSON object mirroring the keys provided.
         if max_marks <= 2:
             return 1.0
 
+        if coverage >= 0.95:
+            return 1.0
+
         student_words = len(re.findall(r'\w+', student_text))
 
-        # Very short: apply gentle penalty
-        if student_words < 12:
-            return 0.90
-        elif student_words < 25:
+        # Expected words could scale with max_marks: ~2 words per mark (concise bullet points)
+        expected_min_words = max_marks * 2
+
+        if student_words >= expected_min_words:
+            return 1.0
+
+        if student_words < expected_min_words * 0.3:
+            return 0.70
+        elif student_words < expected_min_words * 0.5:
+            return 0.85
+        elif student_words < expected_min_words * 0.7:
             return 0.95
 
         # Reasonable length: no penalty
+        return 1.0
+
+
+    def _calculate_formal_language_penalty(self, student_text: str, max_marks: int) -> float:
+        """
+        Penalize spoken Sinhala forms (කටවහර) in essay answers.
+        Paper II answers in Sinhala expect formal written language (ලිඛිත ව්‍යවහාරය).
+        Answers written in informal style lose marks for poor description style.
+        """
+        if max_marks <= 2:
+            return 1.0
+
+        spoken_keywords = {
+            "වුණා", "උණා", "කළා", "හැදුවා", "ගත්තා", "ආවා", "ගියා",
+            "තියෙනවා", "තිබුණා", "ඉන්නවා", "හිටියා", "දෙනවා", "දුන්නා",
+            "කියනවා", "කිව්වා", "කෙරුවා", "ඕන", "ඕනේ", "නෑ", "බෑ", "එක",
+            "හැදුණා", "වෙනවා", "ඉන්න", "ගහනවා"
+        }
+
+        # Cleaning punctuation to match words accurately
+        words = [w.strip('.,!?;:"()[]') for w in student_text.split()]
+        words = [w for w in words if w]
+        if not words:
+            return 1.0
+
+        spoken_count = 0
+        for w in words:
+            if any(w.endswith(kw) or w == kw for kw in spoken_keywords):
+                spoken_count += 1
+                
+        ratio = spoken_count / len(words)
+
+        # Extremely punishing modifiers for informal essays
+        if ratio > 0.15:
+            return 0.30
+        elif ratio > 0.08:
+            return 0.50
+        elif ratio > 0.04:
+            return 0.70
+
         return 1.0
 
 
@@ -1226,6 +1312,13 @@ Return ONLY a valid JSON object mirroring the keys provided.
             return 0.0
 
         semantic = self._semantic_similarity(student_text, reference_text, student_emb, reference_emb, max_marks)
+        
+        # KEY FIX: If semantic score is 0, the answer is completely off-topic.
+        # Ensure 'relevance' (keyword matching) doesn't award free points to wrong/irrelevant answers.
+        if semantic <= 0.0:
+            logger.info(f"[SCORE_COMPONENTS] semantic=0.000 relevance=X.XXX max_marks={max_marks} -> SHORT CIRCUIT ZERO")
+            return 0.0
+
         relevance = self._calculate_relevance_score(student_text, reference_text)
 
         logger.info(
@@ -1234,13 +1327,14 @@ Return ONLY a valid JSON object mirroring the keys provided.
         )
 
         # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
         # Paper I — Short Factual Answers (max_marks <= 2)
         # ------------------------------------------------------------------
         if max_marks <= 2:
             # Consistent blend for ALL short answers — no gold-standard shortcut.
-            # Semantic (60%): how close is the answer meaning?
-            # Relevance (40%): do the right keywords appear?
-            combined = (0.6 * semantic) + (0.4 * relevance)
+            # Semantic (80%): dominates because XLM-R structural matching is robust
+            # Relevance (20%): tied to keyword matching which is noisy in Sinhala
+            combined = (0.80 * semantic) + (0.20 * relevance)
             return float(combined)
 
         # ------------------------------------------------------------------
@@ -1255,23 +1349,26 @@ Return ONLY a valid JSON object mirroring the keys provided.
 
         logger.info(f"[COVERAGE] {coverage_debug} -> coverage_ratio={coverage:.3f}")
 
-        # Weights: semantic 60%, coverage 25%, relevance 15%
-        # RATIONALE: semantic is now calibrated specifically for essays (lower thresholds),
-        # so it's more reliable. Coverage is noisy (BM25 context quality varies),
-        # so it gets less weight. Relevance is a tiebreaker.
-        e_s_w = 0.60
+        # Weights: semantic 65%, coverage 25%, relevance 10%
+        # RATIONALE: semantic checks if they are on-topic, coverage expects multiple points,
+        # relevance ensures correct vocabulary usage.
+        e_s_w = 0.65
         e_c_w = 0.25
-        e_r_w = 0.15
+        e_r_w = 0.10
 
         score = (e_s_w * semantic) + (e_c_w * coverage) + (e_r_w * relevance)
 
         # Apply depth penalty for very short essays
-        depth_mult = self._calculate_depth_penalty(student_text, reference_text, max_marks)
-        score = score * depth_mult
+        depth_mult = self._calculate_depth_penalty(student_text, reference_text, max_marks, coverage)
+        
+        # Apply formal language penalty for spoken-style essays
+        style_mult = self._calculate_formal_language_penalty(student_text, max_marks)
+        
+        score = score * depth_mult * style_mult
 
         logger.info(
             f"[ESSAY_SCORE] semantic={semantic:.3f} coverage={coverage:.3f} "
-            f"relevance={relevance:.3f} depth_mult={depth_mult:.2f} -> score={score:.3f}"
+            f"relevance={relevance:.3f} depth_mult={depth_mult:.2f} style_mult={style_mult:.2f} -> score={score:.3f}"
         )
 
         return float(score)
