@@ -25,6 +25,7 @@ from app.services.resource_service import ResourceService
 from app.components.document_processing.services.classifier_service import extract_complete_exam_data, fix_sinhala_ocr, map_student_answers, extract_rubric_answers
 from app.components.document_processing.services.ocr_service import extract_and_clean_text_from_file
 from app.shared.models.answer_evaluation import QuestionScore
+from app.services.usage_service import UsageService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class EvaluationWorkflowService:
         self.answers = AnswerEvaluationService(db)
         self.chat_sessions = ChatSessionService(db)
         self.resource_files = ResourceService(db)
+        self.usage = UsageService(db)
 
     def _normalize_question_number(self, q_num: str) -> str:
         """Normalize question number (e.g. '1.', 'Q1' -> '1')"""
@@ -138,6 +140,9 @@ class EvaluationWorkflowService:
         Creates a session, attaches active context + answers, and sets status to processing.
         Returns the session immediately.
         """
+        # 0. Check Evaluation Limit
+        self.usage.check_evaluation_limit(user_id)
+
         # 1. Create Session (reuses logic to attach Rubric, Syllabus, QP)
         # Check if session already exists for this chat_session (created by process_documents)
         sessions = self.sessions.get_evaluation_sessions_by_chat_session(chat_session_id)
