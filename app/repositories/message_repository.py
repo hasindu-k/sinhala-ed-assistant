@@ -16,6 +16,13 @@ class MessageRepository:
     def __init__(self, db: Session):
         self.db = db
 
+    def _touch_session(self, session_id: UUID):
+        from app.shared.models.chat_session import ChatSession
+        session = self.db.query(ChatSession).filter(ChatSession.id == session_id).first()
+        if session:
+            from sqlalchemy.sql import func
+            session.updated_at = func.now()
+
     def create_user_message(
         self,
         session_id: UUID,
@@ -38,6 +45,7 @@ class MessageRepository:
         )
         logger.debug("Persisting new user message to DB (session=%s)", session_id)
         self.db.add(msg)
+        self._touch_session(session_id)
         try:
             self.db.commit()
         except Exception:
@@ -51,6 +59,7 @@ class MessageRepository:
     def create_system_message(self, session_id: UUID, content: Optional[str]) -> Message:
         msg = Message(session_id=session_id, role="system", modality="text", content=content)
         self.db.add(msg)
+        self._touch_session(session_id)
         self.db.commit()
         self.db.refresh(msg)
         return msg
@@ -76,6 +85,7 @@ class MessageRepository:
             parent_msg_id=parent_msg_id,
         )
         self.db.add(msg)
+        self._touch_session(session_id)
         self.db.commit()
         self.db.refresh(msg)
         return msg

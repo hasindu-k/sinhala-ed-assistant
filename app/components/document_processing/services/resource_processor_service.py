@@ -387,7 +387,7 @@ class ResourceProcessorService:
 
     def is_need_to_analyze_layout(self, resource_type: Optional[str]) -> bool:
 
-        if resource_type in ["question_paper"]:
+        if resource_type in ["question_paper", "answer_sheet"]:
             logger.info(f"Resource type {resource_type} detected, forcing not to layout analysis for OCR.")
             return False
         

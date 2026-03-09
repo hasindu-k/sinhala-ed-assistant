@@ -55,7 +55,7 @@ class ChatSessionRepository:
         return (
             self.db.query(ChatSession)
             .filter(ChatSession.user_id == user_id)
-            .order_by(ChatSession.created_at.desc())
+            .order_by(ChatSession.updated_at.desc())
             .all()
         )
 
