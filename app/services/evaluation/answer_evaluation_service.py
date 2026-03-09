@@ -343,16 +343,18 @@ class AnswerEvaluationService:
                 norm_part = "paper_i"
 
             rules = selection_map.get(norm_part) or {}
-            required_count = rules.get('count') or rules.get('total')
-            mode = rules.get('mode', 'all')
+            mode = str(rules.get('mode', 'all')).lower()
+            # Support both 'any' and 'choose_any' as synonyms
+            is_selection_mode = mode in ['any', 'choose_any', 'choose']
+            required_count = rules.get('count') or rules.get('total') or rules.get('choose_any')
 
             selected_mq_ids = set(mq_data.keys())  # default: all selected
 
-            if mode == 'any' and required_count and len(mq_data) > int(required_count):
-                # Mirror GradingService: sort by (attempted DESC, awarded DESC)
+            if is_selection_mode and required_count and len(mq_data) > int(required_count):
+                # SYNC: Sort by (awarded DESC, attempted DESC) to match GradingService
                 sorted_entries = sorted(
                     mq_data.items(),
-                    key=lambda x: (x[1].get("attempted", 0), x[1]["awarded"]),
+                    key=lambda x: (x[1]["awarded"], x[1].get("attempted", 0)),
                     reverse=True
                 )
                 selected_entries = sorted_entries[:int(required_count)]

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import difflib
 import re
 from app.shared.ai.gemini_client import gemini_generate
 
@@ -473,8 +474,8 @@ Sri Lankan students write one of these before each answer:
 
 Steps:
 1. First scan the entire student text for question number markers.
-2. Build a list: which markers appear, and what text follows each marker (until the next marker).
-3. Then assign: match each question label in the structure to a marker you found.
+2. Build a list: which markers appear, and what text follows each marker (until the next marker). For Paper I / MCQ sections, expect very short answers (e.g., "1. 3", "2. Apple", "3. x"). You MUST capture these short answers.
+3. Then assign: match each question label in the structure to a marker you found. Be careful not to confuse Paper I question "1" with Paper II question "1(a)".
 4. If no marker found for a question → return `null`.
 
 ========================
@@ -486,9 +487,12 @@ STUDENT ANSWER TEXT (OCR): Raw OCR text from the student's answer script.
 ========================
 OUTPUT FORMAT (STRICT JSON)
 ========================
-Return a raw JSON object: {{"id": "cleaned student text or null", ...}}
-EVERY ID in the input structure MUST be a key in your output.
-Use `null` (not the string "null") for unattempted questions.
+Return a raw JSON object: {{"id": "cleaned student text", ...}}
+CRITICAL: The keys in your JSON MUST BE the exact `id` string (the UUID) from the QUESTION STRUCTURE, NOT the `label` or question number!
+ONLY include keys for questions that the student actually ATTEMPTED. If a student left a question blank, omit its ID from the JSON.
+CRITICAL AVOID MAPPING QUESTION TEXT: The OCR text might contain the *text of the original questions* because they are printed on the paper. If a section of text under a question marker ONLY contains the phrasing of the question itself, and there is no visible student answer provided beneath it, DO NOT MAP that question. Omit it completely. The answer must be the student's own words/response, not just a restatement of the question prompt!
+This prevents false mappings and saves output tokens.
+CRITICAL: When mapping "Paper_I", look for simple numbers ("1.", "2."). When mapping "Paper_II", usually there are sub-questions ("1(a)", "2(b)"). Ensure you don't map Paper II answers to Paper I questions just because they share the main number "1".
 
 ========================
 QUESTION STRUCTURE
@@ -501,6 +505,33 @@ STUDENT ANSWER TEXT
 {answer_text}
 """
 
+
+def _is_hallucinated_question_text(mapped_text: str, q_text: str, threshold: float = 0.85) -> bool:
+    """
+    Detects if the mapped student answer is just a hallucination of the
+    original printed question text from the paper.
+    """
+    if not q_text or not mapped_text or len(mapped_text.strip()) < 5:
+        return False
+
+    q_norm = q_text.strip().replace(" ", "")
+    m_norm = mapped_text.strip().replace(" ", "")
+
+    # Basic length check: if the student provided a very long answer,
+    # it's likely not just a hallucinated question even if it contains the question.
+    if len(m_norm) > len(q_norm) + 50:
+        return False
+
+    # Check exact match or very high similarity
+    ratio = difflib.SequenceMatcher(None, q_norm[:len(m_norm)], m_norm).ratio()
+    if ratio > threshold:
+        return True
+
+    # Check if the mapping is a substring of the question (often happens with OCR fragments)
+    if len(m_norm) > 10 and m_norm in q_norm:
+        return True
+
+    return False
 
 def map_student_answers(answer_text: str, question_structure: list) -> dict:
     """
@@ -523,7 +554,7 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
             parts_map[part].append(item)
             
         all_mappings = {}
-        batch_size = 10  # Reduced batch size to prevent JSON truncation
+        batch_size = 100  # Process all questions in a part together to prevent misattribution
         
         for part_name, part_items in parts_map.items():
             logger.info("Mapping part: %s (%d items)", part_name, len(part_items))
@@ -542,6 +573,9 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
                     )
 
                 response_text = _call_mapping(chunk)
+                print(f"=== RAW GEMINI RESPONSE FOR {part_name} ===")
+                print(response_text)
+                print("=============================================")
                 batch_result = _safe_json_loads(response_text) if response_text else None
 
                 # Retry on BOTH empty response AND JSON parse failure
@@ -553,10 +587,22 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
                     batch_result = _safe_json_loads(response_text) if response_text else None
 
                 if isinstance(batch_result, dict):
-                    filtered_result = {k: v for k, v in batch_result.items() if k in chunk_ids}
+                    # We accept any key that the model returned, as long as it's in the original structure chunk
+                    filtered_result = {}
+                    for k, v in batch_result.items():
+                        if k in chunk_ids and v:
+                            # Find original question text for hallucination check
+                            q_item = next((item for item in chunk if item["id"] == k), None)
+                            q_text = q_item.get("text", "") if q_item else ""
+                            
+                            if not _is_hallucinated_question_text(v, q_text):
+                                filtered_result[k] = v
+                            else:
+                                logger.warning(f"Discarding hallucinated answer for ID {k} - matches question text.")
+
                     all_mappings.update(filtered_result)
-                    logger.info("Batch %d for %s: got %d/%d mappings.",
-                                (i // batch_size) + 1, part_name, len(filtered_result), len(chunk))
+                    logger.info("Batch %d for %s: got %d/%d valid mappings (filtered %d hallucinated).",
+                                (i // batch_size) + 1, part_name, len(filtered_result), len(chunk), len(batch_result) - len(filtered_result))
                 else:
                     logger.error("Batch %d for %s: FAILED after retry — skipping batch.",
                                  (i // batch_size) + 1, part_name)

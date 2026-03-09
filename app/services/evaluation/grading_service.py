@@ -185,9 +185,9 @@ class GradingService:
                 if sub_mapped:
                     continue
 
-            # Use gold-standard correct_answer if available — skip Gemini for those
+            # Use gold-standard correct_answer if available and NOT a placeholder — skip Gemini for those
             correct = getattr(target, "correct_answer", None)
-            if correct and len(correct.strip()) > 0:
+            if correct and not self._is_placeholder_answer(correct):
                 continue  # _get_reference_context will return correct_answer directly
 
             q_text = getattr(target, "question_text", "") or getattr(target, "sub_question_text", "")
@@ -457,7 +457,15 @@ class GradingService:
         scored_target_ids = {str(item["target"].id) for item in scored_items}
 
         full_q_map = {}
+        # Ensure unique questions by ID to prevent duplication
+        unique_questions = []
+        seen_qids = set()
         for q in questions:
+            if str(q.id) not in seen_qids:
+                unique_questions.append(q)
+                seen_qids.add(str(q.id))
+
+        for q in unique_questions:
             full_q_map[str(q.id)] = q
             for sq in getattr(q, 'sub_questions', []) or []:
                 full_q_map[str(sq.id)] = sq
@@ -567,16 +575,18 @@ class GradingService:
                 main_q_entries.append((total, attempted))
 
             part_rules = norm_selection_map.get(part_name) or {}
-            mode = part_rules.get('mode', 'all')
-            count = part_rules.get('count') or part_rules.get('total')
+            mode = str(part_rules.get('mode', 'all')).lower()
+            # Support both 'any' and 'choose_any' as synonyms
+            is_selection_mode = mode in ['any', 'choose_any', 'choose']
+            count = part_rules.get('count') or part_rules.get('total') or part_rules.get('choose_any')
 
-            if mode == 'any' and count and len(main_q_entries) > int(count):
-                # Sort by total marks (descending), then by attempted sub-questions (descending)
+            if is_selection_mode and count and len(main_q_entries) > int(count):
+                # SYNC: Sort by total marks (descending), then by attempted sub-questions (descending)
                 main_q_entries.sort(key=lambda x: (x[0], x[1]), reverse=True)
                 selected = main_q_entries[:int(count)]
                 selected_totals = [e[0] for e in selected]
                 attempted_count = sum(1 for e in selected if e[1] > 0)
-                logger.info(f"Part {part_name}: Selected {count}/{len(main_q_entries)} best questions ({attempted_count} attempted).")
+                logger.info(f"Part {part_name}: Selected best {count}/{len(main_q_entries)} questions ({attempted_count} attempted).")
                 total_score_val += sum(selected_totals)
             else:
                 total_score_val += sum(e[0] for e in main_q_entries)
@@ -791,20 +801,19 @@ class GradingService:
         """
         Maps XLM-R cosine similarity → [0, 1] score.
         Uses SEPARATE calibrated thresholds for short answers vs essays.
-
-        RECALIBRATED for HIGH scores, but safe because of OCR cleaning:
         """
         if max_marks > 2:
-            # ESSAY thresholds (calibrated for proper coverage, no artificial high scores)
+            # ESSAY thresholds (calibrated for paper II)
             if sim >= 0.40:   return 1.0
             if sim >= 0.30:   return 0.50 + (sim - 0.30) * (0.50 / 0.10)   
             if sim >= 0.15:   return 0.0  + (sim - 0.15) * (0.50 / 0.15)   
             return 0.0
         else:
-            # SHORT ANSWER thresholds 
-            if sim >= 0.40:   return 1.0
-            if sim >= 0.25:   return 0.50 + (sim - 0.25) * (0.50 / 0.15)   
-            if sim >= 0.10:   return 0.0  + (sim - 0.10) * (0.50 / 0.15)   
+            # SHORT ANSWER thresholds (Paper I or dynamic marks)
+            # More generous for full marks (0.35 instead of 0.40)
+            if sim >= 0.35:   return 1.0
+            if sim >= 0.22:   return 0.50 + (sim - 0.22) * (0.50 / 0.13)   
+            if sim >= 0.10:   return 0.0  + (sim - 0.10) * (0.50 / 0.12)   
             return 0.0
 
 
@@ -815,12 +824,15 @@ class GradingService:
         """
         Snaps the continuous system_score_ratio to clean 0.5 mark steps.
 
-        THRESHOLD DESIGN (March 2026 — removed artificial inflation):
-        - Below 0.20 gives zero
-        - Everything else is strictly mapped to its proportional 0.5 step without scaling inflation.
+        THRESHOLD DESIGN (Improved Fairness):
+        - Paper I / Short: Below 0.20 gives zero
+        - Paper II / Essay: Below 0.15 gives zero (more lenient for depth coverage)
         """
-        if ratio >= 0.78: return 1.0 # Reduced from 0.82 to accommodate minor spelling typos
-        if ratio < 0.20: return 0.0
+        high_threshold = 0.78
+        low_threshold = 0.20 if max_marks <= 2 else 0.15
+
+        if ratio >= high_threshold: return 1.0
+        if ratio < low_threshold: return 0.0
 
         actual_marks = ratio * max_marks
 
@@ -846,10 +858,30 @@ class GradingService:
     # ----------------------------------------------------------
     # CONTEXT & COVERAGE
     # ----------------------------------------------------------
+    def _is_placeholder_answer(self, text: str) -> bool:
+        """Detects useless placeholder answers generated during extraction."""
+        if not text: return True
+        
+        placeholders = [
+            "විස්තර කිරීම", "පිළිබඳව", "පිටුව", "හමුවන්නේ නැත", 
+            "සඳහන් වේ", "මෙම ප්‍රශ්නයට අදාළ තොරතුරු", 
+            "Syllabus mentions", "page", "description of"
+        ]
+        
+        cleaned = text.strip()
+        if len(cleaned) < 5: return True
+        
+        # If the length is very small and contains these patterns
+        if len(cleaned) < 100:
+            for p in placeholders:
+                if p in cleaned:
+                    return True
+        return False
+
     def _get_reference_context(self, question, syllabus_text: str, rubric_text: str) -> str:
-        # Gold standard: use correct_answer if available (short, specific)
+        # Gold standard: use correct_answer if available and NOT a placeholder
         correct = getattr(question, "correct_answer", None)
-        if correct and len(correct.strip()) > 0:
+        if correct and not self._is_placeholder_answer(correct):
             logger.info(f"Using Gold Standard context for question {getattr(question, 'id')}")
             return correct.strip()
 
@@ -1144,8 +1176,8 @@ Return ONLY a valid JSON object mirroring the keys provided.
 
         # KEY FIX: Cap denominator to expected concept count for this question.
         # Ensure deep essays (e.g. 18 marks) don't unreasonably penalize excellent answers
-        # by expecting 36 discrete points to score a 1.0 coverage. Cap to max_marks * 0.8.
-        expected_concepts = min(len(sentences), max_marks * 0.80)
+        # by expecting 36 discrete points to score a 1.0 coverage. Cap to max_marks * 0.6.
+        expected_concepts = min(len(sentences), max_marks * 0.60)
         ratio = hits / max(1, expected_concepts)
 
         return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
@@ -1240,9 +1272,9 @@ Return ONLY a valid JSON object mirroring the keys provided.
             return 1.0
 
         if student_words < expected_min_words * 0.3:
-            return 0.70
+            return 0.80
         elif student_words < expected_min_words * 0.5:
-            return 0.85
+            return 0.90
         elif student_words < expected_min_words * 0.7:
             return 0.95
 
@@ -1279,13 +1311,13 @@ Return ONLY a valid JSON object mirroring the keys provided.
                 
         ratio = spoken_count / len(words)
 
-        # Extremely punishing modifiers for informal essays
+        # Moderated punishing modifiers for informal essays to prevent catastrophic score drops
         if ratio > 0.15:
-            return 0.30
+            return 0.80
         elif ratio > 0.08:
-            return 0.50
+            return 0.90
         elif ratio > 0.04:
-            return 0.70
+            return 0.95
 
         return 1.0
 
@@ -1349,12 +1381,13 @@ Return ONLY a valid JSON object mirroring the keys provided.
 
         logger.info(f"[COVERAGE] {coverage_debug} -> coverage_ratio={coverage:.3f}")
 
-        # Weights: semantic 65%, coverage 25%, relevance 10%
-        # RATIONALE: semantic checks if they are on-topic, coverage expects multiple points,
-        # relevance ensures correct vocabulary usage.
-        e_s_w = 0.65
-        e_c_w = 0.25
-        e_r_w = 0.10
+        # Recalibrated blend for Paper II (Fairness Update March 2026)
+        if coverage > 0.60:
+            # High quality answer: value concepts (coverage) and keywords (relevance) more
+            e_s_w, e_c_w, e_r_w = 0.40, 0.45, 0.15
+        else:
+            # Lower quality or vague: semantic topicality is the safeguard
+            e_s_w, e_c_w, e_r_w = 0.60, 0.30, 0.10
 
         score = (e_s_w * semantic) + (e_c_w * coverage) + (e_r_w * relevance)
 
