@@ -10,7 +10,25 @@ import time
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = "gemini-2.5-flash-lite"
-
+# Shared safety settings
+SAFETY_SETTINGS = [
+    types.SafetySetting(
+        category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+    ),
+    types.SafetySetting(
+        category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+    ),
+    types.SafetySetting(
+        category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+    ),
+    types.SafetySetting(
+        category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+    ),
+]
 def gemini_generate(
     prompt: str,
     *,
@@ -27,15 +45,14 @@ def gemini_generate(
     try:
         response = client.models.generate_content(
             model=selected_model,
-            prompt=prompt,
-            json_mode=json_mode,
             contents=prompt,
             config=types.GenerateContentConfig(
                 safety_settings=SAFETY_SETTINGS,
                 response_mime_type="application/json" if json_mode else "text/plain"
             ),
         )
-        return response.get("text", "")
+        print(f"DEBUG: gemini_generate called (fixed version). JSON Mode: {json_mode}, Model: {selected_model}")
+        return response.text or ""
 
     except Exception as e:
         print(f"❌ Error during Gemini generation (model: {selected_model}): {e}")

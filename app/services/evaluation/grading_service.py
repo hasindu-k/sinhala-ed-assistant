@@ -980,7 +980,7 @@ Questions:
 
                 response_json = self.gemini.generate_content(
                     chunk_prompt, json_mode=True
-                ).get("text", "{}")
+                ).text or "{}"
 
                 clean_json = re.sub(
                     r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE
@@ -1113,7 +1113,7 @@ Return ONLY a valid JSON object mirroring the keys provided.
         try:
             logger.info(f"[OCR_CLEAN] Batch cleaning {len(to_clean)} answers via Gemini...")
             start_t = time.time()
-            res_text = self.gemini.generate_content(prompt, json_mode=True).get("text", "{}")
+            res_text = self.gemini.generate_content(prompt, json_mode=True).text or "{}"
             clean_json = re.sub(r'^```json\s*|\s*```$', '', res_text.strip(), flags=re.MULTILINE)
             cleaned_map = json.loads(clean_json)
 
@@ -1503,7 +1503,7 @@ Questions to evaluate:
                 sent_keys = [it["key"] for it in chunk]
                 logger.info(f"Sending Gemini feedback batch for keys: {sent_keys}")
 
-                response_json = self.gemini.generate_content(chunk_prompt, json_mode=True).get("text", "{}")
+                response_json = self.gemini.generate_content(chunk_prompt, json_mode=True).text or "{}"
                 try:
                     clean_json = re.sub(r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE)
                     data = json.loads(clean_json)
@@ -1578,6 +1578,6 @@ Write 2-3 sentences of overall feedback in Sinhala for this student.
 Comment on their performance and what they should focus on improving.
 Do not mention specific question numbers.
 """
-            return self.gemini.generate_content(prompt).get("text", "")
+            return self.gemini.generate_content(prompt).text or ""
         except Exception:
             return f"Total Score: {total_score}"
