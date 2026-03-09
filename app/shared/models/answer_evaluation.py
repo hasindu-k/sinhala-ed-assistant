@@ -4,6 +4,7 @@ import uuid
 from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, Numeric
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
@@ -18,6 +19,8 @@ class AnswerDocument(Base):
     mapped_answers = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    evaluation_session = relationship("EvaluationSession", backref="answer_documents")
+
 
 class EvaluationResult(Base):
     __tablename__ = "evaluation_results"
@@ -28,8 +31,9 @@ class EvaluationResult(Base):
     overall_feedback = Column(Text, nullable=True)
     evaluated_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    answer_document = relationship("AnswerDocument", backref="evaluation_results")
 
-from sqlalchemy.orm import relationship
+
 
 class QuestionScore(Base):
     __tablename__ = "question_scores"

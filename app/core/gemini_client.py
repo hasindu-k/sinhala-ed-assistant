@@ -43,8 +43,8 @@ _active_model_index = 0
 _model_index_lock = threading.Lock()
 
 # Increased from 5 → 10 to support parallel per-question Gemini feedback calls
-# REVERTED: Reduce 10 → 5 to prevent aggressive 429 Resource Exhausted errors
-_ai_semaphore = threading.Semaphore(5)
+# SAFER: Reduced from 5 -> 2 to prevent slamming Gemini API and triggering 429s (especially during batch evaluation)
+_ai_semaphore = threading.Semaphore(2)
 
 class GeminiClient:
     @classmethod
@@ -137,7 +137,7 @@ class GeminiClient:
         return min(30, (base_wait * (attempt + 1)) + random.uniform(1, 5))
 
     @classmethod
-    def generate_content(cls, prompt: str, max_retries: int = 10, safety_settings: list = None, json_mode: bool = False) -> dict:
+    def generate_content(cls, prompt: str, max_retries: int = 15, safety_settings: list = None, json_mode: bool = False) -> dict:
         """
         Generate content from Gemini and return text + token usage.
         Includes rate limiting (semaphore) and retry logic (exponential backoff).
@@ -146,7 +146,8 @@ class GeminiClient:
         from google.genai import types
         config = types.GenerateContentConfig(
             safety_settings=safety_settings,
-            response_mime_type="application/json" if json_mode else "text/plain"
+            response_mime_type="application/json" if json_mode else "text/plain",
+            max_output_tokens=8192
         )
 
         # Estimate prompt tokens locally — avoids one API round-trip per call

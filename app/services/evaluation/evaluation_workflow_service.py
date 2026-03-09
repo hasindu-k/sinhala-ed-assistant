@@ -22,7 +22,7 @@ from app.shared.models.question_papers import Question, SubQuestion
 from app.shared.models.evaluation_session import EvaluationSession
 from app.services.chat_session_service import ChatSessionService
 from app.services.resource_service import ResourceService
-from app.components.document_processing.services.classifier_service import extract_complete_exam_data, fix_sinhala_ocr, map_student_answers
+from app.components.document_processing.services.classifier_service import extract_complete_exam_data, fix_sinhala_ocr, map_student_answers, extract_rubric_answers
 from app.components.document_processing.services.ocr_service import extract_and_clean_text_from_file
 from app.shared.models.answer_evaluation import QuestionScore
 import logging
@@ -58,6 +58,7 @@ class EvaluationWorkflowService:
         if not label:
             return label
         # Remove parens, dots and convert to lowercase
+        # FIX: Keep 'ඈ' as distinct from 'අ' if applicable, but standard stripping is fine
         clean = re.sub(r'[().]', '', str(label)).strip().lower()
         return clean
 
@@ -75,12 +76,32 @@ class EvaluationWorkflowService:
         if not self.chat_sessions.validate_ownership(session_id, user_id):
             raise PermissionError("You don't have permission to access this session")
 
-    def _get_eval_session_with_owner_check(self, evaluation_id: UUID, user_id: UUID):
+    def _get_eval_session_with_owner_check(self, evaluation_id: UUID, user_id: UUID) -> EvaluationSession:
         eval_session = self.sessions.get_evaluation_session(evaluation_id)
         if not eval_session:
             raise ValueError("Evaluation session not found")
         self._ensure_chat_session_owner(eval_session.session_id, user_id)
         return eval_session
+
+    def _resolve_to_eval_session(self, session_id: UUID, user_id: UUID) -> EvaluationSession:
+        """
+        Smart resolver: Tries to find an EvaluationSession first, 
+        then a ChatSession's most recent EvaluationSession.
+        """
+        # 1. Try as Evaluation ID
+        eval_session = self.sessions.get_evaluation_session(session_id)
+        if eval_session:
+            self._ensure_chat_session_owner(eval_session.session_id, user_id)
+            return eval_session
+        
+        # 2. Try as Chat ID
+        if self.chat_sessions.validate_ownership(session_id, user_id):
+            recent_evals = self.sessions.get_evaluation_sessions_by_chat_session(session_id)
+            if recent_evals:
+                # Get the most recent one
+                return sorted(recent_evals, key=lambda x: x.created_at, reverse=True)[0]
+        
+        raise ValueError(f"No evaluation session found for ID {session_id}")
 
     def _ensure_resource_owner(self, resource_id: UUID, user_id: UUID):
         # Will raise PermissionError / ValueError if unauthorized or missing
@@ -360,8 +381,15 @@ class EvaluationWorkflowService:
         syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
         question_map = self._build_question_map_helper(questions)
 
-        # Fix OCR / Map
-        if answer_doc.mapped_answers:
+        # Use cached mapping from the document processing step.
+        # The mapping prompt now retries on JSON parse failures, so the cached mapping
+        # is reliable. Do NOT remap here to avoid double evaluation.
+        needs_remap = False
+
+
+        
+        if answer_doc.mapped_answers and not needs_remap:
+
             yield ("processing_documents", "Using existing answer mapping...", 30)
             answer_mapping = answer_doc.mapped_answers
             if not answer_resource.extracted_text:
@@ -369,10 +397,21 @@ class EvaluationWorkflowService:
             else:
                  cleaned_answer_text = answer_resource.extracted_text
         else:
-            yield ("processing_documents", "Correcting OCR errors...", 30)
-            cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+            if answer_doc.mapped_answers:
+                yield ("processing_documents", "Refreshing partial mapping...", 30)
+            else:
+                yield ("processing_documents", "Correcting OCR errors...", 30)
+                
+            # PERSISTENCE: Only fix if not already fixed/extracted
+            if not answer_resource.extracted_text or len(answer_resource.extracted_text) < 10:
+                cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+                # Save the fixed version back to the resource so we don't fix it again
+                self.resource_files.update_resource_extracted_text(answer_resource.id, cleaned_answer_text)
+            else:
+                cleaned_answer_text = answer_resource.extracted_text
+                logger.info("Using previously extracted/fixed answer text.")
             
-            yield ("processing_documents", "Mapping answers to questions...", 40)
+            yield ("processing_documents", f"Mapping answers to {len(questions)} questions...", 40)
             answer_mapping = map_student_answers(cleaned_answer_text, questions)
             self.answers.update_mapped_answers(answer_id, answer_mapping)
         
@@ -962,15 +1001,20 @@ class EvaluationWorkflowService:
 
         logger.info(f"Parsing syllabus: {resource_id}")
 
-        # OCR
+        # 1. Extraction Persistence Check
+        if resource.extracted_text:
+            logger.info(f"Syllabus already has extracted text. Skipping OCR and Fix.")
+            return
+
+        # 2. OCR (Local)
         cleaned_text, _ = extract_and_clean_text_from_file(resource.storage_path)
         logger.info(f"OCR complete for syllabus. Length: {len(cleaned_text)}")
         
-        # AI Fix
+        # 3. AI Fix (Helper)
         cleaned_text = fix_sinhala_ocr(cleaned_text)
         logger.info(f"AI correction complete for syllabus. Length: {len(cleaned_text)}")
         
-        # Save
+        # 4. Save
         resource.extracted_text = cleaned_text
         self.resource_files.db.commit()
 
@@ -986,15 +1030,20 @@ class EvaluationWorkflowService:
 
         logger.info(f"Parsing rubric: {resource_id}")
 
-        # OCR
+        # 1. Extraction Persistence Check
+        if resource.extracted_text:
+            logger.info(f"Rubric already has extracted text. Skipping OCR and Fix.")
+            return
+
+        # 2. OCR (Local)
         cleaned_text, _ = extract_and_clean_text_from_file(resource.storage_path)
         logger.info(f"OCR complete for rubric. Length: {len(cleaned_text)}")
         
-        # AI Fix
+        # 3. AI Fix (Helper)
         cleaned_text = fix_sinhala_ocr(cleaned_text)
         logger.info(f"AI correction complete for rubric. Length: {len(cleaned_text)}")
         
-        # Save
+        # 4. Save
         resource.extracted_text = cleaned_text
         self.resource_files.db.commit()
 
@@ -1036,23 +1085,28 @@ class EvaluationWorkflowService:
         if not resource.storage_path:
             raise ValueError("Resource file not found on disk")
 
-        # Extract and clean text from file
-        try:
-            cleaned_text, page_count = extract_and_clean_text_from_file(resource.storage_path)
-            logger.info("Extracted %s characters from %d pages in question paper", len(cleaned_text), page_count)
+        # 1. Extract and clean text from file (Only if not already done)
+        if resource.extracted_text:
+            logger.info("Question paper already has extracted text. Skipping OCR and Fix.")
+            cleaned_text = resource.extracted_text
+        else:
+            try:
+                # Local Extraction (Core process)
+                cleaned_text, page_count = extract_and_clean_text_from_file(resource.storage_path)
+                logger.info("Extracted %s characters from %d pages in question paper", len(cleaned_text), page_count)
 
-            # Fix Sinhala OCR errors using AI
-            logger.info("Running AI correction on extracted text...")
-            cleaned_text = fix_sinhala_ocr(cleaned_text)
-            logger.info("AI correction complete. Final text length: %s", len(cleaned_text))
+                # AI Correction (Helper process - persisted to avoid repetition)
+                logger.info("Running AI correction on extracted text...")
+                cleaned_text = fix_sinhala_ocr(cleaned_text)
+                logger.info("AI correction complete. Final text length: %s", len(cleaned_text))
 
-        # Persist OCR text back to ResourceFile (CRITICAL)
-            resource.extracted_text = cleaned_text
-            self.resource_files.db.commit()
+                # Persist result immediately
+                resource.extracted_text = cleaned_text
+                self.resource_files.db.commit()
 
-        except Exception as e:
-            logger.error(f"Failed to extract text from resource {resource.id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to extract text from question paper: {e}")
+            except Exception as e:
+                logger.error(f"Failed to extract text from resource {resource.id}: {e}", exc_info=True)
+                raise ValueError(f"Failed to extract text from question paper: {e}")
 
         # Parse and structure content using AI
         try:
@@ -1117,7 +1171,8 @@ class EvaluationWorkflowService:
                         max_marks=q_data.get("marks"),
                         part_name=paper_key,
                         shared_stem=q_data.get("shared_stem"),
-                        inherits_shared_stem_from=q_data.get("inherits_shared_stem_from")
+                        inherits_shared_stem_from=q_data.get("inherits_shared_stem_from"),
+                        correct_answer=q_data.get("correct_answer")
                     )
 
                     # 3️⃣ Create SubQuestions (Recursive)
@@ -1131,7 +1186,8 @@ class EvaluationWorkflowService:
                                 label=normalized_label,
                                 sub_question_text=data.get("text"),
                                 max_marks=data.get("marks"),
-                                parent_sub_question_id=parent_sq_id
+                                parent_sub_question_id=parent_sq_id,
+                                correct_answer=data.get("correct_answer")
                             )
                             # Recurse for children
                             if "sub_questions" in data:
@@ -1250,9 +1306,9 @@ class EvaluationWorkflowService:
             student_identifier=payload.student_identifier,
         )
 
-    def list_answer_documents(self, evaluation_id: UUID, user_id: UUID):
-        self._get_eval_session_with_owner_check(evaluation_id, user_id)
-        return self.answers.get_answer_documents_by_evaluation_session(evaluation_id)
+    def list_answer_documents(self, session_id: UUID, user_id: UUID):
+        eval_session = self._resolve_to_eval_session(session_id, user_id)
+        return self.answers.get_answer_documents_by_evaluation_session(eval_session.id)
 
     def parse_answer_document(self, answer_id: UUID, user_id: UUID):
         """
@@ -1298,8 +1354,9 @@ class EvaluationWorkflowService:
         question_paper = question_papers[0]
         questions = self.question_papers.get_questions_by_paper(question_paper.id)
 
-        # 1. Fix OCR errors
-        cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+        # OCR text is already extracted above.
+        # We now skip the separate fix_sinhala_ocr call as cleaning is handled in map_student_answers.
+        cleaned_answer_text = ocr_text
         
         # 2. Map answers
         answer_mapping = map_student_answers(cleaned_answer_text, questions)
@@ -1409,8 +1466,8 @@ class EvaluationWorkflowService:
         if not eval_session:
             raise ValueError("Evaluation session not found")
 
-        # Get Evaluation Context (Syllabus, Rubric, Questions)
         syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
+        
         question_map = self._build_question_map_helper(questions)
 
         # 1. Fix OCR errors in student answer
@@ -1428,7 +1485,13 @@ class EvaluationWorkflowService:
             if progress_callback:
                 progress_callback("processing_documents", "Correcting OCR errors...")
             logger.info("Running AI correction on student answer script...")
-            cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+            
+            # PERSISTENCE: Save fixed text to avoid repeating expensive AI calls
+            if not answer_resource.extracted_text or len(answer_resource.extracted_text) < 10:
+                cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+                self.resource_files.update_resource_extracted_text(answer_resource.id, cleaned_answer_text)
+            else:
+                cleaned_answer_text = answer_resource.extracted_text
             
             # 2. Map answers to questions using AI
             if progress_callback:
@@ -1436,6 +1499,10 @@ class EvaluationWorkflowService:
             logger.info("Mapping student answers to questions...")
             answer_mapping = map_student_answers(cleaned_answer_text, questions)
             
+            if not answer_mapping:
+                logger.error("Mapping failed: Gemini returned an empty response.")
+                raise ValueError("නිරවද්‍ය ලෙස පිළිතුරු හඳුනා ගැනීමට නොහැකි විය. කරුණාකර නැවත උත්සාහ කරන්න. (AI Rate Limited)")
+
             # Save mapping for future use
             self.answers.update_mapped_answers(answer_id, answer_mapping)
         
@@ -1471,30 +1538,52 @@ class EvaluationWorkflowService:
         rubric_text = self.answers._load_rubric_text(eval_session)
         syllabus_text = self.answers._load_syllabus_text(eval_session)
 
-        question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
+        # Try evaluation-specific papers first
+        question_papers = self.question_papers.get_question_papers_by_evaluation_session(eval_session_id)
+        
+        # Fallback to chat-session papers if none found (backwards compatibility)
+        if not question_papers:
+            question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
+        
         if not question_papers:
             raise ValueError("Question paper not found")
         
-        questions = []
+        # Deduplicate papers by resource_id to prevent duplicates from multiple uploads
+        unique_papers = {}
         for qp in question_papers:
+            if qp.resource_id not in unique_papers:
+                unique_papers[qp.resource_id] = qp
+        
+        questions = []
+        for qp in unique_papers.values():
             questions.extend(self.question_papers.get_questions_by_paper(qp.id))
         
-        return syllabus_text, rubric_text, questions
+        # Final unique check on question IDs
+        seen_qids = set()
+        unique_questions = []
+        for q in questions:
+            if q.id not in seen_qids:
+                unique_questions.append(q)
+                seen_qids.add(q.id)
+
+        return syllabus_text, rubric_text, unique_questions
 
     def _build_question_map_helper(self, questions: List[Question]) -> Dict:
         """Helper to build a map for quick question lookup."""
         q_map = {}
         for q in questions:
-            # Index by question number
+            q_num = str(q.question_number).lstrip('0')
+            # Index by question number variants
+            q_map[q_num] = q
             q_map[str(q.question_number)] = q
             # Index by ID
             q_map[str(q.id)] = q
             
             for sq in getattr(q, "sub_questions", []) or []:
-                # Index by combination
-                key = f"{q.question_number}{sq.label}"
-                q_map[key] = sq
-                # Index by ID
+                sq_label = str(sq.label).lower().strip()
+                # Index by combinations: "1a", "1(a)", etc.
+                q_map[f"{q_num}{sq_label}"] = sq
+                q_map[f"{q_num}({sq_label})"] = sq
                 q_map[str(sq.id)] = sq
         return q_map
 
