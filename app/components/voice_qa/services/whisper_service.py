@@ -60,14 +60,18 @@ class VoiceService:
         normalized = normalize_sinhala(text)
 
         prompt = f"""
-        Convert Southern-accent Sinhala into Standard Sinhala.
-        Do NOT translate.
+            As an expert Sinhala linguist, transform the following transcribed text into Standard Literary Sinhala (ලිඛිත සිංහල).
 
-        Southern Sinhala:
-        {normalized}
+            Tasks:
+            1. Fix transcription errors: Correct phonetic misinterpretations (e.g., if 'මකේ' appears where 'මගේ' is intended).
+            2. Normalize Dialect: Convert Southern-specific idioms and pronunciations into standard forms.
+            3. Grammar: Ensure proper Sinhala sentence structure.
 
-        Return only the Standard Sinhala version.
-        """
+            Input Text:
+            {normalized}
+
+            Return ONLY the corrected Standard Sinhala text. Do not include explanations.
+            """
 
         gemini = GeminiClient()
         response = gemini.generate_content(prompt)
