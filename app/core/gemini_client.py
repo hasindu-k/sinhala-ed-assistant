@@ -33,7 +33,7 @@ if _api_keys:
 else:
     logger.warning("No Gemini API key found. Set GOOGLE_API_KEY and optionally GOOGLE_API_KEY_V2.")
 
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME = "gemini-3.1-flash-lite"
 MODEL_FALLBACKS = [
     MODEL_NAME,
     "gemini-2.5-flash",
