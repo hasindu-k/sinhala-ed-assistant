@@ -1,5 +1,7 @@
+# app/services/embedding_service.py
 from sentence_transformers import SentenceTransformer
 import numpy as np
+from functools import lru_cache
 
 class EmbeddingService:
     _model = None
@@ -7,9 +9,11 @@ class EmbeddingService:
     @classmethod
     def get_model(cls):
         if cls._model is None:
-            # Multilingual model works well for Sinhala
+            # Add timeout and retry configuration
+            import torch
             cls._model = SentenceTransformer(
-                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+                device='cpu'  # Explicitly set device
             )
         return cls._model
 
@@ -24,4 +28,10 @@ class EmbeddingService:
         if not texts:
             return np.array([])
         model = cls.get_model()
-        return model.encode(texts, normalize_embeddings=True)
+        # Use larger batch size for better performance
+        return model.encode(
+            texts, 
+            normalize_embeddings=True,
+            batch_size=32,  # Adjust based on your memory
+            show_progress_bar=False
+        )

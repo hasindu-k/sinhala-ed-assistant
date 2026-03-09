@@ -6,10 +6,9 @@ setup_logging()
 
 import logging
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-
+from app.core.whisper_loader import WhisperLoader
 from app.api.v1.router import api_router
 from app.core.database import Base, engine
 
@@ -20,18 +19,6 @@ app = FastAPI(
     version="1.0.0",
     swagger_ui_parameters={"persistAuthorization": True},
 )
-
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=[
-#         "http://localhost:52131",
-#         "http://localhost:3000",
-#         "http://127.0.0.1:3000",
-#     ],
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
 
 app.add_middleware(
     CORSMiddleware,
@@ -50,16 +37,23 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     logger.info("Starting Sinhala Educational Assistant API...")
+
     try:
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables created/verified successfully")
     except Exception as e:
         logger.warning(
-            "Could not connect to database during startup: %s. "
-            "The application will start but database operations may fail. "
-            "Ensure PostgreSQL is running on the configured host and port.",
+            "Could not connect to database during startup: %s",
             str(e)
         )
+
+    try:
+        logger.info("Loading Whisper model at startup...")
+        WhisperLoader.load()
+        logger.info("Whisper model loaded successfully.")
+    except Exception as e:
+        logger.error("Whisper model failed to load: %s", str(e))
+
 
 
 def custom_openapi():

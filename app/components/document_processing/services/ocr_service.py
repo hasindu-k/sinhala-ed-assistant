@@ -14,7 +14,7 @@ from app.components.document_processing.services.text_extraction import (
 logger = logging.getLogger(__name__)
 
 # Utility function
-def extract_and_clean_text_from_file(file_path: str) -> tuple[str, int]:
+def extract_and_clean_text_from_file(file_path: str, force_layout_analysis: bool = True) -> tuple[str, int]:
     """
     Extract text from a file (PDF or image) and return cleaned text with page count.
     
@@ -51,7 +51,7 @@ def extract_and_clean_text_from_file(file_path: str) -> tuple[str, int]:
         if extracted_text is None:
             logger.info(f"Starting OCR for file: {file_path}")
             images = convert_file_to_images(file_path, ext)
-            extracted_text, page_count = process_ocr_for_images_with_tables(images)
+            extracted_text, page_count = process_ocr_for_images_with_tables(images, force_layout_analysis)
             logger.info(f"OCR extracted text: {page_count} pages, {len(extracted_text)} characters")
         
         # Clean the extracted text

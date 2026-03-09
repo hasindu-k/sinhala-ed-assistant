@@ -9,7 +9,9 @@ class Settings(BaseSettings):
 
     # Gemini
     GOOGLE_API_KEY: Optional[str] = None
+    GOOGLE_API_KEY_V2: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
+    GEMINI_LIGHT_API_KEY: Optional[str] = None
 
     # Database (optional)
     DATABASE_URL: Optional[str] = None

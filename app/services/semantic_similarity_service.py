@@ -1,4 +1,6 @@
+# app/services/semantic_similarity_service.py
 import numpy as np
+from typing import List, Tuple
 from app.services.embedding_service import EmbeddingService
 
 
@@ -15,7 +17,26 @@ class SemanticSimilarityService:
         return float(np.dot(emb_a, emb_b))
 
     @staticmethod
-    def similarity_batch(pairs: list) -> list:
+    def compute_pairwise_similarities(sentences_a: List[str], sentences_b: List[str]) -> np.ndarray:
+        """
+        Compute cosine similarity between all pairs in two sets of sentences.
+        Returns a matrix of shape (len(sentences_a), len(sentences_b))
+        """
+        if not sentences_a or not sentences_b:
+            return np.array([])
+
+        # Batch embed all sentences at once
+        embs_a = EmbeddingService.embed_batch(sentences_a)
+        embs_b = EmbeddingService.embed_batch(sentences_b)
+
+        # Compute all pairwise similarities at once using matrix multiplication
+        # Shape: (len_a, embedding_dim) @ (embedding_dim, len_b) -> (len_a, len_b)
+        similarities = np.dot(embs_a, embs_b.T)
+        
+        return similarities
+
+    @staticmethod
+    def similarity_batch(pairs: List[Tuple[str, str]]) -> List[float]:
         """Compute similarity for multiple text pairs efficiently"""
         if not pairs:
             return []

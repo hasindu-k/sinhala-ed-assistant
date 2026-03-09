@@ -15,7 +15,7 @@ except ImportError:
     ULTRALYTICS_AVAILABLE = False
     logger.warning("Ultralytics not available. Table detection will be limited.")
 
-def detect_tables_with_yolo(image_input: str, model_path: str = "table_model.pt", conf_threshold: float = 0.5) -> Tuple[List[dict], int]:
+def detect_tables_with_yolo(image_input: str, model_path: str = "utils/table_model.pt", conf_threshold: float = 0.5) -> Tuple[List[dict], int]:
     """
     Detect tables in an image using YOLO model.
     Returns table coordinates and count.
@@ -141,7 +141,7 @@ def split_image_into_columns(image_path: str, output_dir: str = None) -> List[st
         return [image_path]
 
 
-def extract_tables_from_image(image_path: str, model_path: str = "table_model.pt") -> Tuple[List[str], int]:
+def extract_tables_from_image(image_path: str, model_path: str = "utils/table_model.pt") -> Tuple[List[str], int]:
     """
     Extract table regions from an image using YOLO detection.
     Returns list of paths to extracted table images and count.

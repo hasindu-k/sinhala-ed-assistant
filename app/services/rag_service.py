@@ -15,12 +15,14 @@ from app.services.message_safety_service import MessageSafetyService
 from app.core.gemini_client import GeminiClient
 from app.services.intent_detection_service import IntentDetectionService
 from app.services.answerability_service import AnswerabilityService
+from app.services.xai_service import XAIService
 
 logger = logging.getLogger(__name__)
 
 
 class RAGService:
     """RAG orchestration with hybrid retrieval, grounded generation, and safety checks."""
+    GREETING_ONLY = ["hello", "hi", "hey", "හායි", "හලෝ", "ආයුබෝවන්", "කොහොමද", "ගුඩ් මෝනින්", "good morning", "good afternoon", "good evening"] 
 
     def __init__(self, db: Session):
         self.db = db
@@ -42,25 +44,64 @@ class RAGService:
     ) -> Dict:
         """Hybrid retrieval → grounded generation → safety checks → logging"""
 
+        # cleaned = user_query.lower().strip()
+
+        # if not resource_ids and cleaned in self.GREETING_ONLY:
+        #     greeting_text = "ආයුබෝවන්! මට ඔබට උදව් කළ හැකිය. කරුණාකර ඔබගේ ප්‍රශ්නය අසන්න."
+        #     assistant_msg = self.message_service.create_assistant_message(
+        #         session_id=session_id,
+        #         content=greeting_text,
+        #         model_info={"model_name": "rule-based"},
+        #         parent_msg_id=user_message_id
+        #     )
+        #     logger.info("Greeting detected, returning simple response without RAG")
+        #     return {
+        #         "assistant_message_id": assistant_msg.id,
+        #         "content": greeting_text,
+        #         "sources": [],
+        #         "retrieval_metadata": {"intent": "greeting", "used_chunks": 0},
+        #     }
+
         # -----------------------------
         # 0. Check for greetings/chit-chat (no RAG needed)
         # -----------------------------
+
         intent = IntentDetectionService.detect_intent(user_query)
+
         if intent == "greeting":
             greeting_text = "ආයුබෝවන්! මට ඔබට උදව් කළ හැකිය. කරුණාකර ඔබගේ ප්‍රශ්නය අසන්න."
+
             assistant_msg = self.message_service.create_assistant_message(
                 session_id=session_id,
                 content=greeting_text,
                 model_info={"model_name": "rule-based"},
                 parent_msg_id=user_message_id
             )
-            logger.info("Greeting detected, returning simple response without RAG")
+
+            logger.info("Greeting detected early — skipping RAG pipeline")
+
             return {
                 "assistant_message_id": assistant_msg.id,
                 "content": greeting_text,
                 "sources": [],
                 "retrieval_metadata": {"intent": "greeting", "used_chunks": 0},
             }
+
+        # if intent == "greeting":
+        #     greeting_text = "ආයුබෝවන්! මට ඔබට උදව් කළ හැකිය. කරුණාකර ඔබගේ ප්‍රශ්නය අසන්න."
+        #     assistant_msg = self.message_service.create_assistant_message(
+        #         session_id=session_id,
+        #         content=greeting_text,
+        #         model_info={"model_name": "rule-based"},
+        #         parent_msg_id=user_message_id
+        #     )
+        #     logger.info("Greeting detected, returning simple response without RAG")
+        #     return {
+        #         "assistant_message_id": assistant_msg.id,
+        #         "content": greeting_text,
+        #         "sources": [],
+        #         "retrieval_metadata": {"intent": "greeting", "used_chunks": 0},
+        #     }
 
         if not query_embedding:
             raise ValueError("Query embedding is required for hybrid retrieval")
@@ -120,7 +161,10 @@ class RAGService:
         # -----------------------------
         # ANSWERABILITY GUARD (CRITICAL)
         # -----------------------------
-        is_unanswerable = not AnswerabilityService.is_answerable(user_query, context)
+        if intent in ["summary", "qa_generate", "qa_answer", "explanation"]:
+            is_unanswerable = False
+        else:
+            is_unanswerable = not AnswerabilityService.is_answerable(user_query, context)
         
         if is_unanswerable:
             logger.warning("Unanswerable question detected: %s", user_query)
@@ -180,9 +224,10 @@ class RAGService:
             elif intent == "explanation":
                 prompt = build_direct_answer_prompt(
                     context=context,
-                    query=user_query
+                    query=user_query,
+                    grade=grade_level,
                 )
-                message_grade_level = None
+                message_grade_level = grade_level
 
             # 🔴 Safe fallback
             else:
@@ -225,6 +270,7 @@ class RAGService:
             logging.info("Detected %d flagged misconceptions", len(flagged))
             flagged = attach_evidence(flagged, context)
             logging.info("Attached evidence to flagged misconceptions")
+            
 
             # ---- High-level summary ----
             logger.info(
@@ -258,6 +304,7 @@ class RAGService:
         # -----------------------------
         # 7. Save assistant message
         # -----------------------------
+        
         assistant_msg = self.message_service.create_assistant_message(
             session_id=session_id,
             content=generated,
@@ -278,7 +325,24 @@ class RAGService:
         from app.services.safety_summary_service import SafetySummaryService
         
         computed_values = SafetySummaryService.compute_from_flagged(flagged, is_unanswerable)
-        
+
+        # Build retrieval metadata for XAI generation
+        retrieval_metadata = {"bm25_k": bm25_k, "final_k": final_k, "used_chunks": len(hits)}
+
+        # Generate XAI explanation BEFORE saving so it gets persisted with the safety report
+        xai_explanation = XAIService.generate_explanation(
+            user_query=user_query,
+            generated_answer=generated,
+            retrieved_chunks=hits,
+            safety_report={
+                "flagged": flagged,
+                "missing_concepts": list(missing),
+                "extra_concepts": list(extra),
+                "confidence_score": computed_values.get("computed_confidence_score", 1.0) if not is_unanswerable else 1.0,
+            } if not is_unanswerable else None,
+            retrieval_metadata=retrieval_metadata,
+        )
+
         self.safety_service.create_safety_report(
             assistant_msg.id,
             {
@@ -288,6 +352,7 @@ class RAGService:
                 "reasoning": "Hybrid RAG with Sinhala QA/Summary",
                 # Cache computed values
                 **computed_values,
+                "xai_explanation": xai_explanation,
             },
         )
 
@@ -297,6 +362,20 @@ class RAGService:
         # 9. Return full response with metadata
         # -----------------------------
         retrieval_metadata = {"bm25_k": bm25_k, "final_k": final_k, "used_chunks": len(hits)}
+
+        # Generate XAI explanation
+        xai_explanation = XAIService.generate_explanation(
+            user_query=user_query,
+            generated_answer=generated,
+            retrieved_chunks=hits,
+            safety_report={
+                "flagged": flagged,
+                "missing_concepts": list(missing),
+                "extra_concepts": list(extra),
+                "confidence_score": computed_values.get("computed_confidence_score", 1.0) if not is_unanswerable else 1.0
+            } if not is_unanswerable else None,
+            retrieval_metadata=retrieval_metadata
+        )
 
         return {
             "assistant_message_id": assistant_msg.id,
@@ -309,4 +388,5 @@ class RAGService:
                 "extra_concepts": list(extra)[:10],
                 "flagged": flagged,
             },
+            "xai_explanation": xai_explanation
         }

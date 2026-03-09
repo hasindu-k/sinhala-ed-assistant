@@ -17,12 +17,24 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('message_safety_reports', sa.Column('computed_severity', sa.String(), nullable=True))
-    op.add_column('message_safety_reports', sa.Column('computed_confidence_score', sa.Numeric(), nullable=True))
-    op.add_column('message_safety_reports', sa.Column('computed_reliability', sa.String(), nullable=True))
+    op.add_column(
+        'message_safety_reports',
+        sa.Column('computed_severity', sa.String(), nullable=True),
+        if_not_exists=True,
+    )
+    op.add_column(
+        'message_safety_reports',
+        sa.Column('computed_confidence_score', sa.Numeric(), nullable=True),
+        if_not_exists=True,
+    )
+    op.add_column(
+        'message_safety_reports',
+        sa.Column('computed_reliability', sa.String(), nullable=True),
+        if_not_exists=True,
+    )
     
 
 def downgrade() -> None:
-    op.drop_column('message_safety_reports', 'computed_reliability')
-    op.drop_column('message_safety_reports', 'computed_confidence_score')
-    op.drop_column('message_safety_reports', 'computed_severity')
+    op.drop_column('message_safety_reports', 'computed_reliability', if_exists=True)
+    op.drop_column('message_safety_reports', 'computed_confidence_score', if_exists=True)
+    op.drop_column('message_safety_reports', 'computed_severity', if_exists=True)

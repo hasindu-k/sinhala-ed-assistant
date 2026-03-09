@@ -1,3 +1,4 @@
+#app/services/safety_summary_service.py
 from typing import Dict
 from app.services.message_safety_service import MessageSafetyService
 import logging
@@ -44,12 +45,16 @@ class SafetySummaryService:
         # -----------------------------
         # Sentence-level semantic check (BATCH)
         # -----------------------------
-        # Prepare pairs for batch processing
-        pairs = [(item.get("sentence", ""), item.get("evidence", "")) for item in flagged]
+        # # Prepare pairs for batch processing
+        # pairs = [(item.get("sentence", ""), item.get("evidence", "")) for item in flagged]
         
-        # Batch compute all similarities at once (MUCH faster)
-        similarities = SemanticSimilarityService.similarity_batch(pairs)
+        # # Batch compute all similarities at once (MUCH faster)
+        # similarities = SemanticSimilarityService.similarity_batch(pairs)
         
+        similarities = [
+            item.get("semantic_similarity_score", 0.0)
+            for item in flagged[:10]
+        ]
         severities = []
         for similarity in similarities:
             if similarity >= 0.80:
@@ -148,6 +153,7 @@ class SafetySummaryService:
                 severities.append("high")
         
         total = len(severities)
+        logger.info("Computing safety summary from %d flagged sentences", total)
         high_count = severities.count("high")
         medium_count = severities.count("medium")
         high_ratio = high_count / total if total > 0 else 0

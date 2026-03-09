@@ -214,3 +214,5 @@ app/models/whisper-sinhala-accent-model/
 uploads/
 
 logs/
+
+*.pt
