@@ -68,6 +68,21 @@ class ProcessingLogRepository:
         )
         return {row[0] for row in rows}
 
+    def get_message_ids_with_logs(self, message_ids: List[UUID]) -> Set[UUID]:
+        """Return the subset of message_ids that have at least one processing log."""
+        if not message_ids:
+            return set()
+        rows = (
+            self.db.query(ProcessingLog.message_id)
+            .filter(
+                ProcessingLog.message_id.in_(message_ids),
+                ProcessingLog.message_id.isnot(None),
+            )
+            .distinct()
+            .all()
+        )
+        return {row[0] for row in rows}
+
     def get_resource_message_ids(self, resource_ids: List[UUID]) -> Dict[UUID, UUID]:
         """Return a mapping of resource_id -> message_id for the first non-null message_id log per resource."""
         if not resource_ids:

@@ -77,7 +77,7 @@ class MessageResponse(BaseModel):
     resource_ids: list[UUID] = []
     parent_msg_id: Optional[UUID] = None
     safety_summary: Optional[MessageSafetySummary] = None
-    
+    has_processing_log: bool = False
 
     class Config:
         from_attributes = True

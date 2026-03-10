@@ -688,6 +688,8 @@ def get_message_history(
 
         # Build response including resource_ids and safety summary per message
         summary_service = SafetySummaryService(db)
+        log_repo = ProcessingLogRepository(db)
+        message_ids_with_logs = log_repo.get_message_ids_with_logs([m.id for m in messages])
         response_messages = []
         for message in messages:
             resource_ids = [att.resource_id for att in getattr(message, "attachments", [])]
@@ -719,6 +721,7 @@ def get_message_history(
                 "resource_ids": resource_ids,
                 "parent_msg_id": message.parent_msg_id,
                 "safety_summary": safety_summary,
+                "has_processing_log": message.id in message_ids_with_logs,
             })
         
         logger.debug(f"Retrieved {len(messages)} messages with attachments for session {session_id} by user {current_user.id}")
