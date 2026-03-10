@@ -1,3 +1,5 @@
+import subprocess
+
 import librosa
 import torch
 from typing import List, Dict
@@ -33,6 +35,17 @@ class VoiceService:
 
     @staticmethod
     def transcribe_audio(file_path: str):
+        wav_path = "converted.wav"
+
+        subprocess.run([
+        "ffmpeg",
+        "-y",
+        "-i", file_path,
+        "-ac", "1",
+        "-ar", "16000",
+        wav_path
+        ])
+        
         processor, model, device = WhisperLoader.load()
 
         # Enable mixed precision (FP16) for GPU
@@ -60,18 +73,18 @@ class VoiceService:
         normalized = normalize_sinhala(text)
 
         prompt = f"""
-            As an expert Sinhala linguist, transform the following transcribed text into Standard Literary Sinhala (ලිඛිත සිංහල).
+        You are a Sinhala transcription corrector. Your goal is to fix phonetic errors and dialectal variations while PRESERVING the original meaning.
 
-            Tasks:
-            1. Fix transcription errors: Correct phonetic misinterpretations (e.g., if 'මකේ' appears where 'මගේ' is intended).
-            2. Normalize Dialect: Convert Southern-specific idioms and pronunciations into standard forms.
-            3. Grammar: Ensure proper Sinhala sentence structure.
+        Constraints:
+        1. DO NOT change the subject or the topic of the sentence (e.g., if the user asks about an 'ඉබ්බා' (tortoise), do not change it to 'cooking').
+        2. Fix transcription stutters (e.g., if 'මකේ' is used instead of 'මගේ', correct it).
+        3. Convert Southern-accented verb endings to Standard Literary Sinhala (ලිඛිත සිංහල).
+        4. If the input is already correct, return it exactly as it is.
 
-            Input Text:
-            {normalized}
+        Input: {normalized}
 
-            Return ONLY the corrected Standard Sinhala text. Do not include explanations.
-            """
+        Return ONLY the corrected Sinhala text:
+        """
 
         gemini = GeminiClient()
         response = gemini.generate_content(prompt)
