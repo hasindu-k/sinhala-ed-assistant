@@ -536,6 +536,7 @@ class GradingService:
                 "evaluation_result_id": eval_result.id,
                 "awarded_marks": final_marks,
                 "feedback": feedback,
+                "student_answer": item.get("student_text") or item.get("student_answer")
             }
             if isinstance(target, SubQuestion):
                 q_score_params["sub_question_id"] = target.id

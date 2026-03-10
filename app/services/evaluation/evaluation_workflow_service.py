@@ -1,7 +1,7 @@
 # app/services/evaluation/evaluation_workflow_service.py
 
 import re
-from typing import Optional, List, Union, Tuple, Dict
+from typing import Optional, List, Union, Tuple, Dict, Any
 from uuid import UUID
 from sqlalchemy.orm import Session
 
@@ -63,6 +63,11 @@ class EvaluationWorkflowService:
         # FIX: Keep 'ඈ' as distinct from 'අ' if applicable, but standard stripping is fine
         clean = re.sub(r'[().]', '', str(label)).strip().lower()
         return clean
+
+    def _find_matching_question(self, key: str, q_map: Dict[str, Any]):
+        """Helper to find question/sub-question in map by key or normalized key."""
+        norm = key.lower().replace(" ", "").replace(".", "").replace("(", "").replace(")", "")
+        return q_map.get(key) or q_map.get(norm)
 
     def _resolve_session_id(self, session_id: UUID) -> UUID:
         """Resolves Evaluation Session ID to Chat Session ID if applicable."""
@@ -419,6 +424,20 @@ class EvaluationWorkflowService:
             yield ("processing_documents", f"Mapping answers to {len(questions)} questions...", 40)
             answer_mapping = map_student_answers(cleaned_answer_text, questions)
             self.answers.update_mapped_answers(answer_id, answer_mapping)
+
+            # PERSISTENCE: Save structured answers to student_answers table
+            for key, text in answer_mapping.items():
+                target = self._find_matching_question(key, question_map)
+                if target:
+                    try:
+                        self.answers.create_student_answer(
+                            answer_document_id=answer_id,
+                            answer_text=text,
+                            question_id=target.id if isinstance(target, Question) else None,
+                            sub_question_id=target.id if isinstance(target, SubQuestion) else None
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to save structured answer for {key}: {e}")
         
         # Grading
         yield ("evaluating_answers", "Starting grading process...", 50)
