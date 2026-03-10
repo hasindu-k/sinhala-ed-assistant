@@ -441,11 +441,14 @@ class GradingService:
         selection_map = {}
         for c in paper_configs:
             if c.selection_rules:
+                # Normalize key to lower_snake_case for mapping
                 norm_key = c.paper_part.lower().replace(" ", "_")
-                if norm_key.endswith("_ii") or norm_key == "paper_ii":
-                    norm_key = "paper_ii"
-                elif norm_key.endswith("_i") or norm_key == "paper_i":
-                    norm_key = "paper_i"
+                # Handle common Roman numeral suffixes generically
+                if re.search(r'(_iv|iv)$', norm_key): norm_key = "paper_iv"
+                elif re.search(r'(_iii|iii)$', norm_key): norm_key = "paper_iii"
+                elif re.search(r'(_ii|ii)$', norm_key): norm_key = "paper_ii"
+                elif re.search(r'(_i|i)$', norm_key): norm_key = "paper_i"
+                
                 selection_map[norm_key] = c.selection_rules
 
         all_objs = {id(v): v for v in question_map.values()}.values()
@@ -477,10 +480,10 @@ class GradingService:
 
             raw_part = self._resolve_part_name(target)
             part_name = raw_part.lower().replace(" ", "_")
-            if part_name.endswith("_ii") or part_name == "paper_ii":
-                part_name = "paper_ii"
-            elif part_name.endswith("_i") or part_name == "paper_i":
-                part_name = "paper_i"
+            if re.search(r'(_iv|iv)$', part_name): part_name = "paper_iv"
+            elif re.search(r'(_iii|iii)$', part_name): part_name = "paper_iii"
+            elif re.search(r'(_ii|ii)$', part_name): part_name = "paper_ii"
+            elif re.search(r'(_i|i)$', part_name): part_name = "paper_i"
 
             if item:
                 # -------------------------------------------------------
@@ -810,10 +813,11 @@ class GradingService:
             return 0.0
         else:
             # SHORT ANSWER thresholds (Paper I or dynamic marks)
-            # More generous for full marks (0.35 instead of 0.40)
-            if sim >= 0.35:   return 1.0
-            if sim >= 0.22:   return 0.50 + (sim - 0.22) * (0.50 / 0.13)   
-            if sim >= 0.10:   return 0.0  + (sim - 0.10) * (0.50 / 0.12)   
+            # KEY FIX: More generous for full marks (0.30 instead of 0.35) 
+            # as short MCQ answers have lower cosine sim variance.
+            if sim >= 0.30:   return 1.0
+            if sim >= 0.18:   return 0.50 + (sim - 0.18) * (0.50 / 0.12)   
+            if sim >= 0.08:   return 0.0  + (sim - 0.08) * (0.50 / 0.10)   
             return 0.0
 
 
@@ -1347,6 +1351,15 @@ Return ONLY a valid JSON object mirroring the keys provided.
 
         semantic = self._semantic_similarity(student_text, reference_text, student_emb, reference_emb, max_marks)
         
+        # KEY FIX: Exact Match Boost for Short Answers (MCQs)
+        # If student answer matches reference exactly (ignoring dots/spaces), give full marks.
+        if max_marks <= 2:
+            s_clean = str(student_text).strip().replace(".", "").replace(" ", "").lower()
+            r_clean = str(reference_text).strip().replace(".", "").replace(" ", "").lower()
+            if s_clean == r_clean and len(s_clean) > 0:
+                logger.info(f"[EXACT_MATCH_BOOST] Q{max_marks} marks. Match: {s_clean} == {r_clean}")
+                return 1.0
+
         # KEY FIX: If semantic score is 0, the answer is completely off-topic.
         # Ensure 'relevance' (keyword matching) doesn't award free points to wrong/irrelevant answers.
         if semantic <= 0.0:

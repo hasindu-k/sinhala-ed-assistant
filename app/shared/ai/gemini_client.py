@@ -39,24 +39,36 @@ def gemini_generate(
         return ""
 
     client = GeminiClient.get_client()
-    
     selected_model = model_name or MODEL_NAME
+    max_retries = 3
 
-    try:
-        response = client.models.generate_content(
-            model=selected_model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                safety_settings=SAFETY_SETTINGS,
-                response_mime_type="application/json" if json_mode else "text/plain"
-            ),
-        )
-        print(f"DEBUG: gemini_generate called (fixed version). JSON Mode: {json_mode}, Model: {selected_model}")
-        return response.text or ""
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=selected_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    safety_settings=SAFETY_SETTINGS,
+                    response_mime_type="application/json" if json_mode else "text/plain"
+                ),
+            )
+            print(f"DEBUG: gemini_generate called (fixed version). JSON Mode: {json_mode}, Model: {selected_model}")
+            return response.text or ""
 
-    except Exception as e:
-        print(f"❌ Error during Gemini generation (model: {selected_model}): {e}")
-        return ""
+        except Exception as e:
+            error_msg = str(e).lower()
+            is_rate_limit = "429" in error_msg or "resource_exhausted" in error_msg or "too many requests" in error_msg
+            
+            if is_rate_limit and attempt < max_retries - 1:
+                # Wait 2 seconds for primary model rate limiting, then retry
+                logger.warning(f"Rate limited on primary request (attempt {attempt + 1}), waiting 2s...")
+                time.sleep(2)
+                continue
+            
+            print(f"❌ Error during Gemini generation (model: {selected_model}): {e}")
+            return ""
+    
+    return ""
 
 def gemini_generate_lightweight(content: str, prompt_template: str = None) -> str:
     """

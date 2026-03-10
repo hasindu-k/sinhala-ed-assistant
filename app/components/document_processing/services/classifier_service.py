@@ -112,9 +112,10 @@ IMPORTANT MARKING RULES
 ========================
 PAPER & NUMBERING RULES
 ========================
-- Sri Lankan exam papers are divided into sections such as:
-  - Paper I (usually MCQs) - "I කොටස", "Part I", "භාගය I"
-  - Paper II (Structured / Essay questions) - "II කොටස", "Part II", "භාගය II"
+- Sri Lankan exam papers are divided into parts such as:
+  - Part I (usually MCQs) - "I කොටස", "Part I", "භාගය I"
+  - Part II (Structured questions) - "II කොටස", "Part II", "භාගය II"
+  - Part III (Essay questions) - "III කොටස", "Part III", "භාගය III"
 
 - EACH paper has its OWN numbering system.
   - Paper I numbering: 1, 2, 3, ... (typically 1-40 for MCQs)
@@ -184,25 +185,16 @@ OUTPUT FORMAT (STRICT JSON)
           "options": ["option 1", "option 2", "option 3", "option 4"],
           "correct_answer": "2",
           "marks": 1
-        }},
-        "2": {{{{ ... }}}}
+        }}
       }}
     }},
     "Paper_II": {{
       "type": "Structured",
-      "questions": {{
-        "1": {{
-          "type": "structured",
-          "text": "main question text",
-          "marks": 20,
-          "sub_questions": {{
-            "a": {{{{"text": "sub-question a", "marks": 5, "correct_answer": "Expected key facts..."}}}},
-            "b": {{{{"text": "sub-question b", "marks": 5, "correct_answer": "..."}}}},
-            "c": {{{{"text": "sub-question c", "marks": 10, "correct_answer": "..."}}}}
-          }}
-        }},
-        "2": {{{{ ... }}}}
-      }}
+      "questions": {{ ... }}
+    }},
+    "Paper_III": {{
+      "type": "Structured",
+      "questions": {{ ... }}
     }}
   }}
 }}
@@ -248,20 +240,19 @@ def separate_paper_content(text: str):
         
         logger.info("Sinhala structure extraction completed successfully.")
 
-        paper_structure = result.get("PaperStructure", {
-            "Paper_I": {},
-            "Paper_II": {}
-        })
+        paper_structure = result.get("PaperStructure", {})
+        if not paper_structure:
+            # Fallback for older model styles or flat results
+            paper_structure = {k: v for k, v in result.items() if k.startswith("Paper_")}
 
         # 🔒 Defensive normalization
-        for paper_key in ["Paper_I", "Paper_II"]:
-            paper = paper_structure.get(paper_key)
-            if paper and "questions" not in paper:
+        # Ensure 'questions' key exists for all identified papers
+        for paper_key, paper in paper_structure.items():
+            if isinstance(paper, dict) and "questions" not in paper:
                 paper["questions"] = {}
 
         logger.debug("Extracted Paper Structure: %s", paper_structure)
         
-        # Only returning paper_structure now
         return paper_structure
 
     except json.JSONDecodeError:
@@ -350,8 +341,8 @@ You are receiving text from a system OCR or digital extraction which may have ju
 ========================
 OUTPUT FORMAT (STRICT JSON)
 ========================
-Return a single JSON object with keys "Paper_I" and "Paper_II". 
-If a paper is missing, set it to null.
+Return a single JSON object where keys are "Paper_I", "Paper_II", "Paper_III", etc. 
+Only include keys for papers actually found in the text.
 
 {{
   "Paper_I": {{
@@ -372,25 +363,13 @@ If a paper is missing, set it to null.
       "2": {{ "..." }}
     }}
   }},
-  "Paper_II": {{
+  "Paper_III": {{
     "config": {{
-      "subject_detected": "History",
-      "medium": "Sinhala",
-      "total_marks": 60,
-      "total_questions_available": 5,
-      "suggested_weightage": 60,
-      "selection_rules": {{"mode": "any", "count": 3}}
+      "total_marks": 20,
+      "selection_rules": {{"mode": "any", "count": 1}}
     }},
     "questions": {{
-      "1": {{
-        "type": "structured",
-        "text": "Main question text",
-        "marks": 20,
-        "sub_questions": {{
-          "a": {{"text": "Sub Q text", "marks": 5, "correct_answer": "fact 1, fact 2"}},
-          "b": {{"text": "Sub Q text", "marks": 5, "correct_answer": "..."}}
-        }}
-      }}
+      "1": {{ "type": "structured", "text": "Essay prompt...", "marks": 20 }}
     }}
   }}
 }}
@@ -417,17 +396,13 @@ def extract_complete_exam_data(text: str):
         )
 
         result = _safe_json_loads(response_text)
-        if not result:
+        if not result or not isinstance(result, dict):
             return {}
             
         logger.info("Combined exam extraction completed successfully.")
         
-        # 🔒 Defensive Normalization
-        # Ensure top-level keys exist even if model returns partially empty JSON
-        cleaned_result = {
-            "Paper_I": result.get("Paper_I"), 
-            "Paper_II": result.get("Paper_II")
-        }
+        # 🔒 Generic Normalization: Accept any "Paper_*" keys
+        cleaned_result = {k: v for k, v in result.items() if k.startswith("Paper_") and v is not None}
         
         # Log basics for debugging
         if cleaned_result["Paper_I"]:
@@ -454,45 +429,46 @@ CRITICAL RULES — READ CAREFULLY
 ========================
 1. **QUESTION NUMBER FIRST**: The ONLY way to assign an answer to a question is if the student wrote that question's number BEFORE the answer text (e.g., "1(a)", "2.a", "3", "(b)", etc.). Look for these number markers in the student's handwriting/OCR.
 
-2. **DO NOT USE TOPIC/MEANING**: NEVER assign an answer based on what the question asks about or what topic the answer covers. If a student wrote about "European colonization" under marker "4(a)", that text belongs to 4(a) ONLY — even if question 7(a) also asks about European colonization.
+2. **PAPER ISOLATION**: Sri Lankan papers have distinct parts (Part I, II, III, etc.).
+   - Numbering often starts again from 1 or repeats in each part.
+   - **CONTEXT HINT**: Look for headers like "භාගය I", "Part II", "III කොටස" in the student text.
+   - **IMPORTANT**: If the student text is currently in a section titled "Part III", do NOT map a question "1" found there to a "Part I" question ID.
 
-3. **ONE ANSWER PER SECTION**: Each physical section of the student's paper (identified by a question number marker) maps to EXACTLY ONE question. The same text CANNOT appear under multiple question IDs.
+3. **DO NOT USE TOPIC/MEANING**: NEVER assign an answer based on what the question asks about or what topic the answer covers.
 
-4. **NULL if no marker found**: If you cannot find a question number marker that clearly matches a given question ID, return `null` for that ID. DO NOT guess or infer based on topic.
+4. **ONE ANSWER PER SECTION**: Each physical section of the student's paper maps to EXACTLY ONE question.
 
-5. **DO NOT ANSWER**: Never generate or fabricate any answer text. Only extract what the student actually wrote.
+5. **NULL if no marker found**: If you cannot find a question number marker that clearly matches a given question ID, return `null` for that ID.
 
-6. **OCR CLEANING ONLY**: Fix obvious Sinhala OCR errors (broken conjunct letters, misplaced diacritics, unnecessary spaces inside words). Do NOT correct the student's actual content.
+6. **OCR CLEANING ONLY**: Fix obvious Sinhala OCR errors. Do NOT correct the student's actual content.
 
 ========================
 HOW TO FIND QUESTION MARKERS
 ========================
-Sri Lankan students write one of these before each answer:
-- Main question: "1.", "2.", "3.", "4." etc.
-- Sub-question: "1(a)", "1.(a)", "1a", "(a)", "a)", "1.a" etc.
-- Sinhala labels: the student may write the number in Sinhala or Roman numerals.
+Look for these common student styles:
+- Paper I: "1.", "2.", "3.", "1-", "2-", "(1)", "(2)", "1 ", "2 "
+- Paper II: "1(a)", "1.a", "1 a", "1. (අ)", "(අ)", "ආ)", "1.අ"
+- Sinhala labels: "1.", "2.", "3." (using Sinhala numerals if applicable, but usually standard digits)
 
 Steps:
-1. First scan the entire student text for question number markers.
-2. Build a list: which markers appear, and what text follows each marker (until the next marker). For Paper I / MCQ sections, expect very short answers (e.g., "1. 3", "2. Apple", "3. x"). You MUST capture these short answers.
-3. Then assign: match each question label in the structure to a marker you found. Be careful not to confuse Paper I question "1" with Paper II question "1(a)".
-4. If no marker found for a question → return `null`.
+1. Scan the student text for Part/Section headers (I, II, III, etc.) to establish context.
+2. For each question in the structure, find the corresponding marker in the correct context.
+3. If multiple instances of "1" exist, use the "Part" context (e.g., text following a "Part II" header) to decide.
+4. Short answers (MCQs) are often just a single word or number (e.g., "1. 3"). Capture these!
 
 ========================
 INPUTS
 ========================
-QUESTION STRUCTURE (JSON): Question IDs, labels, and the question text (for your reference only — not for answer matching).
+QUESTION STRUCTURE (JSON): Question IDs, labels, and the question text.
 STUDENT ANSWER TEXT (OCR): Raw OCR text from the student's answer script.
 
 ========================
 OUTPUT FORMAT (STRICT JSON)
 ========================
 Return a raw JSON object: {{"id": "cleaned student text", ...}}
-CRITICAL: The keys in your JSON MUST BE the exact `id` string (the UUID) from the QUESTION STRUCTURE, NOT the `label` or question number!
-ONLY include keys for questions that the student actually ATTEMPTED. If a student left a question blank, omit its ID from the JSON.
-CRITICAL AVOID MAPPING QUESTION TEXT: The OCR text might contain the *text of the original questions* because they are printed on the paper. If a section of text under a question marker ONLY contains the phrasing of the question itself, and there is no visible student answer provided beneath it, DO NOT MAP that question. Omit it completely. The answer must be the student's own words/response, not just a restatement of the question prompt!
-This prevents false mappings and saves output tokens.
-CRITICAL: When mapping "Paper_I", look for simple numbers ("1.", "2."). When mapping "Paper_II", usually there are sub-questions ("1(a)", "2(b)"). Ensure you don't map Paper II answers to Paper I questions just because they share the main number "1".
+CRITICAL: The keys MUST BE the exact `id` string (UUID) from the structure.
+ONLY include keys for questions that the student actually ATTEMPTED.
+CRITICAL AVOID MAPPING QUESTION TEXT: If a section only contains the phrasing of the question itself, do NOT map it.
 
 ========================
 QUESTION STRUCTURE
