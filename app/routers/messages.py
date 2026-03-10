@@ -33,7 +33,9 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
 from app.shared.models.message import Message
-from typing import List
+from app.routers.websockets import manager
+import asyncio
+from typing import List, Optional, Dict, Any
 from app.services.safety_summary_service import SafetySummaryService
 from fastapi import status
 from app.schemas.safety_summary import SafetySummaryResponse
@@ -419,7 +421,7 @@ def detach_files_from_message(
 
 
 @router.post("/{message_id}/attachments/process", response_model=List[ResourceProcessResponse])
-def process_message_attachments(
+async def process_message_attachments(
     message_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -460,8 +462,61 @@ def process_message_attachments(
 
         resource_service = ResourceService(db)
         results = []
-        for resource_id in resource_ids:
-            result = resource_service.process_resource(resource_id, current_user.id)
+        loop = asyncio.get_running_loop()
+
+        total_resources = len(resource_ids)
+
+        progress_log = []
+
+        for idx, resource_id in enumerate(resource_ids):
+            # Capture current_res_id for the callback closure
+            current_res_id = resource_id
+            current_index = idx + 1
+
+            def progress_callback(stage: str, progress: float, details: Optional[Dict[str, Any]] = None):
+                
+                event = {
+                        "stage": stage,
+                        "progress": progress,
+                        "details": details
+                    }
+                progress_log.append(event)
+
+                logger.info(
+                    "Progress update | user=%s resource=%s stage=%s progress=%s",
+                    current_user.id,
+                    current_res_id,
+                    stage,
+                    progress
+                )
+                
+                asyncio.run_coroutine_threadsafe(
+                    manager.send_personal_message(
+                        {
+                            "type": "processing_progress",
+                            "resource_id": str(current_res_id),
+                            "message_id": str(message_id),
+                            "stage": stage,
+                            "progress": round(progress, 1),
+                            "document_index": current_index,
+                            "total_documents": total_resources,
+                            "details": details
+                        },
+                        str(current_user.id)
+                    ),
+                    loop
+                )
+
+            # Run synchronous processing in a thread pool to allow async WebSocket messages
+            result = await asyncio.to_thread(
+                resource_service.process_resource,
+                resource_id=resource_id,
+                user_id=current_user.id,
+                progress_callback=progress_callback
+            )
+
+            result["processing_steps"] = progress_log.copy()
+
             results.append(result)
 
         logger.info(

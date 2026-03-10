@@ -1,7 +1,7 @@
 # app/schemas/resource.py
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Any, Dict, Optional
 from uuid import UUID
 from datetime import datetime
 from enum import Enum
@@ -57,12 +57,17 @@ class ResourceBulkUploadResponse(BaseModel):
 class ResourceProcessRequest(BaseModel):
     resource_id: UUID
 
+class ProcessingStep(BaseModel):
+    stage: str
+    progress: float
+    details: Optional[Dict[str, Any]] = None
 
 class ResourceProcessResponse(BaseModel):
     resource_id: UUID
     status: str
     chunks_created: Optional[int] = None
     message: Optional[str] = None
+    processing_steps: Optional[List[ProcessingStep]] = None
 
 
 class ResourceBatchProcessRequest(BaseModel):

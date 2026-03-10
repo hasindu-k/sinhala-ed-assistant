@@ -2,7 +2,7 @@
 
 import os
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable
 from pathlib import Path
 from sqlalchemy.orm import Session
 import cv2
@@ -31,7 +31,12 @@ class ResourceProcessorService:
         if file_ext not in ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.webp']:
             raise ValueError(f"Unsupported file type: {file_ext}")
 
-    def _extract_text(self, file_path: str, resource_type: Optional[str] = None) -> tuple[str, int, str]:
+    def _extract_text(
+        self,
+        file_path: str,
+        resource_type: Optional[str] = None,
+        progress_callback: Optional[Callable[[str, float, Optional[Dict[str, Any]]], None]] = None
+    ) -> tuple[str, int, str]:
         """
         Extract text from PDF or image file.
 
@@ -53,8 +58,14 @@ class ResourceProcessorService:
         file_ext = Path(file_path).suffix.lower()
 
         try:
+
+            # Stage 1
+            if progress_callback:
+                progress_callback("Preparing Document", 20.0, None)
+
             if file_ext == ".pdf":
-                return self._process_pdf(
+
+                result = self._process_pdf(
                     file_path,
                     convert_file_to_images,
                     extract_text_from_pdf,
@@ -63,22 +74,38 @@ class ResourceProcessorService:
                     detect_language_from_text,
                     basic_clean,
                     resource_type=resource_type,
+                    progress_callback=progress_callback
                 )
 
-            return self._process_image(
-                file_path,
-                convert_file_to_images,
-                process_ocr_for_images_with_tables,
-                classify_text_type,
-                detect_language_from_text,
-                basic_clean,
-                resource_type=resource_type,
-            )
+                return result
+
+            else:
+
+                # Stage 2
+                if progress_callback:
+                    progress_callback("Processing Image", 30.0, None)
+
+                result = self._process_image(
+                    file_path,
+                    convert_file_to_images,
+                    process_ocr_for_images_with_tables,
+                    classify_text_type,
+                    detect_language_from_text,
+                    basic_clean,
+                    resource_type=resource_type,
+                    progress_callback=progress_callback
+                )
+
+                # Stage 3
+                if progress_callback:
+                    progress_callback("Image Text Extraction Completed", 45.0, None)
+
+                return result
 
         except Exception as e:
             logger.error(f"Failed to extract text from {file_path}: {e}")
-            raise ValueError(f"Text extraction failed: {e}")
-        
+            raise ValueError(f"Text extraction failed: {e}")   
+     
     def _process_pdf(
         self,
         file_path,
@@ -88,33 +115,86 @@ class ResourceProcessorService:
         classify_text_type,
         detect_language_from_text,
         basic_clean,
-        resource_type: Optional[str] = None
+        resource_type: Optional[str] = None,
+        progress_callback: Optional[Callable[[str, float, Optional[Dict[str, Any]]], None]] = None
     ):
-        lang_hint = self._sniff_pdf_language(file_path, detect_language_from_text)
 
-        # Try direct extraction for English PDFs first
+        # Stage: Detect language from PDF metadata
+        if progress_callback:
+            progress_callback("Analyzing Document Language", 22.0, None)
+
+        lang_hint = self._sniff_pdf_language(file_path, detect_language_from_text)
+            
+        # Try direct extraction for English PDFs
         if lang_hint == "english":
-            text, pages = self._try_direct_pdf_extraction(file_path, extract_text_from_pdf, basic_clean)
+
+            if progress_callback:
+                progress_callback("Language Detected", 25.0, {"language": lang_hint})
+                progress_callback("Extracting Text", 30.0, None)
+
+            text, pages = self._try_direct_pdf_extraction(
+                file_path,
+                extract_text_from_pdf,
+                basic_clean
+            )
+
             if text:
+                if progress_callback:
+                    progress_callback("Cleaning Extracted Text", 45.0, None)
+
                 return text, pages, "english"
 
         # OCR fallback
+        if progress_callback:
+            progress_callback("Converting PDF to Images", 30.0, None)
+
         images = convert_file_to_images(file_path, "pdf")
 
+        # Text classification
         if images:
-            self._classify_first_image(images[0], classify_text_type)
+            if progress_callback:
+                progress_callback("Classifying Text Type", 35.0, None)
 
+            detected_text_type = self._classify_first_image(images[0], classify_text_type)
+
+            if progress_callback:
+                progress_callback("Text Type Detected", 37.0, {"text_type": detected_text_type})
+
+        # Layout analysis decision
         if resource_type:
             force_layout = self.is_need_to_analyze_layout(resource_type)
         else:
             force_layout = True
 
-        extracted_text, page_count = process_ocr_for_images_with_tables(images, force_layout_analysis=force_layout)
+        if progress_callback:
+            progress_callback("Running OCR Extraction", 40.0, None)
+
+        extracted_text, page_count = process_ocr_for_images_with_tables(
+            images,
+            force_layout_analysis=force_layout,
+            progress_callback=progress_callback
+        )
+
+        if progress_callback:
+            progress_callback("Cleaning Extracted Text", 55.0, None)
+
         cleaned_text = basic_clean(extracted_text)
 
+        if progress_callback:
+            progress_callback("Detecting Language from Text", 58.0, None)
+
         inferred_lang = detect_language_from_text(cleaned_text)
+
         final_lang = lang_hint if lang_hint != "unknown" else inferred_lang
-        logger.info(f"Final detected language for PDF: {final_lang} (inferred from text: {inferred_lang})")
+
+        if progress_callback:
+            progress_callback("Language Detection Completed", 60.0, {"detected_language": final_lang})
+
+        logger.info(
+            f"Final detected language for PDF: {final_lang} "
+            f"(inferred from text: {inferred_lang})"
+        )
+
         return cleaned_text, page_count, final_lang
 
     def _process_image(
@@ -125,10 +205,14 @@ class ResourceProcessorService:
         classify_text_type,
         detect_language_from_text,
         basic_clean,
-        resource_type: Optional[str] = None
+        resource_type: Optional[str] = None,
+        progress_callback: Optional[Callable[[str, float, Optional[Dict[str, Any]]], None]] = None
     ):
         text_type = classify_text_type(file_path)
         logger.info(f"Detected text type for image: {text_type}")
+
+        if progress_callback:
+                progress_callback("Text Type Detected", 37.0, {"text_type": text_type})
 
         images = convert_file_to_images(file_path, file_path.split('.')[-1])
 
@@ -137,10 +221,21 @@ class ResourceProcessorService:
         else:
             force_layout = True
 
-        extracted_text, page_count = process_ocr_for_images_with_tables(images, force_layout_analysis=force_layout)
+        if progress_callback:
+            progress_callback("Layout Analysis", 35.0, None)
+            progress_callback("Running OCR Extraction", 40.0, None)
+
+        extracted_text, page_count = process_ocr_for_images_with_tables(images, force_layout_analysis=force_layout, progress_callback=progress_callback)
 
         cleaned_text = basic_clean(extracted_text)
+        
+        if progress_callback:
+             progress_callback("Text Cleaning", 100.0, None)
+
         lang = detect_language_from_text(cleaned_text)
+
+        if progress_callback:
+             progress_callback("Language Detection", 100.0, None)
 
         return cleaned_text, page_count, lang
 
@@ -303,9 +398,10 @@ class ResourceProcessorService:
             return None
     
     def process_resource(
-        self, 
-        resource: ResourceFile, 
-        resource_type: Optional[str] = None
+        self,
+        resource: ResourceFile,
+        resource_type: Optional[str] = None,
+        progress_callback: Optional[Callable[[str, float, Optional[Dict[str, Any]]], None]] = None
     ) -> Dict[str, Any]:
         """
         Process a stored resource: extract text, chunk, embed, and save.
@@ -313,6 +409,7 @@ class ResourceProcessorService:
         Args:
             resource: ResourceFile instance with storage_path
             doc_type: Optional document type (for metadata only)
+            progress_callback: Optional callback for progress updates (stage, percentage, details)
             
         Returns:
             Processing results including extracted text and chunk count
@@ -320,15 +417,34 @@ class ResourceProcessorService:
         Raises:
             ValueError: If resource file is missing or processing fails
         """
+        # Stage 1
+        if progress_callback:
+            progress_callback("Starting Processing", 5.0, None)
+
         # Check if already processed
         if resource.extracted_text:
-            # Check if chunks exist
+
+            if progress_callback:
+                progress_callback("Checking Existing Data", 10.0, None)
+
             chunk_count = self.db.query(ResourceChunk).filter(
                 ResourceChunk.resource_id == resource.id
             ).count()
 
             if chunk_count > 0:
-                logger.info("Resource %s already processed with %d chunks", resource.id, chunk_count)
+                logger.info(
+                    "Resource %s already processed with %d chunks",
+                    resource.id,
+                    chunk_count
+                )
+
+                if progress_callback:
+                    progress_callback(
+                        "Already Processed",
+                        100.0,
+                        {"chunks": chunk_count}
+                    )
+
                 return {
                     "resource_id": str(resource.id),
                     "status": "already_processed",
@@ -337,40 +453,108 @@ class ResourceProcessorService:
                     "message": "Resource already processed, skipping"
                 }
             else:
-                logger.info("Resource %s has extracted text but no chunks, reprocessing", resource.id)
-        
-        # Validate resource
+                logger.info(
+                    "Resource %s has extracted text but no chunks, reprocessing",
+                    resource.id
+                )
+
+        # Stage 2
+        if progress_callback:
+            progress_callback("Validating Document", 15.0, None)
+
         self._validate_resource_file(resource)
-        
-        logger.info("Starting processing for resource %s: %s", resource.id, resource.original_filename)
-        
-        # Extract text via OCR
-        extracted_text, page_count, detected_language = self._extract_text(resource.storage_path, resource_type=resource_type)
+
+        logger.info(
+            "Starting processing for resource %s: %s",
+            resource.id,
+            resource.original_filename
+        )
+
+        # Extract text (OCR stage handled inside)
+        extracted_text, page_count, detected_language = self._extract_text(
+            resource.storage_path,
+            resource_type=resource_type,
+            progress_callback=progress_callback
+        )
 
         if not extracted_text.strip():
             raise ValueError("No text could be extracted from the document")
-        
-        logger.info("Extracted %d characters from %d pages", len(extracted_text), page_count)
+
+        logger.info(
+            "Extracted %d characters from %d pages",
+            len(extracted_text),
+            page_count
+        )
+
+        # Stage after OCR
+        if progress_callback:
+            progress_callback(
+                "OCR Completed",
+                60.0,
+                {"pages": page_count}
+            )
 
         try:
+
             # Save extracted text & language
             resource.extracted_text = extracted_text
             resource.language = detected_language
 
-            # Document embedding
+            # Stage: embedding
+            if progress_callback:
+                progress_callback(
+                    "Generating Document Embedding",
+                    70.0,
+                    None
+                )
+
             if resource.document_embedding is None:
-                logger.info("Generating document embedding for resource %s", resource.id)
+
+                logger.info(
+                    "Generating document embedding for resource %s",
+                    resource.id
+                )
 
                 from app.shared.ai.embeddings import EMBED_MODEL
-                document_embedding = self._create_document_embedding(extracted_text, str(resource.id))
+
+                document_embedding = self._create_document_embedding(
+                    extracted_text,
+                    str(resource.id)
+                )
+
                 if document_embedding:
                     resource.document_embedding = document_embedding
                     resource.embedding_model = EMBED_MODEL
 
-            # Create chunks
+            # Stage: chunking
+            if progress_callback:
+                progress_callback(
+                    "Creating Text Chunks",
+                    80.0,
+                    None
+                )
+
             chunks = self._create_chunks(extracted_text, str(resource.id))
+
+            # Stage: saving
+            if progress_callback:
+                progress_callback(
+                    "Saving Chunks",
+                    90.0,
+                    {"chunks": len(chunks)}
+                )
+
             self._save_chunks_to_db(chunks, resource.id)
+
             self.db.commit()
+
+            # Stage: completed
+            if progress_callback:
+                progress_callback(
+                    "Processing Completed",
+                    100.0,
+                    None
+                )
 
         except Exception:
             self.db.rollback()
