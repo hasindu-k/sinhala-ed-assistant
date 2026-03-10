@@ -27,8 +27,8 @@ class MessageService:
         if modality == "text" and not content:
             raise ValueError("Text messages must have content")
         
-        if modality == "voice" and not audio_url:
-            raise ValueError("Voice messages must have audio_url")
+        # if modality == "voice" and not audio_url:
+        #     raise ValueError("Voice messages must have audio_url")
 
     def create_user_message_with_validation(
         self,

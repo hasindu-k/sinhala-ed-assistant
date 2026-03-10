@@ -67,24 +67,21 @@ async def transcribe(audio: UploadFile = File(...)):
         "standard": standard,
     }
 
-@router.post("/evaluate-wer")
-async def evaluate_wer(
+@router.post("/evaluate-asr")
+async def evaluate_asr(
     audio: UploadFile = File(...),
     reference_text: str = Form(...)
 ):
     temp_path = "temp.wav"
+
     with open(temp_path, "wb") as f:
         f.write(await audio.read())
 
-    predicted = VoiceService.transcribe_audio(temp_path)
+    result = VoiceService.evaluate_audio(temp_path, reference_text)
 
-    error_rate = wer(reference_text, predicted)
+    os.remove(temp_path)
 
-    return {
-        "prediction": predicted,
-        "reference": reference_text,
-        "wer": round(error_rate, 4)
-    }
+    return result
 # The heavier pipeline helpers live in `VoiceQAService` (in whisper_service.py).
 
 
@@ -96,6 +93,11 @@ async def qa_from_voice(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    
+    logger.info("Entered qa_from_voice function")  # This will confirm if the function is being hit.
+    
+    logger.info(f"Received session_id: {session_id}, resource_ids: {resource_ids}, user_id: {current_user.id}")
+    
     chat_session_service = ChatSessionService(db)
     message_service = MessageService(db)
 
@@ -165,6 +167,8 @@ async def qa_from_voice(
             resource_id=rid,
         )
 
+    logger.info(f"Message ID: {user_message.id}")
+    logger.info(f"Session ID: {parsed_session_id}")
     # ----------------------------------------------------
     # 7️⃣ RESOLVE ALLOWED RESOURCES
     # ----------------------------------------------------
@@ -173,6 +177,8 @@ async def qa_from_voice(
         session_id=parsed_session_id,
         message_id=user_message.id,
     )
+    
+    print(f"Allowed Resource IDs: {allowed_resource_ids}")
 
     # ----------------------------------------------------
     # 8️⃣ GENERATE ANSWER (DELEGATE TO TEXT RAG)
