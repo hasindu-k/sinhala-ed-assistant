@@ -35,3 +35,29 @@ class ChatSession(Base):
         backref="session",
         cascade="all, delete-orphan"
     )
+
+    @property
+    def question_paper(self):
+        if self.mode != "evaluation":
+            return None
+        for res in self.resources:
+            if res.label == "question_paper":
+                return {
+                    "id": res.resource_id, 
+                    "resource_id": res.resource_id,
+                    "filename": res.resource.original_filename if res.resource else None
+                }
+        return None
+
+    @property
+    def syllabus(self):
+        if self.mode != "evaluation":
+            return None
+        for res in self.resources:
+            if res.label == "syllabus":
+                return {
+                    "id": res.resource_id, 
+                    "resource_id": res.resource_id,
+                    "filename": res.resource.original_filename if res.resource else None
+                }
+        return None

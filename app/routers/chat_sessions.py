@@ -371,6 +371,12 @@ def detach_resource_from_session(
                 detail=f"No '{role}' resource is attached to session '{session_id}'"
             )
 
+        # Also clear from Global Context for EVALUATION sessions
+        if session.mode == "evaluation":
+            from app.services.evaluation.user_context_service import UserContextService
+            context_svc = UserContextService(db)
+            context_svc.clear_context_resource(current_user.id, role)
+
         logger.info(f"All '{role}' resources detached from session {session_id} by user {current_user.id}")
 
     except HTTPException:

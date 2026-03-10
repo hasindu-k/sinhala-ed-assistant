@@ -38,6 +38,7 @@ class ResourceFileResponse(BaseModel):
     source_type: Optional[ResourceSource] = None
     language: Optional[str] = None
     created_at: datetime
+    resource_type: Optional[str] = None
 
     class Config:
         from_attributes = True

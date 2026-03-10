@@ -1,16 +1,18 @@
-#app/services/safety_summary_service.py
-from typing import Dict
-from app.services.message_safety_service import MessageSafetyService
+# app/services/safety_summary_service.py
+from typing import Dict, List, Optional
 import logging
-logger = logging.getLogger(__name__)
+from app.services.message_safety_service import MessageSafetyService
 from app.services.semantic_similarity_service import SemanticSimilarityService
+
+logger = logging.getLogger(__name__)
 
 
 class SafetySummaryService:
     def __init__(self, db):
         self.safety_service = MessageSafetyService(db)
 
-    def build_summary(self, message_id) -> Dict:
+    def build_summary(self, message_id) -> Optional[Dict]:
+        """Build safety summary for a message."""
         report = self.safety_service.get_safety_report(message_id)
 
         if not report:
@@ -27,9 +29,10 @@ class SafetySummaryService:
                 "message": self._summary_message(report.computed_severity, report.computed_confidence_score),
                 "has_details": report.computed_severity != "low",
                 "flags": {"flagged_sentences": len(report.flagged_sentences or [])},
+                "xai_explanation": getattr(report, 'xai_explanation', None)
             }
 
-        # Fallback: compute on demand if not cached (backward compatibility)
+        # Fallback: compute on demand if not cached
         flagged = report.flagged_sentences or []
 
         if not flagged:
@@ -40,21 +43,15 @@ class SafetySummaryService:
                 "message": "This answer is well supported by the provided content.",
                 "has_details": False,
                 "flags": {"flagged_sentences": 0},
+                "xai_explanation": getattr(report, 'xai_explanation', None)
             }
 
-        # -----------------------------
-        # Sentence-level semantic check (BATCH)
-        # -----------------------------
-        # # Prepare pairs for batch processing
-        # pairs = [(item.get("sentence", ""), item.get("evidence", "")) for item in flagged]
+        # Prepare pairs for similarity check
+        pairs = [(item.get("sentence", ""), item.get("evidence", "")) for item in flagged[:10]]
         
-        # # Batch compute all similarities at once (MUCH faster)
-        # similarities = SemanticSimilarityService.similarity_batch(pairs)
+        # Batch compute all similarities at once
+        similarities = SemanticSimilarityService.similarity_batch(pairs)
         
-        similarities = [
-            item.get("semantic_similarity_score", 0.0)
-            for item in flagged[:10]
-        ]
         severities = []
         for similarity in similarities:
             if similarity >= 0.80:
@@ -68,12 +65,10 @@ class SafetySummaryService:
         high_count = severities.count("high")
         medium_count = severities.count("medium")
 
-        high_ratio = high_count / total
-        medium_plus_ratio = (high_count + medium_count) / total
+        high_ratio = high_count / total if total > 0 else 0
+        medium_plus_ratio = (high_count + medium_count) / total if total > 0 else 0
 
-        # -----------------------------
         # Overall severity (PROPORTIONAL)
-        # -----------------------------
         if high_ratio >= 0.30:
             overall_severity = "high"
         elif medium_plus_ratio >= 0.40:
@@ -81,15 +76,11 @@ class SafetySummaryService:
         else:
             overall_severity = "low"
 
-        # -----------------------------
         # Confidence score (semantic)
-        # -----------------------------
-        avg_similarity = sum(similarities) / total
+        avg_similarity = sum(similarities) / total if total > 0 else 1.0
         confidence_score = round(avg_similarity, 2)
 
-        # -----------------------------
         # Reliability (aligned)
-        # -----------------------------
         if confidence_score >= 0.85:
             reliability = "fully_supported"
         elif confidence_score >= 0.65:
@@ -97,12 +88,8 @@ class SafetySummaryService:
         else:
             reliability = "likely_unsupported"
 
-        # -----------------------------
         # User-facing message
-        # -----------------------------
-        message = self._summary_message(
-            overall_severity, confidence_score
-        )
+        message = self._summary_message(overall_severity, confidence_score)
 
         return {
             "overall_severity": overall_severity,
@@ -113,9 +100,11 @@ class SafetySummaryService:
             "flags": {
                 "flagged_sentences": total,
             },
+            "xai_explanation": getattr(report, 'xai_explanation', None)
         }
 
     def _summary_message(self, severity: str, confidence: float) -> str:
+        """Generate user-friendly summary message."""
         if severity == "high":
             return (
                 "Some parts of this answer are not clearly supported "
@@ -129,8 +118,10 @@ class SafetySummaryService:
         return "This answer is well supported by the provided content."
 
     @staticmethod
-    def compute_from_flagged(flagged: list, is_unanswerable: bool = False) -> dict:
+    def compute_from_flagged(flagged: List[Dict], is_unanswerable: bool = False) -> Dict:
         """Compute summary values from flagged sentences (for caching at creation time)"""
+        logger.info(f"flagged sentences count: {len(flagged)}, is_unanswerable: {is_unanswerable}")
+        
         if is_unanswerable or not flagged:
             # Clean response or unanswerable
             return {
