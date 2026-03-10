@@ -27,8 +27,8 @@ class MessageService:
         if modality == "text" and not content:
             raise ValueError("Text messages must have content")
         
-        if modality == "voice" and not audio_url:
-            raise ValueError("Voice messages must have audio_url")
+        # if modality == "voice" and not audio_url:
+        #     raise ValueError("Voice messages must have audio_url")
 
     def create_user_message_with_validation(
         self,
@@ -288,7 +288,7 @@ class MessageService:
             grade_level=message.grade_level,
         )
 
-        logger.info("RAG response generated for message %s: %s", message_id, result.get("xai_explanation"))
+        logger.info("RAG response generated for message %s", message_id)
         
         # Get the created assistant message
         assistant_message = self.db.query(Message).filter(

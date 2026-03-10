@@ -47,6 +47,9 @@ class IntentDetectionService:
 
         if any(w in q for w in cls.QA_ANSWER_RULES) or q.endswith("?"):
             return "qa_answer"
+        
+        if any(w in q for w in cls.GREETING_RULES):
+            return "greeting"
 
         if any(w in q for w in cls.GREETING_RULES):
             return "greeting"

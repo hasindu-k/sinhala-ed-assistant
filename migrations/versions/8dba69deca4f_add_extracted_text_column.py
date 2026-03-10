@@ -20,8 +20,9 @@ def upgrade() -> None:
     op.add_column(
         "resource_files",
         sa.Column("extracted_text", sa.Text(), nullable=True),
+        if_not_exists=True,
     )
 
 
 def downgrade() -> None:
-    op.drop_column("resource_files", "extracted_text")
+    op.drop_column("resource_files", "extracted_text", if_exists=True)

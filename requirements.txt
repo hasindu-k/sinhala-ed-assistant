@@ -17,7 +17,7 @@ passlib[bcrypt]
 python-jose[cryptography]
 
 # Migrations
-alembic==1.13.3
+alembic>=1.16.0
 
 dotenv
 pydantic_settings
@@ -26,3 +26,5 @@ librosa
 jiwer
 google-genai
 python-multipart
+
+ultralytics

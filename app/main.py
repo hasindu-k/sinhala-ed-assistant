@@ -6,7 +6,6 @@ setup_logging()
 
 import logging
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from app.core.whisper_loader import WhisperLoader
@@ -21,22 +20,10 @@ app = FastAPI(
     swagger_ui_parameters={"persistAuthorization": True},
 )
 
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=[
-#         "http://localhost:52131",
-#         "http://localhost:3000",
-#         "http://127.0.0.1:3000",
-#     ],
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:64050",
+        "http://localhost:64792",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ],

@@ -17,10 +17,28 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('user_evaluation_contexts', sa.Column('active_rubric_resource_id', sa.UUID(), nullable=True))
-    op.create_foreign_key('fk_user_eval_ctx_rubric_res_id', 'user_evaluation_contexts', 'resource_files', ['active_rubric_resource_id'], ['id'])
+    op.add_column(
+        'user_evaluation_contexts',
+        sa.Column('active_rubric_resource_id', sa.UUID(), nullable=True),
+        if_not_exists=True,
+    )
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'fk_user_eval_ctx_rubric_res_id'
+            ) THEN
+                ALTER TABLE user_evaluation_contexts
+                ADD CONSTRAINT fk_user_eval_ctx_rubric_res_id
+                FOREIGN KEY (active_rubric_resource_id) REFERENCES resource_files(id);
+            END IF;
+        END $$;
+    """)
 
 
 def downgrade() -> None:
-    op.drop_constraint('fk_user_eval_ctx_rubric_res_id', 'user_evaluation_contexts', type_='foreignkey')
-    op.drop_column('user_evaluation_contexts', 'active_rubric_resource_id')
+    op.execute("""
+        ALTER TABLE user_evaluation_contexts
+        DROP CONSTRAINT IF EXISTS fk_user_eval_ctx_rubric_res_id;
+    """)
+    op.drop_column('user_evaluation_contexts', 'active_rubric_resource_id', if_exists=True)

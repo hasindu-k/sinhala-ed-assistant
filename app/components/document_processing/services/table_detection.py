@@ -4,6 +4,7 @@ import os
 import tempfile
 import pytesseract
 from typing import List, Tuple
+from app.components.document_processing.ocr_config import OCR_LANG, OCR_CONFIG_EXTRA
 
 import logging
 logger = logging.getLogger(__name__)
@@ -254,8 +255,11 @@ def extract_table_text_from_images(images) -> Tuple[str, int]:
                     try:
                         # Load table image
                         table_img = cv2.imread(table_path, cv2.IMREAD_GRAYSCALE)
+
+                        logger.debug("TESSDATA_PREFIX: %s", os.environ.get("TESSDATA_PREFIX"))
                         
                         # Configure Tesseract for table text extraction
+                        # Use custom trained data from utils directory (via config)
                         tess_config = (
                             "--oem 1 "
                             "--psm 6 "
@@ -265,7 +269,7 @@ def extract_table_text_from_images(images) -> Tuple[str, int]:
                         
                         # Extract text from table
                         table_text = pytesseract.image_to_string(
-                            table_img, lang="sin+eng", config=tess_config
+                            table_img, lang=OCR_LANG, config=tess_config
                         )
                         
                         extracted_text += f"\n\n--- TABLE {tables_processed + 1} (Page {idx + 1}) ---\n{table_text}"

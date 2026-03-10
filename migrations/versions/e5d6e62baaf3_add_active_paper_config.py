@@ -17,8 +17,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('user_evaluation_contexts', sa.Column('active_paper_config', sa.dialects.postgresql.JSONB(astext_type=sa.Text()), nullable=True))
+    op.add_column(
+        'user_evaluation_contexts',
+        sa.Column('active_paper_config', sa.dialects.postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        if_not_exists=True,
+    )
 
 
 def downgrade() -> None:
-    op.drop_column('user_evaluation_contexts', 'active_paper_config')
+    op.drop_column('user_evaluation_contexts', 'active_paper_config', if_exists=True)

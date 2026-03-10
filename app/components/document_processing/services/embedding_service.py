@@ -26,8 +26,8 @@ def embed_document_text(text: str) -> List[float]:
 def embed_chunks(
     text: str,
     doc_id: Optional[str] = None,
-    max_tokens: int = 300,
-    overlap_tokens: int = 30
+    max_tokens: int = 220,
+    overlap_tokens: int = 60
 ) -> List[Dict]:
     if not text or not text.strip():
         return []

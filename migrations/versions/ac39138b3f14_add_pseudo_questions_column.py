@@ -17,8 +17,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('resource_chunks', sa.Column('pseudo_questions', sa.Text(), nullable=True))
+    op.add_column(
+        'resource_chunks',
+        sa.Column('pseudo_questions', sa.Text(), nullable=True),
+        if_not_exists=True,
+    )
 
 def downgrade() -> None:
-    op.drop_column('resource_chunks', 'pseudo_questions')
+    op.drop_column('resource_chunks', 'pseudo_questions', if_exists=True)
     

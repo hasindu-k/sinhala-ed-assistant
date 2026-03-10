@@ -17,23 +17,36 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.drop_constraint("messages_parent_msg_id_fkey", "messages", type_="foreignkey")
-    op.create_foreign_key(
-        "messages_parent_msg_id_fkey",
-        "messages",
-        "messages",
-        ["parent_msg_id"],
-        ["id"],
-        ondelete="CASCADE",
-    )
+    op.execute("""
+        ALTER TABLE messages
+        DROP CONSTRAINT IF EXISTS messages_parent_msg_id_fkey;
+
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'messages_parent_msg_id_fkey'
+            ) THEN
+                ALTER TABLE messages
+                ADD CONSTRAINT messages_parent_msg_id_fkey
+                FOREIGN KEY (parent_msg_id) REFERENCES messages(id) ON DELETE CASCADE;
+            END IF;
+        END $$;
+    """)
 
 
 def downgrade() -> None:
-    op.drop_constraint("messages_parent_msg_id_fkey", "messages", type_="foreignkey")
-    op.create_foreign_key(
-        "messages_parent_msg_id_fkey",
-        "messages",
-        "messages",
-        ["parent_msg_id"],
-        ["id"],
-    )
+    op.execute("""
+        ALTER TABLE messages
+        DROP CONSTRAINT IF EXISTS messages_parent_msg_id_fkey;
+
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'messages_parent_msg_id_fkey'
+            ) THEN
+                ALTER TABLE messages
+                ADD CONSTRAINT messages_parent_msg_id_fkey
+                FOREIGN KEY (parent_msg_id) REFERENCES messages(id);
+            END IF;
+        END $$;
+    """)

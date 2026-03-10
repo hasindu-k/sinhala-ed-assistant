@@ -2,6 +2,8 @@
 
 import json
 import logging
+import difflib
+import re
 from app.shared.ai.gemini_client import gemini_generate, gemini_generate_lightweight
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,59 @@ def classify_document(text: str) -> str:
     except Exception as e:
         print(f"Error classifying document: {e}")
         return "unknown"
+
+def _safe_json_loads(text: str) -> dict:
+    """Robust JSON parsing that handles Markdown code blocks and whitespace."""
+    if not text:
+        return {}
+    
+    try:
+        # Strip potential Markdown backticks
+        clean_text = text.strip()
+        if clean_text.startswith("```"):
+            clean_text = re.sub(r'^```json\s*|\s*```$', '', clean_text, flags=re.MULTILINE)
+        
+        try:
+            return json.loads(clean_text)
+        except json.JSONDecodeError:
+            # Try to repair truncated JSON
+            repaired = _repair_json(clean_text)
+            return json.loads(repaired)
+    except Exception as e:
+        logger.error(f"Failed to parse JSON response: {e}. Raw content: {text[:500]}...")
+        return {}
+
+def _repair_json(text: str) -> str:
+    """Basic recovery for truncated JSON (unterminated strings/objects)."""
+    text = text.strip()
+    if not text: return "{}"
+    
+    # 1. Close unterminated string if it ends abruptly
+    # If the last character is NOT a quote but there's an odd number of quotes in the last line
+    # or if it ends with backslash escape
+    if text.count('"') % 2 != 0:
+        text += '"'
+    
+    # 2. Close open braces/brackets
+    open_braces = text.count('{') - text.count('}')
+    open_brackets = text.count('[') - text.count(']')
+    
+    # Add closing markers in reverse order of opening
+    # This is a naive stack-based approach
+    stack = []
+    for char in text:
+        if char == '{': stack.append('}')
+        elif char == '[': stack.append(']')
+        elif char == '}': 
+            if stack and stack[-1] == '}': stack.pop()
+        elif char == ']':
+            if stack and stack[-1] == ']': stack.pop()
+    
+    # Append missing closers
+    while stack:
+        text += stack.pop()
+        
+    return text
     
 
 # 1. Specialized Prompt for Sinhala Exam Extraction
@@ -127,7 +182,8 @@ OUTPUT FORMAT (STRICT JSON)
           "type": "mcq",
           "text": "question text",
           "options": ["option 1", "option 2", "option 3", "option 4"],
-          "marks": null
+          "correct_answer": "2",
+          "marks": 1
         }},
         "2": {{{{ ... }}}}
       }}
@@ -140,9 +196,9 @@ OUTPUT FORMAT (STRICT JSON)
           "text": "main question text",
           "marks": 20,
           "sub_questions": {{
-            "a": {{{{"text": "sub-question a", "marks": 5}}}},
-            "b": {{{{"text": "sub-question b", "marks": 5}}}},
-            "c": {{{{"text": "sub-question c", "marks": 10}}}}
+            "a": {{{{"text": "sub-question a", "marks": 5, "correct_answer": "Expected key facts..."}}}},
+            "b": {{{{"text": "sub-question b", "marks": 5, "correct_answer": "..."}}}},
+            "c": {{{{"text": "sub-question c", "marks": 10, "correct_answer": "..."}}}}
           }}
         }},
         "2": {{{{ ... }}}}
@@ -186,7 +242,10 @@ def separate_paper_content(text: str):
             logger.error("Empty response from Gemini.")
             return {}
 
-        result = json.loads(response_text)
+        result = _safe_json_loads(response_text)
+        if not result:
+            return {}
+        
         logger.info("Sinhala structure extraction completed successfully.")
 
         paper_structure = result.get("PaperStructure", {
@@ -281,6 +340,14 @@ SECTION 2: QUESTION STRUCTURE RULES
 - **Rule:** Never assign 0 marks. Use null if unknown.
 
 ========================
+SECTION 3: ROBUST LAYOUT & TEXT REPAIR
+========================
+You are receiving text from a system OCR or digital extraction which may have jumbled line orders due to multi-column layouts or PDF encoding issues.
+1. **Restore Logical Flow**: Use linguistic context to re-order the questions. If sub-question (b) appears before (a) in the text, logically group them correctly in the JSON.
+2. **Exhaustive Detection**: Every numbered (1, 2...) or lettered ((a), (b)... / (අ), (ආ)...) item MUST be captured. If sub-questions span multiple pages or are interrupted by tables, bridge the gap and include them all.
+3. **Sinhala Repair**: Fix broken conjuncts (ක් ෂ → ක්‍ෂ), diacritic drifts, and accidental spaces within words.
+
+========================
 OUTPUT FORMAT (STRICT JSON)
 ========================
 Return a single JSON object with keys "Paper_I" and "Paper_II". 
@@ -320,8 +387,8 @@ If a paper is missing, set it to null.
         "text": "Main question text",
         "marks": 20,
         "sub_questions": {{
-          "a": {{"text": "Sub Q text", "marks": 5}},
-          "b": {{"text": "Sub Q text", "marks": 5}}
+          "a": {{"text": "Sub Q text", "marks": 5, "correct_answer": "fact 1, fact 2"}},
+          "b": {{"text": "Sub Q text", "marks": 5, "correct_answer": "..."}}
         }}
       }}
     }}
@@ -349,7 +416,10 @@ def extract_complete_exam_data(text: str):
             json_mode=True
         )
 
-        result = json.loads(response_text)
+        result = _safe_json_loads(response_text)
+        if not result:
+            return {}
+            
         logger.info("Combined exam extraction completed successfully.")
         
         # 🔒 Defensive Normalization
@@ -376,40 +446,53 @@ def extract_complete_exam_data(text: str):
         return {}
 
 ANSWER_MAPPING_PROMPT = """
-You are an expert AI for mapping student answers to exam questions.
-Your task is to map the student's handwritten answer text (OCR output) to the correct Question ID from the provided question structure.
+You are a STRICT answer extraction AI for Sri Lankan exam papers.
+Your ONLY job: find the text the student wrote under each question number. Nothing else.
+
+========================
+CRITICAL RULES — READ CAREFULLY
+========================
+1. **QUESTION NUMBER FIRST**: The ONLY way to assign an answer to a question is if the student wrote that question's number BEFORE the answer text (e.g., "1(a)", "2.a", "3", "(b)", etc.). Look for these number markers in the student's handwriting/OCR.
+
+2. **DO NOT USE TOPIC/MEANING**: NEVER assign an answer based on what the question asks about or what topic the answer covers. If a student wrote about "European colonization" under marker "4(a)", that text belongs to 4(a) ONLY — even if question 7(a) also asks about European colonization.
+
+3. **ONE ANSWER PER SECTION**: Each physical section of the student's paper (identified by a question number marker) maps to EXACTLY ONE question. The same text CANNOT appear under multiple question IDs.
+
+4. **NULL if no marker found**: If you cannot find a question number marker that clearly matches a given question ID, return `null` for that ID. DO NOT guess or infer based on topic.
+
+5. **DO NOT ANSWER**: Never generate or fabricate any answer text. Only extract what the student actually wrote.
+
+6. **OCR CLEANING ONLY**: Fix obvious Sinhala OCR errors (broken conjunct letters, misplaced diacritics, unnecessary spaces inside words). Do NOT correct the student's actual content.
+
+========================
+HOW TO FIND QUESTION MARKERS
+========================
+Sri Lankan students write one of these before each answer:
+- Main question: "1.", "2.", "3.", "4." etc.
+- Sub-question: "1(a)", "1.(a)", "1a", "(a)", "a)", "1.a" etc.
+- Sinhala labels: the student may write the number in Sinhala or Roman numerals.
+
+Steps:
+1. First scan the entire student text for question number markers.
+2. Build a list: which markers appear, and what text follows each marker (until the next marker). For Paper I / MCQ sections, expect very short answers (e.g., "1. 3", "2. Apple", "3. x"). You MUST capture these short answers.
+3. Then assign: match each question label in the structure to a marker you found. Be careful not to confuse Paper I question "1" with Paper II question "1(a)".
+4. If no marker found for a question → return `null`.
 
 ========================
 INPUTS
 ========================
-1. QUESTION STRUCTURE (JSON):
-   - Contains the hierarchy of questions and sub-questions.
-   - Each question has a unique "id" and a "label" (e.g., "1", "a", "i").
-
-2. STUDENT ANSWER TEXT (OCR):
-   - Raw text extracted from the student's answer script.
-   - May contain noise, broken characters, or be out of order.
-   - Students usually write the question number before the answer (e.g., "1. Answer...", "2(a) Answer...").
-
-========================
-TASK
-========================
-- Analyze the student's text to identify which part corresponds to which question.
-- Map the extracted answer text to the corresponding "id" from the Question Structure.
-- If a question is NOT answered, do NOT include it in the output (or map it to null).
-- If an answer spans multiple lines, combine them.
-- Ignore irrelevant text (headers, footers, noise).
+QUESTION STRUCTURE (JSON): Question IDs, labels, and the question text (for your reference only — not for answer matching).
+STUDENT ANSWER TEXT (OCR): Raw OCR text from the student's answer script.
 
 ========================
 OUTPUT FORMAT (STRICT JSON)
 ========================
-Return a single JSON object where keys are the "id" of the question/sub-question and values are the student's answer text.
-
-Example:
-{{
-  "uuid-of-question-1": "Student's answer for question 1...",
-  "uuid-of-subquestion-1a": "Student's answer for 1(a)..."
-}}
+Return a raw JSON object: {{"id": "cleaned student text", ...}}
+CRITICAL: The keys in your JSON MUST BE the exact `id` string (the UUID) from the QUESTION STRUCTURE, NOT the `label` or question number!
+ONLY include keys for questions that the student actually ATTEMPTED. If a student left a question blank, omit its ID from the JSON.
+CRITICAL AVOID MAPPING QUESTION TEXT: The OCR text might contain the *text of the original questions* because they are printed on the paper. If a section of text under a question marker ONLY contains the phrasing of the question itself, and there is no visible student answer provided beneath it, DO NOT MAP that question. Omit it completely. The answer must be the student's own words/response, not just a restatement of the question prompt!
+This prevents false mappings and saves output tokens.
+CRITICAL: When mapping "Paper_I", look for simple numbers ("1.", "2."). When mapping "Paper_II", usually there are sub-questions ("1(a)", "2(b)"). Ensure you don't map Paper II answers to Paper I questions just because they share the main number "1".
 
 ========================
 QUESTION STRUCTURE
@@ -422,74 +505,189 @@ STUDENT ANSWER TEXT
 {answer_text}
 """
 
-def map_student_answers(answer_text: str, question_structure: dict) -> dict:
+
+def _is_hallucinated_question_text(mapped_text: str, q_text: str, threshold: float = 0.85) -> bool:
+    """
+    Detects if the mapped student answer is just a hallucination of the
+    original printed question text from the paper.
+    """
+    if not q_text or not mapped_text or len(mapped_text.strip()) < 5:
+        return False
+
+    q_norm = q_text.strip().replace(" ", "")
+    m_norm = mapped_text.strip().replace(" ", "")
+
+    # Basic length check: if the student provided a very long answer,
+    # it's likely not just a hallucinated question even if it contains the question.
+    if len(m_norm) > len(q_norm) + 50:
+        return False
+
+    # Check exact match or very high similarity
+    ratio = difflib.SequenceMatcher(None, q_norm[:len(m_norm)], m_norm).ratio()
+    if ratio > threshold:
+        return True
+
+    # Check if the mapping is a substring of the question (often happens with OCR fragments)
+    if len(m_norm) > 10 and m_norm in q_norm:
+        return True
+
+    return False
+
+def map_student_answers(answer_text: str, question_structure: list) -> dict:
     """
     Maps student answer text to question IDs using Gemini.
+    Processes questions in batches for robustness.
     """
     if not answer_text or not answer_text.strip():
         return {}
 
     try:
-        logger.info("Starting student answer mapping.")
-        # Convert structure to a simplified format for the prompt to save tokens
-        simplified_structure = _simplify_structure_for_prompt(question_structure)
+        logger.info("Starting student answer mapping by parts.")
+        flat_structure = _simplify_structure_for_prompt(question_structure)
         
-        response_text = gemini_generate(
-            ANSWER_MAPPING_PROMPT.format(
-                structure=json.dumps(
-                    simplified_structure,
-                    ensure_ascii=False,
-                    indent=2
-                ),
-                answer_text=answer_text[:30000],
-            ),
-            json_mode=True,
-        )
-
-        if not response_text:
-            logger.error("Empty response from Gemini.")
-            return {}
-
-        result = json.loads(response_text)
-
-        if not isinstance(result, dict):
-            logger.error("Mapping output is not a JSON object.")
-            return {}
+        # Group by part to maintain context
+        parts_map = {}
+        for item in flat_structure:
+            part = item.get("part") or "Unknown"
+            if part not in parts_map:
+                parts_map[part] = []
+            parts_map[part].append(item)
+            
+        all_mappings = {}
+        batch_size = 100  # Process all questions in a part together to prevent misattribution
         
-        logger.info("Mapped %d answers successfully.", len(result))
-        return result
+        for part_name, part_items in parts_map.items():
+            logger.info("Mapping part: %s (%d items)", part_name, len(part_items))
+            for i in range(0, len(part_items), batch_size):
+                chunk = part_items[i : i + batch_size]
+                logger.info("Processing batch %d for %s", (i // batch_size) + 1, part_name)
+                chunk_ids = {item["id"] for item in chunk}
+                
+                def _call_mapping(c):
+                    return gemini_generate(
+                        ANSWER_MAPPING_PROMPT.format(
+                            structure=json.dumps(c, ensure_ascii=False, indent=2),
+                            answer_text=answer_text[:35000],
+                        ),
+                        json_mode=True,
+                    )
 
-    except json.JSONDecodeError:
-        logger.error("❌ Model output was not valid JSON.")
-        return {}
-    
+                response_text = _call_mapping(chunk)
+                print(f"=== RAW GEMINI RESPONSE FOR {part_name} ===")
+                print(response_text)
+                print("=============================================")
+                batch_result = _safe_json_loads(response_text) if response_text else None
+
+                # Retry on BOTH empty response AND JSON parse failure
+                if not isinstance(batch_result, dict):
+                    reason = "empty response" if not response_text else "JSON parse failure"
+                    logger.warning("Batch mapping for %s batch %d: %s — retrying...",
+                                   part_name, (i // batch_size) + 1, reason)
+                    response_text = _call_mapping(chunk)
+                    batch_result = _safe_json_loads(response_text) if response_text else None
+
+                if isinstance(batch_result, dict):
+                    # We accept any key that the model returned, as long as it's in the original structure chunk
+                    filtered_result = {}
+                    for k, v in batch_result.items():
+                        if k in chunk_ids and v:
+                            # Find original question text for hallucination check
+                            q_item = next((item for item in chunk if item["id"] == k), None)
+                            q_text = q_item.get("text", "") if q_item else ""
+                            
+                            if not _is_hallucinated_question_text(v, q_text):
+                                filtered_result[k] = v
+                            else:
+                                logger.warning(f"Discarding hallucinated answer for ID {k} - matches question text.")
+
+                    all_mappings.update(filtered_result)
+                    logger.info("Batch %d for %s: got %d/%d valid mappings (filtered %d hallucinated).",
+                                (i // batch_size) + 1, part_name, len(filtered_result), len(chunk), len(batch_result) - len(filtered_result))
+                else:
+                    logger.error("Batch %d for %s: FAILED after retry — skipping batch.",
+                                 (i // batch_size) + 1, part_name)
+
+
+        logger.info("Mapped %d answers total across all parts.", len(all_mappings))
+        return all_mappings
+
     except Exception as e:
         logger.error(f"❌ Error in answer mapping: {e}")
         return {}
 
 def _simplify_structure_for_prompt(questions: list) -> list:
     """
-    Helper to create a lightweight structure for the AI prompt.
+    Helper to create a flat list of all questions and sub-questions for the AI prompt.
     """
-    simple = []
+    flat_list = []
+    
+    def process_sub_questions(sub_qs, parent_label, parent_part):
+        for sq in sub_qs:
+            full_label = f"{parent_label}({sq.label})"
+            flat_list.append({
+                "id": str(sq.id),
+                "label": full_label,
+                "part": parent_part,  # inherit parent's part for correct grouping
+                "text": sq.sub_question_text[:200] if sq.sub_question_text else ""
+            })
+            # Handle recursive children
+            children = getattr(sq, "children", [])
+            if children:
+                process_sub_questions(children, full_label, parent_part)
+
     for q in questions:
-        q_obj = {
+        q_part = getattr(q, "part_name", "") or ""
+        # Add the main question
+        flat_list.append({
             "id": str(q.id),
             "label": q.question_number,
-            "text": q.question_text[:50] if q.question_text else ""
-        }
-        # Add sub-questions if any
-        # Note: This assumes the input 'questions' list contains SQLAlchemy objects or dicts
-        # We need to handle both or ensure consistent input. 
-        # Assuming SQLAlchemy objects based on usage context, but let's be safe.
+            "part": q_part,
+            "text": q.question_text[:200] if q.question_text else ""
+        })
         
+        # Add all sub-questions recursively, inheriting parent's part
         sub_qs = getattr(q, "sub_questions", [])
         if sub_qs:
-            q_obj["sub_questions"] = _simplify_sub_questions(sub_qs)
-            
-        simple.append(q_obj)
-    return simple
+            process_sub_questions(sub_qs, q.question_number, q_part)
 
+            
+    return flat_list
+
+RUBRIC_EXTRACT_PROMPT = """
+You are an expert examiner. Extract the marking scheme (correct answers) from the provided text.
+Identify each question number/label and its corresponding "Correct Answer" or "Acceptable Point".
+
+Format: STRICT JSON object where keys are question labels (e.g., "1", "1(a)", "1.ii") and values are the correct answer string.
+
+Guidelines:
+- MCQs: Use the option number (1, 2, 3, 4) or text.
+- Essays: Concise bullet points of the expected answer.
+- Preserve original labels as they appear (e.g., 1අ, 1a).
+
+TEXT:
+{content}
+"""
+
+def extract_rubric_answers(text: str) -> dict:
+    """
+    Extracts a mapping of question identifiers to correct answers from rubric text.
+    """
+    if not text or len(text.strip()) < 10:
+        return {}
+        
+    try:
+        logger.info("Extracting structured answers from rubric.")
+        response_text = gemini_generate(
+            RUBRIC_EXTRACT_PROMPT.format(content=text[:20000]),
+            json_mode=True
+        )
+        if not response_text:
+            return {}
+            
+        return _safe_json_loads(response_text)
+    except Exception as e:
+        logger.error(f"Error extracting rubric answers: {e}")
+        return {}
 def _simplify_sub_questions(sub_questions: list) -> list:
     simple_subs = []
     for sq in sub_questions:

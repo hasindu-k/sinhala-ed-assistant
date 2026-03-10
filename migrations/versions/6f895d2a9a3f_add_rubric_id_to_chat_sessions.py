@@ -17,10 +17,28 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('chat_sessions', sa.Column('rubric_id', sa.UUID(), nullable=True))
-    op.create_foreign_key('fk_chat_sessions_rubric_id', 'chat_sessions', 'rubrics', ['rubric_id'], ['id'])
+    op.add_column(
+        'chat_sessions',
+        sa.Column('rubric_id', sa.UUID(), nullable=True),
+        if_not_exists=True,
+    )
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'fk_chat_sessions_rubric_id'
+            ) THEN
+                ALTER TABLE chat_sessions
+                ADD CONSTRAINT fk_chat_sessions_rubric_id
+                FOREIGN KEY (rubric_id) REFERENCES rubrics(id);
+            END IF;
+        END $$;
+    """)
 
 
 def downgrade() -> None:
-    op.drop_constraint('fk_chat_sessions_rubric_id', 'chat_sessions', type_='foreignkey')
-    op.drop_column('chat_sessions', 'rubric_id')
+    op.execute("""
+        ALTER TABLE chat_sessions
+        DROP CONSTRAINT IF EXISTS fk_chat_sessions_rubric_id;
+    """)
+    op.drop_column('chat_sessions', 'rubric_id', if_exists=True)

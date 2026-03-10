@@ -75,6 +75,7 @@ class QuestionPaperRepository:
         part_name: Optional[str] = None,
         shared_stem: Optional[str] = None,
         inherits_shared_stem_from: Optional[str] = None,
+        correct_answer: Optional[str] = None,
     ) -> Question:
         """Create a main question."""
         question = Question(
@@ -85,6 +86,7 @@ class QuestionPaperRepository:
             part_name=part_name,
             shared_stem=shared_stem,
             inherits_shared_stem_from=inherits_shared_stem_from,
+            correct_answer=correct_answer,
         )
         self.db.add(question)
         self.db.commit()
@@ -111,6 +113,7 @@ class QuestionPaperRepository:
         sub_question_text: str,
         max_marks: Optional[int] = None,
         parent_sub_question_id: Optional[UUID] = None,
+        correct_answer: Optional[str] = None,
     ) -> SubQuestion:
         """Create a sub-question."""
         sub_question = SubQuestion(
@@ -118,7 +121,8 @@ class QuestionPaperRepository:
             label=label,
             sub_question_text=sub_question_text,
             max_marks=max_marks,
-            parent_sub_question_id=parent_sub_question_id
+            parent_sub_question_id=parent_sub_question_id,
+            correct_answer=correct_answer,
         )
         self.db.add(sub_question)
         self.db.commit()
@@ -135,7 +139,8 @@ class QuestionPaperRepository:
     def create_structured_questions(
         self,
         question_paper_id: UUID,
-        structured_data: Dict
+        structured_data: Dict,
+        part_name: Optional[str] = None
     ) -> List[Question]:
         """
         Create questions and sub-questions from structured data.
@@ -155,8 +160,10 @@ class QuestionPaperRepository:
                 question_number=str(q_num),
                 question_text=q_text,
                 max_marks=q_data.get("marks"),
+                part_name=part_name,
                 shared_stem=q_data.get("shared_stem"),
-                inherits_shared_stem_from=str(q_data.get("inherits_shared_stem_from")) if q_data.get("inherits_shared_stem_from") else None
+                inherits_shared_stem_from=str(q_data.get("inherits_shared_stem_from")) if q_data.get("inherits_shared_stem_from") else None,
+                correct_answer=q_data.get("correct_answer")
             )
             created_questions.append(question)
             
@@ -182,7 +189,8 @@ class QuestionPaperRepository:
                 label=str(label),
                 sub_question_text=sub_data.get("text", ""),
                 max_marks=sub_data.get("marks"),
-                parent_sub_question_id=parent_sub_question_id
+                parent_sub_question_id=parent_sub_question_id,
+                correct_answer=sub_data.get("correct_answer")
             )
             
             # Check for nested sub-questions (if any)

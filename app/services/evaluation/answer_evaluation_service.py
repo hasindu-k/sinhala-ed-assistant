@@ -210,7 +210,15 @@ class AnswerEvaluationService:
             return None
 
         scores = self.repository.get_question_scores_by_result(evaluation_result_id)
+        # Remove duplicates safely (defensive layer)
+        unique_scores = {}
+        for s in scores:
+            key = (s.question_id, s.sub_question_id)
+            if key not in unique_scores:
+                unique_scores[key] = s
 
+        scores = list(unique_scores.values())
+        
         # Sort scores naturally by question number
         def sort_key(score):
             q_num = ""
@@ -244,33 +252,133 @@ class AnswerEvaluationService:
             else:
                 return "F"
 
-        # Generate marks summary grouped by paper part
-        marks_summary = {}
-        logger.debug(f"Generating marks summary for {len(scores)} scores")
-        for score in scores:
-            part = "Other"
-            if score.question and score.question.part_name:
-                part = score.question.part_name.replace("_", " ")
-            elif score.sub_question and score.sub_question.question and score.sub_question.question.part_name:
-                part = score.sub_question.question.part_name.replace("_", " ")
-
-            if part not in marks_summary:
-                marks_summary[part] = []
-            
-            label = ""
-            if score.question:
-                label = score.question.question_number
-            elif score.sub_question:
-                parent_num = score.sub_question.question.question_number if score.sub_question.question else ""
-                label = f"{parent_num}({score.sub_question.label})"
-
-            marks_summary[part].append({
-                "label": label,
-                "awarded": float(score.awarded_marks) if score.awarded_marks is not None else 0,
-                "max": float(score.question.max_marks) if score.question else (float(score.sub_question.max_marks) if score.sub_question else 0)
-            })
+        # Fetch selection rules for correct "Total Available" summary
+        from app.shared.models.evaluation_session import PaperConfig, EvaluationSession
+        eval_session = self.repository.db.query(EvaluationSession).filter(EvaluationSession.id == result.answer_document.evaluation_session_id).first()
+        chat_session_id = eval_session.session_id if eval_session else None
         
-        logger.debug(f"Generated marks summary with {len(marks_summary)} parts: {list(marks_summary.keys())}")
+        paper_configs = self.repository.db.query(PaperConfig).filter(
+            (PaperConfig.evaluation_session_id == result.answer_document.evaluation_session_id) |
+            (PaperConfig.chat_session_id == chat_session_id)
+        ).all()
+        # NORMALIZE keys to paper_i, paper_ii for robust matching
+        selection_map = {}
+        for c in paper_configs:
+            if c.selection_rules:
+                norm_key = c.paper_part.lower().replace(" ", "_").replace("paper_", "paper_")
+                if "i" in norm_key and "ii" not in norm_key: norm_key = "paper_i"
+                elif "ii" in norm_key: norm_key = "paper_ii"
+                selection_map[norm_key] = c.selection_rules
+
+        # Calculate summary with leaf-node focus to prevent double-display
+        total_awarded = 0
+        total_max_allowed = 0
+        marks_summary = {}
+        # Get all unique parts
+        parts = sorted(list(set([
+            (s.question.part_name or "Other") if s.question else (s.sub_question.question.part_name or "Other") 
+            for s in scores if (s.question or (s.sub_question and s.sub_question.question))
+        ])))
+        
+        for part in parts:
+            clean_part = part.replace("_", " ")
+            marks_summary[clean_part] = []
+            
+            # Filter scores for this part
+            part_scores = [
+                s for s in scores 
+                if ((s.question.part_name if s.question else s.sub_question.question.part_name) == part)
+            ]
+            
+            # Group by main question for selection logic
+            mq_data = {} # {mq_id: {"awarded": x, "max": y}}
+            
+            for score in part_scores:
+                # Leaf Logic: only show in summary if it's a leaf
+                is_leaf = True
+                main_q = score.question
+                if score.question:
+                    if score.question.sub_questions: is_leaf = False
+                elif score.sub_question:
+                    if score.sub_question.children: is_leaf = False
+                    main_q = score.sub_question.question
+                
+                if not is_leaf: continue
+
+                label = ""
+                if score.question:
+                    label = score.question.question_number
+                elif score.sub_question:
+                    parent_num = score.sub_question.question.question_number if score.sub_question.question else ""
+                    label = f"{parent_num}({score.sub_question.label})"
+
+                awarded = float(score.awarded_marks or 0)
+                max_m = float(score.question.max_marks if score.question else (score.sub_question.max_marks or 0))
+
+                # Compute mq_id BEFORE using it in the entry
+                mq_id = str(main_q.id) if main_q else "orphan"
+
+                marks_summary[clean_part].append({
+                    "label": label,
+                    "awarded": round(awarded, 2),
+                    "max": max_m,
+                    "_mq_id": mq_id  # internal field used for selection tagging below
+                })
+
+                # Track for Total Available logic (Selection Aware)
+                if mq_id not in mq_data:
+                    mq_data[mq_id] = {"awarded": 0, "max": 0, "attempted": 0}
+                mq_data[mq_id]["awarded"] += awarded
+                mq_data[mq_id]["max"] += max_m
+                if awarded > 0:
+                    mq_data[mq_id]["attempted"] += 1
+
+
+
+            # Apply selection rules to calculate REAL Part Total (awarded AND max)
+            norm_part = part.lower().replace(" ", "_")
+            if norm_part.endswith("_ii") or norm_part == "paper_ii":
+                norm_part = "paper_ii"
+            elif norm_part.endswith("_i") or norm_part == "paper_i":
+                norm_part = "paper_i"
+
+            rules = selection_map.get(norm_part) or {}
+            mode = str(rules.get('mode', 'all')).lower()
+            # Support both 'any' and 'choose_any' as synonyms
+            is_selection_mode = mode in ['any', 'choose_any', 'choose']
+            required_count = rules.get('count') or rules.get('total') or rules.get('choose_any')
+
+            selected_mq_ids = set(mq_data.keys())  # default: all selected
+
+            if is_selection_mode and required_count and len(mq_data) > int(required_count):
+                # SYNC: Sort by (awarded DESC, attempted DESC) to match GradingService
+                sorted_entries = sorted(
+                    mq_data.items(),
+                    key=lambda x: (x[1]["awarded"], x[1].get("attempted", 0)),
+                    reverse=True
+                )
+                selected_entries = sorted_entries[:int(required_count)]
+                selected_mq_ids = {e[0] for e in selected_entries}
+                part_max_allowed = sum(e[1]["max"] for e in selected_entries)
+                part_awarded = sum(e[1]["awarded"] for e in selected_entries)
+            else:
+                part_max_allowed = sum(v["max"] for v in mq_data.values())
+                part_awarded = sum(v["awarded"] for v in mq_data.values())
+
+            total_max_allowed += part_max_allowed
+            total_awarded += part_awarded
+
+            # Tag each score entry with is_selected so the frontend can highlight them
+            for entry in marks_summary[clean_part]:
+                entry["is_selected"] = entry.get("_mq_id") in selected_mq_ids
+
+
+        
+        # Override result.total_score if needed? 
+        # No, result.total_score is already calculated best-of-N in GradingService.
+        # We just need the UI to show the correct /Total.
+        
+        logger.debug(f"Generated marks summary. Total Available: {total_max_allowed}")
 
 
         # Extract missed concepts and improvement points from question feedbacks
@@ -306,11 +414,13 @@ class AnswerEvaluationService:
         return {
             "id": result.id,
             "answer_document_id": result.answer_document_id,
-            "total_score": float(result.total_score) if result.total_score is not None else None,
+            "total_score": round(float(result.total_score or 0), 2),
+            "total_max": total_max_allowed,
             "grade": calc_grade(result.total_score),
-            "feedback": feedback_obj,
+            "overall_feedback": result.overall_feedback,
+            "evaluated_at": result.evaluated_at.isoformat() if result.evaluated_at else None,
             "marks_summary": marks_summary,
-            "evaluated_at": result.evaluated_at,
+            "improvement_points": list(set(improvement_points))[:5],
             "question_feedbacks": [
                 {
                     "id": score.id,
