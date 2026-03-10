@@ -401,15 +401,15 @@ class GradingService:
                 batch_results = self._get_batch_feedback_from_gemini(essay_items)
                 eval_data_map.update(batch_results)
 
-            # Short answer feedback is generated locally — no Gemini call needed
+            # Short answer feedback is generated locally — improved for descriptiveness
             for item in short_answer_items:
                 ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
                 if ratio >= 0.99:
-                    fb = "නිවැරදි පිළිතුරයි."
+                    fb = "නිවැරදි පිළිතුරයි. ඔබ බලාපොරොත්තු වූ ප්‍රධාන කරුණ නිවැරදිව දක්වා ඇත."
                 elif ratio >= 0.49:
-                    fb = "අර්ධ වශයෙන් නිවැරදිය. සම්පූර්ණ ලකුණු සඳහා වැඩිදුර විස්තර අවශ්‍ය විය."
+                    fb = "පිළිතුර අර්ධ වශයෙන් නිවැරදිය. ප්‍රධාන කරුණ සඳහන් කර ඇති නමුත්, එය තවදුරටත් පැහැදිලි කිරීම හෝ අදාළ නිවැරදි පාරිභාෂිතය භාවිතා කිරීම අවශ්‍ය වේ."
                 else:
-                    fb = "පිළිතුර අසම්පූර්ණ හෝ නිවැරදි නොවේ."
+                    fb = "පිළිතුර අසම්පූර්ණ හෝ නිවැරදි නොවේ. විෂය නිර්දේශයට අනුව නිවැරදි කරුණු කෙරෙහි වැඩි අවධානයක් යොමු කරන්න."
                 eval_data_map[item["key"]] = {
                     "feedback": f"**ප්‍රශ්නය {item['display_number']}** {fb}"
                 }
@@ -697,16 +697,16 @@ class GradingService:
                 logger.error(f"Overall feedback generation failed: {e}")
                 overall_feedback = f"Total Score: {result.total_score}"
 
-        # Generate short-answer feedback locally
+        # Generate short-answer feedback locally - improved templates
         for item in scored_items:
             if item["max_marks"] <= 2:
                 ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
                 if ratio >= 0.99:
-                    fb = "නිවැරදි පිළිතුරයි."
+                    fb = "නිවැරදි පිළිතුරයි. ප්‍රධාන කරුණු නිවැරදිව ඉදිරිපත් කර ඇත."
                 elif ratio >= 0.49:
-                    fb = "අර්ධ වශයෙන් නිවැරදිය."
+                    fb = "පිළිතුර අර්ධ වශයෙන් නිවැරදිය. වඩාත් සම්පූර්ණ පිළිතුරක් සඳහා තවදුරටත් විස්තර කිරීම අවශ්‍ය වේ."
                 else:
-                    fb = "පිළිතුර අසම්පූර්ණ හෝ නිවැරදි නොවේ."
+                    fb = "පිළිතුර නිවැරදි නොවේ හෝ අදාළ නොවේ. විෂය කරුණු නැවත අධ්‍යයනය කරන්න."
                 eval_data_map[item["key"]] = {
                     "feedback": f"**ප්‍රශ්නය {item['display_number']}** {fb}"
                 }
@@ -1468,21 +1468,21 @@ Return ONLY a valid JSON object mirroring the keys provided.
             return {}
 
         base_prompt = """
-You are a senior examiner specializing in Sinhala history assessment.
-Your ONLY role is to write constructive feedback in Sinhala for each answer.
-The marks have already been finalized by the automated system. DO NOT suggest or assign marks.
+You are a senior examiner specializing in Sinhala history assessment. 
+Your role is to write brief, constructive feedback in Sinhala.
+The marks are already finalized. DO NOT suggest marks.
 
-FEEDBACK RULES:
-- Correct answers: confirm what is right, mention any minor missing detail.
-- Partial answers: state which points are correct and which are missing. Use phrases like
-  "අඩංගු විය යුතුය", "සඳහන් කළ යුතුය", "මඟ හැරී ඇත".
-- Wrong answers: explain what the answer should have covered.
-- Keep feedback to 2-4 sentences. Be specific. Write in Sinhala only.
+FEEDBACK REQUIREMENTS:
+1. Explain **WHY** it is correct, partially correct, or wrong based on the Reference Context.
+2. For partial answers, clearly state which missing points should have been included.
+3. Keep feedback concise (2-3 sentences).
+4. Use Markdown formatting: **bold** for emphasis, bullet points if needed.
+5. Language: Simple, professional written Sinhala.
 
-OUTPUT FORMAT — return ONLY a valid JSON object, no markdown, no explanation:
+OUTPUT FORMAT (Pure JSON only):
 {
-  "<key>": { "feedback": "ඔබේ ප්‍රතිපෝෂණය මෙහි..." },
-  "<key2>": { "feedback": "..." }
+  "<key>": { "feedback": "**නිගමනය:** [desc] \n- [point1]\n- [point2]" },
+  ...
 }
 
 Questions to evaluate:
@@ -1576,10 +1576,10 @@ Questions to evaluate:
         """Generate a brief overall feedback summary in Sinhala. Text only, no marks logic."""
         try:
             prompt = f"""
-Total Score: {total_score}
-Write 2-3 sentences of overall feedback in Sinhala for this student.
-Comment on their performance and what they should focus on improving.
-Do not mention specific question numbers.
+Summary Results: Total Score is {total_score}.
+Evaluate the performance based on this score and generate a quality overall feedback in Sinhala (2-3 sentences).
+High quality feedback highlights strengths and provides specific advice for improvement.
+Use Markdown for presentation. Use simple and direct language.
 """
             return self.gemini.generate_content(prompt).text or ""
         except Exception:
