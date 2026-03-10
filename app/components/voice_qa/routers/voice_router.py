@@ -54,7 +54,12 @@ logger = logging.getLogger(__name__)
 @router.post("/transcribe")
 async def transcribe(audio: UploadFile = File(...)):
 
-    temp_path = "temp.wav"
+    # get original file extension
+    ext = audio.filename.split(".")[-1]
+
+    # save using the real extension
+    temp_path = f"temp.{ext}"
+
     with open(temp_path, "wb") as f:
         f.write(await audio.read())
 
@@ -72,7 +77,9 @@ async def evaluate_asr(
     audio: UploadFile = File(...),
     reference_text: str = Form(...)
 ):
-    temp_path = "temp.wav"
+    ext = audio.filename.split(".")[-1]
+    
+    temp_path = f"temp.{ext}"
 
     with open(temp_path, "wb") as f:
         f.write(await audio.read())
@@ -118,7 +125,10 @@ async def qa_from_voice(
     # ----------------------------------------------------
     # 2️⃣ SAVE AUDIO TEMP
     # ----------------------------------------------------
-    temp_path = "temp.wav"
+    ext = audio.filename.split(".")[-1]
+    
+    temp_path = f"temp.{ext}"
+
     with open(temp_path, "wb") as f:
         f.write(await audio.read())
 
