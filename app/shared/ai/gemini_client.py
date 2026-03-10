@@ -9,7 +9,7 @@ import time
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "gemini-2.5-flash-lite"
+MODEL_NAME = "gemini-2.5-flash"
 # Shared safety settings
 SAFETY_SETTINGS = [
     types.SafetySetting(

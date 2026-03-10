@@ -978,9 +978,10 @@ Questions:
                 sent_indices = list(index_to_uuid.keys())
                 logger.info(f"[GEMINI_REF] Extracting references for surrogate keys: {sent_indices}")
 
-                response_json = self.gemini.generate_content(
+                response_data = self.gemini.generate_content(
                     chunk_prompt, json_mode=True
-                ).text or "{}"
+                )
+                response_json = response_data.get("text") or "{}"
 
                 clean_json = re.sub(
                     r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE
@@ -1113,7 +1114,8 @@ Return ONLY a valid JSON object mirroring the keys provided.
         try:
             logger.info(f"[OCR_CLEAN] Batch cleaning {len(to_clean)} answers via Gemini...")
             start_t = time.time()
-            res_text = self.gemini.generate_content(prompt, json_mode=True).text or "{}"
+            res_data = self.gemini.generate_content(prompt, json_mode=True)
+            res_text = res_data.get("text") or "{}"
             clean_json = re.sub(r'^```json\s*|\s*```$', '', res_text.strip(), flags=re.MULTILINE)
             cleaned_map = json.loads(clean_json)
 
@@ -1503,7 +1505,8 @@ Questions to evaluate:
                 sent_keys = [it["key"] for it in chunk]
                 logger.info(f"Sending Gemini feedback batch for keys: {sent_keys}")
 
-                response_json = self.gemini.generate_content(chunk_prompt, json_mode=True).text or "{}"
+                res_data = self.gemini.generate_content(chunk_prompt, json_mode=True)
+                response_json = res_data.get("text") or "{}"
                 try:
                     clean_json = re.sub(r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE)
                     data = json.loads(clean_json)
