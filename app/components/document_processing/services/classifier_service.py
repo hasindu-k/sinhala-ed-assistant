@@ -465,7 +465,7 @@ STUDENT ANSWER TEXT (OCR): Raw OCR text from the student's answer script.
 ========================
 OUTPUT FORMAT (STRICT JSON)
 ========================
-Return a raw JSON object: {"id": "cleaned student text", ...}
+Return a raw JSON object: {{"id": "cleaned student text", ...}}
 CRITICAL: The keys MUST BE the exact `id` string (UUID) from the structure.
 ONLY include keys for questions that the student actually ATTEMPTED.
 CRITICAL AVOID MAPPING QUESTION TEXT: If a section only contains the phrasing of the question itself, do NOT map it.
