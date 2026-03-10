@@ -48,6 +48,8 @@ class ChatSessionResponse(BaseModel):
     subject: Optional[str] = None
     rubric_id: Optional[UUID] = None
     resources: List[SessionResourceResponse] = []
+    question_paper: Optional[dict] = None
+    syllabus: Optional[dict] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

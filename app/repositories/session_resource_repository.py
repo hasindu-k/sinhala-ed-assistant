@@ -28,13 +28,21 @@ class SessionResourceRepository:
             .all()
         )
 
-    def get_resources_by_session_id(self, session_id: UUID) -> List[ResourceFile]:
-        return (
-            self.db.query(ResourceFile)
+    def get_resources_by_session_id(self, session_id: UUID) -> List[dict]:
+        results = (
+            self.db.query(ResourceFile, SessionResource.label)
             .join(SessionResource, SessionResource.resource_id == ResourceFile.id)
             .filter(SessionResource.session_id == session_id)
             .all()
         )
+        
+        resources = []
+        for resource_file, label in results:
+            res_dict = {c.name: getattr(resource_file, c.name) for c in resource_file.__table__.columns}
+            res_dict["resource_type"] = label
+            resources.append(res_dict)
+            
+        return resources
 
     def delete_resources_for_session(self, session_id: UUID) -> int:
         rows = (
