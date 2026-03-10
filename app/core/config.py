@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"  # for reset link
 
     # Evaluation Limits
-    EVALUATION_LIMIT_NORMAL: int = 1  # 5 evaluations as normal, set to 1 for force subscription testing
+    EVALUATION_LIMIT_NORMAL: int = 100  # 5 evaluations as normal, set to 1 for force subscription testing
     EVALUATION_LIMIT_BASIC: int = 20
     EVALUATION_LIMIT_CLASSROOM: int = 60
     EVALUATION_LIMIT_INSTITUTION: int = -1  # Unlimited

@@ -1,8 +1,8 @@
-import subprocess
-
 import librosa
 import torch
 from typing import List, Dict
+import subprocess
+import os
 
 from app.core.whisper_loader import WhisperLoader
 from app.core.utils import normalize_sinhala
@@ -35,36 +35,56 @@ class VoiceService:
 
     @staticmethod
     def transcribe_audio(file_path: str):
-        wav_path = "converted.wav"
-
-        subprocess.run([
-        "ffmpeg",
-        "-y",
-        "-i", file_path,
-        "-ac", "1",
-        "-ar", "16000",
-        wav_path
-        ])
-        
         processor, model, device = WhisperLoader.load()
-
+        
         # Enable mixed precision (FP16) for GPU
-        model.half()  # Use FP16 (mixed precision)
-
-        # Load & resample audio
-        audio, sr = librosa.load(file_path, sr=16000)
-
+        model.half()
+        
+        # Method 1: Try using soundfile directly first
+        try:
+            import soundfile as sf
+            audio, sr = sf.read(file_path)
+            # Resample if needed
+            if sr != 16000:
+                import librosa
+                audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+                sr = 16000
+        except:
+            # Method 2: Use FFmpeg directly to convert to WAV
+            try:
+                temp_converted = "temp_converted.wav"
+                cmd = [
+                    'ffmpeg', '-i', file_path, 
+                    '-ar', '16000',  # Sample rate
+                    '-ac', '1',       # Mono channel
+                    '-c:a', 'pcm_s16le',  # PCM 16-bit
+                    '-y',  # Overwrite output file
+                    temp_converted
+                ]
+                subprocess.run(cmd, check=True, capture_output=True)
+                
+                # Now load the converted file
+                import soundfile as sf
+                audio, sr = sf.read(temp_converted)
+                
+                # Clean up
+                os.remove(temp_converted)
+            except Exception as e:
+                # Method 3: Fall back to librosa with explicit backend
+                import librosa
+                import audioread
+                # Try to force librosa to use ffmpeg
+                audio, sr = librosa.load(file_path, sr=16000, res_type='kaiser_fast')
+        
         # Process the audio file with WhisperProcessor
         inputs = processor(audio, sampling_rate=16000, return_tensors="pt").to(device)
-
-        # Convert the input features to FP16 (mixed precision)
+        
+        # Convert the input features to FP16
         inputs = {k: v.half() for k, v in inputs.items()}
-
+        
         with torch.no_grad():
-            # Use the model for generating transcriptions
             ids = model.generate(inputs["input_features"])
-
-        # Decode the generated token IDs to get the transcription text
+        
         text = processor.batch_decode(ids, skip_special_tokens=True)[0]
         return text
 

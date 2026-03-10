@@ -43,8 +43,8 @@ _active_model_index = 0
 _model_index_lock = threading.Lock()
 
 # Increased from 5 → 10 to support parallel per-question Gemini feedback calls
-# SAFER: Reduced from 5 -> 2 to prevent slamming Gemini API and triggering 429s (especially during batch evaluation)
-_ai_semaphore = threading.Semaphore(2)
+# SAFER: Set to 5 to support faster parallel feedback generation while remaining within typical API limits
+_ai_semaphore = threading.Semaphore(5)
 
 class GeminiClient:
     @classmethod
