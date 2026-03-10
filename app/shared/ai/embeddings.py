@@ -2,8 +2,13 @@
 
 import threading
 from app.core.gemini_client import GeminiClient
+from app.core.config import settings
 from google.genai import types
 from sentence_transformers import SentenceTransformer, util
+import huggingface_hub
+
+if settings.HF_TOKEN:
+    huggingface_hub.login(token=settings.HF_TOKEN, add_to_git_credential=False)
 
 # Global semaphore to prevent CPU thrashing during heavy XLM-R math
 # (One encoding task at a time per backend process)
