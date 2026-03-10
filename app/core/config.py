@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     MAIL_FROM_NAME: str = "Sinhala Educational Assistant"
     FRONTEND_URL: str = "http://localhost:3000"  # for reset link
 
+    # Evaluation Limits
+    EVALUATION_LIMIT_NORMAL: int = 1  # 5 evaluations as normal, set to 1 for force subscription testing
+    EVALUATION_LIMIT_BASIC: int = 20
+    EVALUATION_LIMIT_CLASSROOM: int = 60
+    EVALUATION_LIMIT_INSTITUTION: int = -1  # Unlimited
+    EVALUATION_LIMIT_DURATION_HOURS: int = 12
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

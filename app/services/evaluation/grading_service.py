@@ -4,9 +4,10 @@ import logging
 import re
 import json
 import time
+from math import floor
 from uuid import UUID
 from typing import Dict, Any, List, Tuple, Optional, Callable
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -14,6 +15,8 @@ import torch
 from rank_bm25 import BM25Okapi
 from sentence_transformers import util
 from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.shared.models.answer_evaluation import (
     AnswerDocument,
@@ -22,20 +25,25 @@ from app.shared.models.answer_evaluation import (
 )
 from app.shared.models.question_papers import Question, SubQuestion
 from app.shared.models.session_resources import SessionResource
-from app.shared.models.evaluation_session import EvaluationSession
+from app.shared.models.evaluation_session import EvaluationSession, PaperConfig
 from app.shared.models.resource_file import ResourceFile
 from app.shared.models.rubrics import Rubric, RubricCriterion
-from app.shared.ai.embeddings import xlmr, ml_semaphore
+from app.shared.ai.embeddings import xlmr, ml_semaphore, ensure_sentences_cached, _embedding_cache
 from app.core.gemini_client import GeminiClient
 
 logger = logging.getLogger(__name__)
 
 
 class GradingService:
+    # Class-level cache: Gemini-extracted references, keyed by eval_session_id.
+    # Survives across instances so multiple students in the same session
+    # don't trigger redundant Gemini calls.
+    _gemini_ref_cache: Dict[str, Dict[str, str]] = {}
+    _gemini_ref_cache_lock = __import__('threading').Lock()
+
     def __init__(self, db: Session):
         self.db = db
         self.gemini = GeminiClient()
-        self._sentence_cache = {} # Map sentence string -> embedding tensor
 
 
     # ----------------------------------------------------------
@@ -54,6 +62,31 @@ class GradingService:
                 return max(1, int(parent.max_marks) // len(parent.sub_questions))
 
         return 1
+
+    def _resolve_part_name(self, target) -> str:
+        """
+        Correctly resolve the part name for any question or sub-question.
+        Sub-questions do not have part_name directly, so we traverse the parent chain.
+        """
+        part = getattr(target, 'part_name', None)
+        if part:
+            return part
+
+        if hasattr(target, 'question') and target.question:
+            part = getattr(target.question, 'part_name', None)
+            if part:
+                return part
+
+        curr = target
+        while hasattr(curr, 'parent') and curr.parent:
+            curr = curr.parent
+            if hasattr(curr, 'question') and curr.question:
+                part = getattr(curr.question, 'part_name', None)
+                if part:
+                    return part
+
+        return 'Unknown'
+
 
     # ----------------------------------------------------------
     # PUBLIC ENTRY
@@ -75,26 +108,26 @@ class GradingService:
             .first()
         )
         if not answer_doc or not answer_doc.mapped_answers:
-            raise ValueError("Answer document not ready for grading")
+            raise ValueError("නිරවද්‍ය ලෙස පිළිතුරු හඳුනා ගැනීමට නොහැකි විය. කරුණාකර නැවත උත්සාහ කරන්න. (AI Mapping/Extraction Failure)")
 
         if progress_callback:
             progress_callback("initializing_grading", "Preparing grading context...")
 
-        # Check for existing evaluation result
-        existing_result = (
+        eval_result = (
             self.db.query(EvaluationResult)
             .filter(EvaluationResult.answer_document_id == answer_doc.id)
+            .order_by(EvaluationResult.evaluated_at.desc())
             .first()
         )
 
-        if existing_result:
-            logger.info(f"Updating existing evaluation result {existing_result.id}")
+        if eval_result:
+            logger.info(f"Re-using existing evaluation result {eval_result.id} for doc {answer_doc.id}")
             self.db.query(QuestionScore).filter(
-                QuestionScore.evaluation_result_id == existing_result.id
+                QuestionScore.evaluation_result_id == eval_result.id
             ).delete()
-            eval_result = existing_result
             eval_result.total_score = Decimal(0)
             eval_result.overall_feedback = "Grading in progress..."
+            eval_result.evaluated_at = func.now()
         else:
             eval_result = EvaluationResult(
                 answer_document_id=answer_doc.id,
@@ -106,79 +139,217 @@ class GradingService:
         self.db.commit()
         self.db.refresh(eval_result)
 
-        # ---- HOIST LOOP-INVARIANT WORK ----
-        # Fetch rubric weights once for the entire document (not per-question)
         eval_session = self.db.query(EvaluationSession).filter(EvaluationSession.id == eval_session_id).first()
         rubric_weights = self._get_rubric_weights(eval_session)
 
         total_questions = len(answer_doc.mapped_answers)
         processed_count = 0
 
+        # -------------------------------------------------------
+        # PHASE -1: Clean Student OCR Noise
+        # -------------------------------------------------------
         if progress_callback:
-            progress_callback("evaluating_answers", f"Scoring {total_questions} answers...")
+            progress_callback("evaluating_answers", "AI Cleaning OCR noise from student answers...", percent=1)
+        
+        cleaned_answers = self._batch_clean_student_answers(answer_doc.mapped_answers)
+        answer_doc.mapped_answers = cleaned_answers
+
+        if progress_callback:
+            progress_callback("evaluating_answers", f"Scoring {total_questions} answers...", percent=2)
+
+        # -------------------------------------------------------
+        # PHASE 0: Gemini-based Reference Point Extraction
+        # -------------------------------------------------------
+        # Gemini reads the syllabus + question text and extracts the actual
+        # marking points. This replaces noisy BM25 retrieval as primary source.
+        # BM25 (_get_reference_context) is kept as fallback.
+        # -------------------------------------------------------
+        if progress_callback:
+            progress_callback("evaluating_answers", "Extracting reference answers from syllabus (AI)...", percent=3)
+
+        # Collect question info for Gemini batch extraction
+        questions_for_extraction: List[Dict] = []
+        for key, student_text in answer_doc.mapped_answers.items():
+            target = self._find_matching_question(key, question_map)
+            if not target:
+                continue
+            if not student_text or str(student_text).strip().lower() in ["null", "none", ""]:
+                continue
+            # Skip parents when sub-questions are mapped
+            if isinstance(target, Question) and getattr(target, 'sub_questions', []):
+                sub_mapped = any(
+                    str(sq.id) in answer_doc.mapped_answers or
+                    f"{str(target.question_number)}{sq.label}".lower().replace("(", "").replace(")", "") in answer_doc.mapped_answers
+                    for sq in target.sub_questions
+                )
+                if sub_mapped:
+                    continue
+
+            # Use gold-standard correct_answer if available and NOT a placeholder — skip Gemini for those
+            correct = getattr(target, "correct_answer", None)
+            if correct and not self._is_placeholder_answer(correct):
+                continue  # _get_reference_context will return correct_answer directly
+
+            q_text = getattr(target, "question_text", "") or getattr(target, "sub_question_text", "")
+            max_marks = self._resolve_max_marks(target)
+            display_num = self._resolve_display_number(target, key)
+            q_type = getattr(target, "question_type", "short") or "short"
+
+            questions_for_extraction.append({
+                "key": key,
+                "target": target,
+                "question_text": q_text,
+                "max_marks": max_marks,
+                "display_number": display_num,
+                "question_type": q_type,
+            })
+
+        # Batch-extract reference points from Gemini
+        # Use class-level cache keyed by eval_session_id to avoid re-extracting
+        # when grading multiple students in the same session.
+        cache_key = str(eval_session_id)
+        gemini_ref_map: Dict[str, str] = {}
+
+        with GradingService._gemini_ref_cache_lock:
+            cached = GradingService._gemini_ref_cache.get(cache_key)
+
+        if cached is not None:
+            gemini_ref_map = cached
+            logger.info(f"Using cached Gemini references for session {cache_key} ({len(gemini_ref_map)} refs).")
+        elif syllabus_text and questions_for_extraction:
+            gemini_ref_map = self._batch_extract_reference_points(
+                questions_for_extraction, syllabus_text
+            )
+            # Store in class-level cache for other students in same session
+            with GradingService._gemini_ref_cache_lock:
+                GradingService._gemini_ref_cache[cache_key] = gemini_ref_map
+
+        logger.info(f"Gemini extracted references for {len(gemini_ref_map)}/{len(questions_for_extraction)} questions.")
+
+        # -------------------------------------------------------
+        # PHASE 0.5: Pre-calculate all embeddings (SPEEDUP)
+        # -------------------------------------------------------
+        all_context_sentences = []
+
+        for key, student_text in answer_doc.mapped_answers.items():
+            if isinstance(student_text, str) and student_text.strip().lower() not in ["null", "none", ""]:
+                all_context_sentences.append(student_text)
+            target = self._find_matching_question(key, question_map)
+            if target:
+                q_text = getattr(target, "question_text", "") or getattr(target, "sub_question_text", "")
+                if q_text:
+                    all_context_sentences.append(q_text)
+                # Use Gemini-extracted ref if available, else fall back to BM25
+                ref = gemini_ref_map.get(key) or self._get_reference_context(target, syllabus_text, rubric_text)
+                if ref:
+                    all_context_sentences.extend([s.strip() for s in re.split(r'[.!?\n]', ref) if len(s.strip()) > 10])
+
+        if progress_callback:
+            progress_callback("evaluating_answers", "Mass-calculating sentence features...", percent=10)
+
+        ensure_sentences_cached(all_context_sentences)
 
         # -------------------------------------------------------
         # PHASE 1: System scoring (XLM-R — CPU-bound)
+        # Uses Gemini-extracted references (primary) with BM25 fallback.
         # -------------------------------------------------------
-        # 1.0 Gather all work items
-        # -------------------------------------------------------
-        score_inputs: List[Tuple] = []  # (key, student_text, target, max_marks, reference_text)
+        score_inputs: List[Tuple] = []
         for key, student_text in answer_doc.mapped_answers.items():
             target = self._find_matching_question(key, question_map)
             if not target:
                 logger.error(f"UNRESOLVED mapping key: {key}")
                 continue
 
+            if not student_text or str(student_text).strip().lower() in ["null", "none", ""]:
+                continue
+
+            if isinstance(target, Question) and getattr(target, 'sub_questions', []):
+                sub_mapped = False
+                for sq in target.sub_questions:
+                    sq_id_str = str(sq.id)
+                    sq_label_key = f"{str(target.question_number)}{sq.label}".lower().replace("(", "").replace(")", "")
+                    if sq_id_str in answer_doc.mapped_answers or sq_label_key in answer_doc.mapped_answers:
+                        sub_mapped = True
+                        break
+                if sub_mapped:
+                    continue
+
             max_marks = self._resolve_max_marks(target)
-            reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
+            # PRIMARY: Gemini-extracted reference points
+            # FALLBACK: BM25 retrieval from syllabus / correct_answer gold standard
+            reference_text = gemini_ref_map.get(key)
+            if not reference_text:
+                reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
+                if reference_text:
+                    logger.debug(f"Using BM25/gold-standard fallback for key: {key}")
+            else:
+                logger.debug(f"Using Gemini reference for key: {key} ({len(reference_text)} chars)")
             score_inputs.append((key, student_text, target, max_marks, reference_text))
 
-        # 1.1 Collect and Batch Encode all texts for the document
-        # -------------------------------------------------------
-        all_student_texts = [item[1] for item in score_inputs]
+        all_student_texts = [item[1] for item in score_inputs if item[1]]
         all_ref_texts = list(set([item[4] for item in score_inputs if item[4]]))
-        
-        if progress_callback:
-            progress_callback("evaluating_answers", "Batch encoding document content...", percent=5)
-
-        with ml_semaphore:
-            # Batch encode student answers
-            student_embs = xlmr.encode(all_student_texts, batch_size=32, convert_to_tensor=True) if all_student_texts else []
-            # Batch encode deduplicated reference contexts
-            ref_embs_list = xlmr.encode(all_ref_texts, batch_size=32, convert_to_tensor=True) if all_ref_texts else []
-        
-        # Maps for quick lookup: text -> embedding tensor
-        student_emb_map = {text: student_embs[i] for i, text in enumerate(all_student_texts)}
-        ref_emb_map = {text: ref_embs_list[i] for i, text in enumerate(all_ref_texts)}
+        student_emb_map = {text: _embedding_cache.get(text) for text in all_student_texts}
+        ref_emb_map = {text: _embedding_cache.get(text) for text in all_ref_texts}
 
         scored_items: List[Dict] = []
-        seen_question_ids = set() # To prevent duplicates in the final result
+        seen_question_ids = set()
+        seen_keys = set()
+
+        logger.info(f"Starting grading loop for {len(answer_doc.mapped_answers)} mapped items.")
 
         for key, student_text in answer_doc.mapped_answers.items():
             target = self._find_matching_question(key, question_map)
+
             if not target:
+                logger.warning(f"No question target found for key: '{key}'")
                 continue
 
-            # Skip if we already graded this specific question/sub-question entry
-            # (prevents same question appearing twice if mapped by both ID and Label)
-            target_id = getattr(target, 'id', None)
-            if target_id in seen_question_ids:
-                logger.warning(f"Skipping duplicate mapping for question: {key}")
+            if not student_text or str(student_text).strip().lower() in ["null", "none", ""]:
+                logger.info(f"Skipping empty answer for key: '{key}'")
                 continue
+
+            target_id = getattr(target, 'id', None)
+            display_number = self._resolve_display_number(target, key)
+            part_name = self._resolve_part_name(target)
+
+            logger.info(f"Processing question {key} -> ID: {target_id} (Part: {part_name}, Label: {display_number})")
+
+            if target_id in seen_question_ids or key in seen_keys:
+                logger.warning(f"Skipping duplicate mapping for question: {key} (ID: {target_id})")
+                continue
+
+            if isinstance(target, Question) and getattr(target, 'sub_questions', []):
+                sub_mapped = False
+                for sq in target.sub_questions:
+                    sq_id_str = str(sq.id)
+                    sq_label_key = f"{str(target.question_number)}{sq.label}".lower().replace("(", "").replace(")", "")
+                    if sq_id_str in answer_doc.mapped_answers or sq_label_key in answer_doc.mapped_answers:
+                        sub_mapped = True
+                        break
+
+                if sub_mapped:
+                    logger.info(f"Skipping parent question {key} because sub-questions are mapped.")
+                    continue
+
             seen_question_ids.add(target_id)
+            seen_keys.add(key)
 
             max_marks = self._resolve_max_marks(target)
-            reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
-            
+            # Use Gemini-extracted ref (primary) with BM25 fallback
+            reference_text = gemini_ref_map.get(key) or self._get_reference_context(target, syllabus_text, rubric_text)
+
             processed_count += 1
             if progress_callback:
-                pct = 5 + int((processed_count / total_questions) * 65)  # scoring = 5-70%
-                progress_callback("evaluating_answers", f"Scoring question {key}...", percent=pct)
+                pct = 5 + int((processed_count / total_questions) * 65)
+                progress_callback("evaluating_answers", f"Scoring question {display_number}...", percent=pct)
 
-            # Pass cached embeddings to avoid re-encoding
             s_emb = student_emb_map.get(student_text)
             r_emb = ref_emb_map.get(reference_text)
 
+            # -------------------------------------------------------
+            # SYSTEM SCORE — XLM-R is the SOLE marks engine.
+            # Gemini is never used for marks. Only for feedback text.
+            # -------------------------------------------------------
             system_score_ratio = self._calculate_system_score(
                 student_text=student_text,
                 reference_text=reference_text,
@@ -188,7 +359,14 @@ class GradingService:
                 reference_emb=r_emb
             )
             awarded_marks = Decimal(str(system_score_ratio * max_marks)).quantize(Decimal("0.01"))
-            display_number = self._resolve_display_number(target, key)
+
+            # Log calibration data for every question so thresholds can be verified
+            logger.info(
+                f"[SYSTEM_SCORE] Q{display_number} | "
+                f"system_ratio={system_score_ratio:.4f} | "
+                f"awarded={awarded_marks}/{max_marks} | "
+                f"answer='{str(student_text)[:80]}'"
+            )
 
             scored_items.append({
                 "key": key,
@@ -198,99 +376,246 @@ class GradingService:
                 "max_marks": max_marks,
                 "awarded_marks": awarded_marks,
                 "display_number": display_number,
-                "student_emb": s_emb # Pass for coverage scoring
+                "student_emb": s_emb
             })
 
+        logger.info(f"Scoring loop finished. Scored {len(scored_items)} items total.")
 
         # -------------------------------------------------------
-        # PHASE 2: Batch Gemini feedback & relevance validation
+        # PHASE 2: Gemini feedback ONLY — no marks from Gemini ever
+        # Only runs for Paper II (max_marks > 2) to save time.
         # -------------------------------------------------------
         eval_data_map: Dict[str, Dict] = {}
-        if include_feedback:
-            if progress_callback:
-                progress_callback("generating_feedback", "Generating feedback and validating relevance...", percent=70)
 
-            eval_data_map = self._get_batch_feedback_from_gemini(scored_items)
+        if include_feedback and scored_items:
+            if progress_callback:
+                progress_callback("generating_feedback", "Generating Sinhala feedback (Paper II only)...", percent=70)
+
+            # SPEED FIX: Only send Paper II essay questions to Gemini.
+            # Paper I short answers (max_marks <= 2) use a simple system-generated message.
+            essay_items = [item for item in scored_items if item["max_marks"] > 2]
+            short_answer_items = [item for item in scored_items if item["max_marks"] <= 2]
+
+            # Generate feedback only for essays via Gemini
+            if essay_items:
+                batch_results = self._get_batch_feedback_from_gemini(essay_items)
+                eval_data_map.update(batch_results)
+
+            # Short answer feedback is generated locally — no Gemini call needed
+            for item in short_answer_items:
+                ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
+                if ratio >= 0.99:
+                    fb = "නිවැරදි පිළිතුරයි."
+                elif ratio >= 0.49:
+                    fb = "අර්ධ වශයෙන් නිවැරදිය. සම්පූර්ණ ලකුණු සඳහා වැඩිදුර විස්තර අවශ්‍ය විය."
+                else:
+                    fb = "පිළිතුර අසම්පූර්ණ හෝ නිවැරදි නොවේ."
+                eval_data_map[item["key"]] = {
+                    "feedback": f"**ප්‍රශ්නය {item['display_number']}** {fb}"
+                }
 
             if progress_callback:
-                progress_callback("generating_feedback", "Feedback batch completed.", percent=95)
+                progress_callback("generating_feedback", "Feedback completed.", percent=95)
         else:
             if progress_callback:
-                progress_callback("generating_feedback", "Skipping feedback for now (scoring only).", percent=95)
+                progress_callback("generating_feedback", "Using system-only scoring.", percent=95)
 
         # -------------------------------------------------------
         # PHASE 3: Persist QuestionScore rows
+        # CRITICAL: final_marks come ONLY from XLM-R system score.
+        # Gemini data is only read for .feedback text — never for marks.
         # -------------------------------------------------------
-        total_score = Decimal(0)
-        for item in scored_items:
-            key = item["key"]
-            target = item["target"]
-            awarded_marks = item["awarded_marks"]
-            
-            # Apply Gemini validation multiplier
-            gemini_data = eval_data_map.get(key, {})
-            multiplier = Decimal(str(gemini_data.get("relevance_multiplier", 1.0)))
-            awarded_marks = (awarded_marks * multiplier).quantize(Decimal("0.01"))
-            
-            feedback = gemini_data.get("feedback")  # May be None if include_feedback=False
+        if progress_callback:
+            progress_callback("finalizing_results", "Saving scores...", percent=90)
 
-            total_score += awarded_marks
+        from app.services.evaluation.paper_config_service import PaperConfigService
+        eval_session = self.db.query(EvaluationSession).filter(EvaluationSession.id == eval_session_id).first()
+        chat_session_id = eval_session.session_id if eval_session else None
 
-            if isinstance(target, SubQuestion):
-                qs = QuestionScore(
-                    evaluation_result_id=eval_result.id,
-                    sub_question_id=target.id,
-                    awarded_marks=awarded_marks,
-                    feedback=feedback,
-                )
-            elif isinstance(target, Question):
-                qs = QuestionScore(
-                    evaluation_result_id=eval_result.id,
-                    question_id=target.id,
-                    awarded_marks=awarded_marks,
-                    feedback=feedback,
+        config_service = PaperConfigService(self.db)
+        paper_configs = self.db.query(PaperConfig).filter(
+            (PaperConfig.evaluation_session_id == eval_session_id) |
+            (PaperConfig.chat_session_id == chat_session_id)
+        ).all()
+
+        selection_map = {}
+        for c in paper_configs:
+            if c.selection_rules:
+                norm_key = c.paper_part.lower().replace(" ", "_")
+                if norm_key.endswith("_ii") or norm_key == "paper_ii":
+                    norm_key = "paper_ii"
+                elif norm_key.endswith("_i") or norm_key == "paper_i":
+                    norm_key = "paper_i"
+                selection_map[norm_key] = c.selection_rules
+
+        all_objs = {id(v): v for v in question_map.values()}.values()
+        questions = [q for q in all_objs if isinstance(q, Question)]
+
+        all_target_ids = {str(q.id) for q in questions if not isinstance(q, SubQuestion)}
+        all_target_ids.update({str(sq.id) for q in questions for sq in getattr(q, 'sub_questions', []) or []})
+
+        scored_target_ids = {str(item["target"].id) for item in scored_items}
+
+        full_q_map = {}
+        # Ensure unique questions by ID to prevent duplication
+        unique_questions = []
+        seen_qids = set()
+        for q in questions:
+            if str(q.id) not in seen_qids:
+                unique_questions.append(q)
+                seen_qids.add(str(q.id))
+
+        for q in unique_questions:
+            full_q_map[str(q.id)] = q
+            for sq in getattr(q, 'sub_questions', []) or []:
+                full_q_map[str(sq.id)] = sq
+
+        part_scores = {}
+
+        for q_id, target in full_q_map.items():
+            item = next((it for it in scored_items if str(it["target"].id) == q_id), None)
+
+            raw_part = self._resolve_part_name(target)
+            part_name = raw_part.lower().replace(" ", "_")
+            if part_name.endswith("_ii") or part_name == "paper_ii":
+                part_name = "paper_ii"
+            elif part_name.endswith("_i") or part_name == "paper_i":
+                part_name = "paper_i"
+
+            if item:
+                # -------------------------------------------------------
+                # MARKS SOURCE: XLM-R system score only.
+                # _apply_discrete_bands snaps to clean mark steps.
+                # Gemini output is NOT read here for marks under any circumstance.
+                # -------------------------------------------------------
+                system_ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
+                final_snapped_ratio = self._apply_discrete_bands(system_ratio, item["max_marks"])
+                final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
+
+                # Feedback text from Gemini (text only, never marks)
+                meaning_data = eval_data_map.get(item["key"], {})
+                feedback = meaning_data.get("feedback", "පිළිතුර අගය කරන ලදී.")
+
+                logger.info(
+                    f"[FINAL_MARK] Q{item['display_number']} | "
+                    f"system_ratio={system_ratio:.4f} -> snapped_ratio={final_snapped_ratio:.4f} -> "
+                    f"final_marks={final_marks}/{item['max_marks']}"
                 )
             else:
-                logger.error(f"Invalid target type for key {key}: {type(target)}")
-                continue
+                final_marks = Decimal(0)
+                feedback = "පිළිතුර හමු නොවුණි (0 ලකුණු)."
 
-            self.db.add(qs)
+                if isinstance(target, SubQuestion) and target.question:
+                    parent_q = target.question
+                    parent_sqs = getattr(parent_q, 'sub_questions', []) or []
+                    any_sq_scored = any(
+                        any(str(sq.id) == str(it["target"].id) for it in scored_items)
+                        for sq in parent_sqs
+                    )
+                    if not any_sq_scored:
+                        parent_item = next(
+                            (it for it in scored_items if str(it["target"].id) == str(parent_q.id)),
+                            None
+                        )
+                        if parent_item:
+                            n_sqs = max(1, len(parent_sqs))
+                            distributed = parent_item["awarded_marks"] / Decimal(str(n_sqs))
+                            final_marks = distributed.quantize(Decimal("0.5"), rounding=ROUND_HALF_UP)
+                            feedback = "ප්‍රශ්නයේ සම්පූර්ණ පිළිතුරෙන් ලකුණු ලබා ගන්නා ලදී."
+
+                item = {
+                    "target": target,
+                    "max_marks": self._resolve_max_marks(target),
+                    "display_number": self._resolve_display_number(target, q_id)
+                }
+
+            q_score_params = {
+                "evaluation_result_id": eval_result.id,
+                "awarded_marks": final_marks,
+                "feedback": feedback,
+            }
+            if isinstance(target, SubQuestion):
+                q_score_params["sub_question_id"] = target.id
+            else:
+                q_score_params["question_id"] = target.id
+
+            q_score = QuestionScore(**q_score_params)
+            self.db.add(q_score)
+
+            if part_name not in part_scores:
+                part_scores[part_name] = {}
+
+            is_leaf = True
+            main_q = target
+            if isinstance(target, SubQuestion):
+                if getattr(target, 'children', []): is_leaf = False
+                main_q = target.question
+            else:
+                if getattr(target, 'sub_questions', []): is_leaf = False
+
+            if is_leaf:
+                main_q_id = str(main_q.id) if main_q else "orphan"
+                if main_q_id not in part_scores[part_name]:
+                    part_scores[part_name][main_q_id] = {"marks": [], "attempted": 0}
+                part_scores[part_name][main_q_id]["marks"].append(final_marks)
+                if any(str(it["target"].id) == str(target.id) for it in scored_items):
+                    part_scores[part_name][main_q_id]["attempted"] += 1
 
         self.db.flush()
 
-        if progress_callback:
-            progress_callback("calculating_marks", "Calculating final score...", percent=96)
+        # 4. Final total score using selection rules
+        total_score_val = Decimal(0)
+        norm_selection_map = {k.lower().replace(" ", "_"): v for k, v in selection_map.items()}
 
-        eval_result.total_score = sum(
-            qs.awarded_marks for qs in self.db.query(QuestionScore)
-            .filter(QuestionScore.evaluation_result_id == eval_result.id)
-        )
+        for part_name, section_map in part_scores.items():
+            main_q_entries = []
+            for mq_id, data in section_map.items():
+                total = sum(data["marks"])
+                attempted = data["attempted"]
+                main_q_entries.append((total, attempted))
+
+            part_rules = norm_selection_map.get(part_name) or {}
+            mode = str(part_rules.get('mode', 'all')).lower()
+            # Support both 'any' and 'choose_any' as synonyms
+            is_selection_mode = mode in ['any', 'choose_any', 'choose']
+            count = part_rules.get('count') or part_rules.get('total') or part_rules.get('choose_any')
+
+            if is_selection_mode and count and len(main_q_entries) > int(count):
+                # SYNC: Sort by total marks (descending), then by attempted sub-questions (descending)
+                main_q_entries.sort(key=lambda x: (x[0], x[1]), reverse=True)
+                selected = main_q_entries[:int(count)]
+                selected_totals = [e[0] for e in selected]
+                attempted_count = sum(1 for e in selected if e[1] > 0)
+                logger.info(f"Part {part_name}: Selected best {count}/{len(main_q_entries)} questions ({attempted_count} attempted).")
+                total_score_val += sum(selected_totals)
+            else:
+                total_score_val += sum(e[0] for e in main_q_entries)
+
+        eval_result.total_score = total_score_val.quantize(Decimal("0.01"))
+        logger.info(f"Final Total Score (system-only, selection-aware): {eval_result.total_score}")
 
         if include_feedback:
             if progress_callback:
                 progress_callback("generating_feedback", "Generating overall feedback...", percent=98)
-
             eval_result.overall_feedback = self._generate_overall_feedback(
-                total_score, eval_result.id
+                eval_result.total_score, eval_result.id
             )
 
         if progress_callback:
-            progress_callback("preparing_report", "Finalizing report...", percent=99)
+            progress_callback("completed", "Evaluation completed successfully.", percent=100)
 
         self.db.commit()
+        logger.info(f"Grading transaction committed for result ID: {eval_result.id}")
         return eval_result
 
+
     def generate_feedback_for_result(self, answer_doc_id: UUID, user_id: UUID) -> Optional[EvaluationResult]:
-        """
-        Generate Gemini feedback for an existing evaluation result.
-        """
-        # 1. Fetch existing result
+        """Generate Gemini feedback text for an existing evaluation result."""
         result = self.db.query(EvaluationResult).filter(EvaluationResult.answer_document_id == answer_doc_id).first()
         if not result:
             logger.error(f"Cannot generate feedback: No evaluation result for {answer_doc_id}")
             return None
 
-        # 2. Fetch answer document and session details to rebuild context
         answer_doc = (
             self.db.query(AnswerDocument)
             .filter(AnswerDocument.id == answer_doc_id)
@@ -307,17 +632,14 @@ class GradingService:
         if not eval_session:
             return None
 
-        # 3. Get context (Rubric, Question Map)
         from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
         workflow = EvaluationWorkflowService(self.db)
-        
+
         syllabus_text, rubric_text, questions = workflow._get_evaluation_context(eval_session.id)
         question_map = workflow._build_question_map_helper(questions)
 
-        # 4. Fetch existing scores to get display numbers and texts
         scores = self.db.query(QuestionScore).filter(QuestionScore.evaluation_result_id == result.id).all()
-        
-        # Reconstruct scored_items for the batch feedback method
+
         scored_items = []
         for qs in scores:
             target = None
@@ -325,23 +647,22 @@ class GradingService:
                 target = qs.sub_question
             elif qs.question_id:
                 target = qs.question
-            
+
             if not target:
                 continue
 
-            # Find the key in mapped_answers
             key = None
             for k, val in answer_doc.mapped_answers.items():
-                if str(target.id) in str(val) or k == str(target.id): 
+                if str(target.id) in str(val) or k == str(target.id):
                     key = k
                     break
-            
+
             if not key:
                 key = str(target.id)
 
             display_number = self._resolve_display_number(target, key)
             reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
-            
+
             scored_items.append({
                 "key": key,
                 "student_text": answer_doc.mapped_answers.get(key, ""),
@@ -356,198 +677,556 @@ class GradingService:
         if not scored_items:
             return result
 
-        # 5. Generate Batch & Overall Feedback Concurrently
         logger.info(f"Generating on-demand batch & overall feedback for result {result.id}")
-        feedback_map = {}
-        overall_feedback = ""
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            future_batch = executor.submit(self._get_batch_feedback_from_gemini, scored_items)
+            # Only send essays to Gemini
+            essay_items = [i for i in scored_items if i["max_marks"] > 2]
+            future_batch = executor.submit(self._get_batch_feedback_from_gemini, essay_items)
             future_overall = executor.submit(self._generate_overall_feedback, result.total_score, result.id)
-            
+
             try:
                 eval_data_map = future_batch.result()
             except Exception as e:
                 logger.error(f"Batch feedback generation failed: {e}")
                 eval_data_map = {}
-                
+
             try:
                 overall_feedback = future_overall.result()
             except Exception as e:
                 logger.error(f"Overall feedback generation failed: {e}")
                 overall_feedback = f"Total Score: {result.total_score}"
 
-        # 6. Update individual scores
+        # Generate short-answer feedback locally
         for item in scored_items:
-            qs = item["db_score_obj"]
+            if item["max_marks"] <= 2:
+                ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
+                if ratio >= 0.99:
+                    fb = "නිවැරදි පිළිතුරයි."
+                elif ratio >= 0.49:
+                    fb = "අර්ධ වශයෙන් නිවැරදිය."
+                else:
+                    fb = "පිළිතුර අසම්පූර්ණ හෝ නිවැරදි නොවේ."
+                eval_data_map[item["key"]] = {
+                    "feedback": f"**ප්‍රශ්නය {item['display_number']}** {fb}"
+                }
+
+        current_scores = {qs.id: qs for qs in self.db.query(QuestionScore).filter(QuestionScore.evaluation_result_id == result.id).all()}
+
+        for item in scored_items:
+            qs_id = item["db_score_obj"].id
+            qs = current_scores.get(qs_id)
+
+            if not qs:
+                logger.warning(f"QuestionScore {qs_id} no longer exists.")
+                continue
+
             gemini_data = eval_data_map.get(item["key"], {})
-            
-            multiplier = Decimal(str(gemini_data.get("relevance_multiplier", 1.0)))
-            new_score = (item["awarded_marks"] * multiplier).quantize(Decimal("0.01"))
-            qs.awarded_marks = min(Decimal(str(item["max_marks"])), max(Decimal("0"), new_score))
-            
             feedback = gemini_data.get("feedback")
+            # IMPORTANT: Only update feedback text, never marks
             if feedback:
                 qs.feedback = feedback
 
-        # 7. Generate overall feedback
         result.overall_feedback = overall_feedback
-        
-        self.db.commit()
+
+        try:
+            self.db.commit()
+            logger.info(f"Feedback successfully saved for result {result.id}")
+        except StaleDataError:
+            self.db.rollback()
+            logger.error(f"StaleDataError while saving feedback for result {result.id}.")
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Unexpected error while committing feedback: {e}")
+            raise
+
         return result
+
 
     # ----------------------------------------------------------
     # SCORING HELPERS
     # ----------------------------------------------------------
 
-    def _semantic_similarity(self, student_text: str, reference_text: str, student_emb=None, reference_emb=None) -> float:
+    def _semantic_similarity(self, student_text: str, reference_text: str, student_emb=None, reference_emb=None, max_marks: int = 2) -> float:
+        """
+        Semantic similarity using sentence-level max-match.
+        XLM-R on Sinhala OCR text vs syllabus text.
+
+        CALIBRATION (confirmed from actual marks breakdown, March 2026):
+        - Correct SHORT answers (Paper I, <=2 marks): cosine sim ~ 0.36–0.48
+        - Correct ESSAY answers (Paper II, >2 marks): cosine sim ~ 0.28–0.38
+          Essays land LOWER because:
+          (a) Multi-sentence answers dilute the embedding vs a short syllabus sentence
+          (b) Sinhala OCR noise is compounded across longer text
+        - Partial:  sim ~ 0.20–0.30
+        - Wrong:    sim ~ 0.10–0.20
+        """
         if not reference_text or not student_text:
             return 0.0
-            
-        # Use cached embeddings if provided
-        emb1 = student_emb if student_emb is not None else xlmr.encode(student_text, convert_to_tensor=True)
-        emb2 = reference_emb if reference_emb is not None else xlmr.encode(reference_text, convert_to_tensor=True)
-        
-        raw_sim = util.cos_sim(emb1, emb2).item()
 
-        # Semantic boost for Sinhala (more aggressive 1.4 for short-answer accuracy)
-        boosted = min(1.0, max(0.0, raw_sim * 1.4))
+        sentences = [s.strip() for s in re.split(r'[.!?\n]', reference_text) if len(s.strip()) > 10]
+        if not sentences:
+            with ml_semaphore:
+                emb1 = student_emb if student_emb is not None else _embedding_cache.get(student_text)
+                if emb1 is None: emb1 = xlmr.encode(student_text, convert_to_tensor=True)
 
-        if boosted > 0.50: 
-            return 0.50 + (boosted - 0.50) * (0.50 / 0.50)
+                emb2 = reference_emb if reference_emb is not None else _embedding_cache.get(reference_text)
+                if emb2 is None: emb2 = xlmr.encode(reference_text, convert_to_tensor=True)
 
-        return boosted
+            raw_sim = util.cos_sim(emb1, emb2).item()
+            return self._sinhala_sigmoid_boost(raw_sim, max_marks)
+
+        s_emb = student_emb if student_emb is not None else _embedding_cache.get(student_text)
+        if s_emb is None:
+            with ml_semaphore:
+                s_emb = xlmr.encode(student_text, convert_to_tensor=True)
+
+        missing = [s for s in sentences if s not in _embedding_cache]
+        if missing:
+            ensure_sentences_cached(missing)
+
+        ref_embs = torch.stack([_embedding_cache[s] for s in sentences])
+        sims = util.cos_sim(s_emb, ref_embs)[0]
+
+        # Blend max-match (70%) with top-3 average (30%) for stability
+        k = min(3, len(sims))
+        topk_values = torch.topk(sims, k=k).values
+        combined_sim = (0.7 * sims.max().item()) + (0.3 * topk_values.mean().item())
+
+        logger.info(f"[SIM] max_sim={sims.max().item():.4f} combined_sim={combined_sim:.4f} max_marks={max_marks}")
+        return self._sinhala_sigmoid_boost(combined_sim, max_marks)
+
+
+    def _sinhala_sigmoid_boost(self, sim: float, max_marks: int = 2) -> float:
+        """
+        Maps XLM-R cosine similarity → [0, 1] score.
+        Uses SEPARATE calibrated thresholds for short answers vs essays.
+        """
+        if max_marks > 2:
+            # ESSAY thresholds (calibrated for paper II)
+            if sim >= 0.40:   return 1.0
+            if sim >= 0.30:   return 0.50 + (sim - 0.30) * (0.50 / 0.10)   
+            if sim >= 0.15:   return 0.0  + (sim - 0.15) * (0.50 / 0.15)   
+            return 0.0
+        else:
+            # SHORT ANSWER thresholds (Paper I or dynamic marks)
+            # More generous for full marks (0.35 instead of 0.40)
+            if sim >= 0.35:   return 1.0
+            if sim >= 0.22:   return 0.50 + (sim - 0.22) * (0.50 / 0.13)   
+            if sim >= 0.10:   return 0.0  + (sim - 0.10) * (0.50 / 0.12)   
+            return 0.0
 
 
     # ----------------------------------------------------------
     # MARKING BANDS
     # ----------------------------------------------------------
+    def _apply_discrete_bands(self, ratio: float, max_marks: int) -> float:
+        """
+        Snaps the continuous system_score_ratio to clean 0.5 mark steps.
+
+        THRESHOLD DESIGN (Improved Fairness):
+        - Paper I / Short: Below 0.20 gives zero
+        - Paper II / Essay: Below 0.15 gives zero (more lenient for depth coverage)
+        """
+        high_threshold = 0.78
+        low_threshold = 0.20 if max_marks <= 2 else 0.15
+
+        if ratio >= high_threshold: return 1.0
+        if ratio < low_threshold: return 0.0
+
+        actual_marks = ratio * max_marks
+
+        # Always use 0.5 mark steps to avoid inflation from rounding
+        step = Decimal("0.5")
+        snapped_marks = (Decimal(str(actual_marks)) / step).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        ) * step
+
+        final_ratio = float(snapped_marks / Decimal(str(max_marks)))
+        return min(1.0, final_ratio)
+
+
     def _apply_marking_band(self, semantic: float, coverage: float) -> float:
         combined = (0.6 * semantic) + (0.4 * coverage)
+        if combined >= 0.85: return 1.0
+        if combined >= 0.70: return 0.75
+        if combined >= 0.55: return 0.50
+        if combined >= 0.40: return 0.25
+        return 0.0
 
-        # Stricter, more proportional bands to avoid inflating poor answers
-        if combined >= 0.85:
-            return 0.90 + (combined - 0.85) * (0.10 / 0.15)  # 0.85 -> 0.90, 1.0 -> 1.0
-        if combined >= 0.70:
-            return 0.75 + (combined - 0.70) * (0.15 / 0.15)  # 0.70 -> 0.75, 0.85 -> 0.90
-        if combined >= 0.55:
-            return 0.60 + (combined - 0.55) * (0.15 / 0.15)  # 0.55 -> 0.60, 0.70 -> 0.75
-        if combined >= 0.40:
-            return 0.45 + (combined - 0.40) * (0.15 / 0.15)  # 0.40 -> 0.45, 0.55 -> 0.60
-
-        return combined
 
     # ----------------------------------------------------------
     # CONTEXT & COVERAGE
     # ----------------------------------------------------------
+    def _is_placeholder_answer(self, text: str) -> bool:
+        """Detects useless placeholder answers generated during extraction."""
+        if not text: return True
+        
+        placeholders = [
+            "විස්තර කිරීම", "පිළිබඳව", "පිටුව", "හමුවන්නේ නැත", 
+            "සඳහන් වේ", "මෙම ප්‍රශ්නයට අදාළ තොරතුරු", 
+            "Syllabus mentions", "page", "description of"
+        ]
+        
+        cleaned = text.strip()
+        if len(cleaned) < 5: return True
+        
+        # If the length is very small and contains these patterns
+        if len(cleaned) < 100:
+            for p in placeholders:
+                if p in cleaned:
+                    return True
+        return False
+
     def _get_reference_context(self, question, syllabus_text: str, rubric_text: str) -> str:
-        q_text = getattr(question, "question_text", "") or getattr(
-            question, "sub_question_text", ""
-        )
-        source = syllabus_text or rubric_text
+        # Gold standard: use correct_answer if available and NOT a placeholder
+        correct = getattr(question, "correct_answer", None)
+        if correct and not self._is_placeholder_answer(correct):
+            logger.info(f"Using Gold Standard context for question {getattr(question, 'id')}")
+            return correct.strip()
+
+        q_number = getattr(question, "question_number", "") or getattr(question, "label", "")
+        q_text = getattr(question, "question_text", "") or getattr(question, "sub_question_text", "")
+
+        source = syllabus_text
         if not source:
             return ""
 
-        chunks = [c.strip() for c in source.split("\n\n") if c.strip()]
-        if not chunks:
-            chunks = [c.strip() for c in source.split("\n") if c.strip()]
-
+        chunks = [c.strip() for c in source.split("\n") if len(c.strip()) > 5]
+        search_query = f"{q_number} {q_text}"
         bm25 = BM25Okapi([c.split() for c in chunks])
-        # Increase n from 3 to 5 to get more context
-        top_chunks = bm25.get_top_n(q_text.split(), chunks, n=5)
-        return "\n\n".join(top_chunks)
+        top_chunks = bm25.get_top_n(search_query.split(), chunks, n=15)
+
+        prio_chunks = [c for c in top_chunks if re.match(rf"^(?:\()?0?{q_number}(?:\.|\)|[\s:]|$)", c.strip())]
+
+        if prio_chunks:
+            context = "\n\n".join(prio_chunks[:5])
+        else:
+            backup_prio = [c for c in top_chunks if f"{q_number}" in c]
+            if backup_prio:
+                context = "\n\n".join(backup_prio[:5])
+            else:
+                context = "\n\n".join(top_chunks[:5])
+
+        if len(context) > 2000:
+            context = context[:2000] + "... [Context Clipped]"
+        return context
+
+
+    def _batch_extract_reference_points(
+        self,
+        questions: List[Dict],
+        syllabus_text: str
+    ) -> Dict[str, str]:
+        """
+        Use Gemini to read the syllabus and extract precise marking points for each question.
+        
+        This REPLACES BM25 keyword search as the primary reference source.
+        Gemini does NOT grade — it only identifies what the correct answer should contain.
+        The actual scoring is still done by XLM-R (deterministic).
+        
+        Returns: map of question_key -> reference_answer_text
+        """
+        if not questions or not syllabus_text:
+            return {}
+
+        # Truncate syllabus to fit Gemini context (keep first 12000 chars for better coverage)
+        syllabus_for_prompt = syllabus_text[:12000]
+        if len(syllabus_text) > 12000:
+            syllabus_for_prompt += "\n... [truncated]"
+
+        base_prompt = f"""You are a Sinhala education expert. Your task is to READ the syllabus/marking scheme content below and EXTRACT the specific answer points that each question is looking for.
+
+IMPORTANT RULES:
+1. Use the syllabus content as your PRIMARY source. If the syllabus covers the topic area of a question, extract relevant facts, concepts, names, and dates from it.
+2. For short-answer questions (1-2 marks): provide the exact expected answer in 1-2 sentences.
+3. For essay questions (3+ marks): provide a numbered list of key points the answer should cover.
+4. Write answer points in Sinhala (matching the syllabus language).
+5. If the syllabus DOES NOT cover the topic area of a question AT ALL, DO NOT write "NOT_FOUND". Instead, infer the appropriate grade/age level from the provided text, and GENERATE a few simple, accurate factual points in Sinhala that correctly answer the question for that student level.
+6. Be SPECIFIC — extract or generate actual facts, names, dates, and concepts.
+7. Match questions to syllabus content by TOPIC, not by exact wording. For example, if Q3 asks about "වැව් ඉදිකිරීම" (reservoir construction) and the syllabus discusses "වාරිමාර්ග සංවර්ධනය" (irrigation development), they are about the SAME topic.
+
+=== SYLLABUS / MARKING SCHEME CONTENT ===
+{syllabus_for_prompt}
+=== END CONTENT ===
+
+For each question below, extract the answer points from the content above.
+
+OUTPUT FORMAT — return ONLY a valid JSON object:
+{{
+  "<key>": "extracted answer points here...",
+  "<key2>": "1. point one\n2. point two\n3. point three"
+}}
+
+Questions:
+"""
+
+        def process_chunk(chunk: List[Dict]) -> Dict[str, str]:
+            chunk_prompt = base_prompt
+            # Robust mapping: index -> UUID
+            index_to_uuid = {}
+            for i, q in enumerate(chunk):
+                idx_key = f"ref_{i+1}"
+                index_to_uuid[idx_key] = q['key']
+                chunk_prompt += f"\n--- Key: {idx_key} ---\n"
+                chunk_prompt += f"Question Number: {q['display_number']}\n"
+                chunk_prompt += f"Question: {q['question_text']}\n"
+                chunk_prompt += f"Max Marks: {q['max_marks']}\n"
+                chunk_prompt += f"Type: {'essay' if q['max_marks'] > 2 else 'short answer'}\n"
+
+            try:
+                sent_indices = list(index_to_uuid.keys())
+                logger.info(f"[GEMINI_REF] Extracting references for surrogate keys: {sent_indices}")
+
+                response_json = self.gemini.generate_content(
+                    chunk_prompt, json_mode=True
+                ).text or "{}"
+
+                clean_json = re.sub(
+                    r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE
+                )
+                data = json.loads(clean_json)
+
+                if isinstance(data, list):
+                    merged = {}
+                    for d in data:
+                        if isinstance(d, dict):
+                            merged.update(d)
+                    data = merged
+
+                # Validate and clean results
+                result = {}
+                if isinstance(data, dict):
+                    for idx_key, value in data.items():
+                        # Map back to original UUID key
+                        original_key = index_to_uuid.get(idx_key)
+                        if not original_key:
+                            # Fallback: maybe Gemini returned the original key or something else
+                            logger.warning(f"[GEMINI_REF] Unexpected key in response: {idx_key}")
+                            continue
+
+                        if isinstance(value, str) and value.strip() and value.strip() != "NOT_FOUND":
+                            # Cap reference text length
+                            clean_val = value.strip()[:1500]
+                            result[original_key] = clean_val
+                            logger.info(
+                                f"[GEMINI_REF] Key={original_key}: extracted {len(clean_val)} chars"
+                            )
+                        elif isinstance(value, dict):
+                            # Handle if Gemini returns nested object
+                            text_val = value.get("answer", "") or value.get("points", "") or str(value)
+                            if text_val.strip() and text_val.strip() != "NOT_FOUND":
+                                result[original_key] = text_val.strip()[:1500]
+                        else:
+                            logger.info(f"[GEMINI_REF] Key={original_key}: NOT_FOUND in syllabus")
+
+                received_keys = list(result.keys())
+                sent_uuids = list(index_to_uuid.values())
+                missing_keys = [k for k in sent_uuids if k not in received_keys]
+                if missing_keys:
+                    logger.warning(f"[GEMINI_REF] Missing UUIDs in response: {missing_keys}")
+
+                return result
+
+            except json.JSONDecodeError as e:
+                logger.error(f"[GEMINI_REF] JSON parse error: {e}")
+                return {}
+            except Exception as e:
+                logger.error(f"[GEMINI_REF] Extraction failed: {e}")
+                return {}
+
+        # Batch questions — 8 per Gemini call to stay within context limits
+        batch_size = 8
+        chunks = [questions[i:i + batch_size] for i in range(0, len(questions), batch_size)]
+
+        all_refs: Dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 4)) as executor:
+            future_to_chunk = {
+                executor.submit(process_chunk, chunk): chunk for chunk in chunks
+            }
+            for future in as_completed(future_to_chunk):
+                try:
+                    result = future.result()
+                    if result:
+                        all_refs.update(result)
+                except Exception as exc:
+                    logger.error(f"[GEMINI_REF] Chunk extraction exception: {exc}")
+
+        logger.info(f"[GEMINI_REF] Total extracted: {len(all_refs)} references")
+
+        # PERSISTENCE: Save extracted references to DB to heal missing context
+        if all_refs:
+            try:
+                updated_count = 0
+                for q_info in questions:
+                    key = q_info['key']
+                    extracted_text = all_refs.get(key)
+                    if not extracted_text:
+                        continue
+                    
+                    target = q_info['target']
+                    # Only persist if current correct_answer is empty
+                    if not getattr(target, 'correct_answer', None):
+                        target.correct_answer = extracted_text
+                        updated_count += 1
+                
+                if updated_count > 0:
+                    self.db.commit()
+                    logger.info(f"[GEMINI_REF] Persisted {updated_count} references to database.")
+            except Exception as e:
+                self.db.rollback()
+                logger.error(f"[GEMINI_REF] Failed to persist references: {e}")
+
+        return all_refs
+
+    def _batch_clean_student_answers(self, mapped_answers: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Use Gemini to rapidly clean OCR noise and structural typos from student answers.
+        Does NOT rewrite or expand answers. Simply acts as a spell-checker.
+        """
+        # Filter valid text answers
+        to_clean = {
+            k: v for k, v in mapped_answers.items()
+            if isinstance(v, str) and str(v).strip() and str(v).strip().lower() not in ["null", "none"]
+        }
+
+        if not to_clean:
+            return mapped_answers
+
+        prompt = """You are a Sinhala OCR corrector. Below is a JSON dictionary where keys are IDs and values are text written by students that has been extracted via OCR.
+The text contains spelling mistakes, garbled characters, and structural spacing issues caused by bad OCR.
+
+YOUR TASK:
+1. Fix spelling mistakes and garbled characters so that the Sinhala text is readable.
+2. DO NOT rewrite the answer.
+3. DO NOT expand the answer or add new information.
+4. DO NOT evaluate the answer or say if it is correct or wrong.
+5. If the text is completely unreadable or blank, leave it as is or return an empty string.
+
+Return ONLY a valid JSON object mirroring the keys provided.
+
+=== STUDENT ANSWERS ===
+"""
+        prompt += json.dumps(to_clean, ensure_ascii=False, indent=2)
+        prompt += "\n\n=== END ===\nReturn pure JSON dictionary only."
+
+        try:
+            logger.info(f"[OCR_CLEAN] Batch cleaning {len(to_clean)} answers via Gemini...")
+            start_t = time.time()
+            res_text = self.gemini.generate_content(prompt, json_mode=True).text or "{}"
+            clean_json = re.sub(r'^```json\s*|\s*```$', '', res_text.strip(), flags=re.MULTILINE)
+            cleaned_map = json.loads(clean_json)
+
+            # Re-merge with original
+            final_map = dict(mapped_answers)
+            for k, original_text in to_clean.items():
+                cleaned_text = cleaned_map.get(k)
+                if isinstance(cleaned_text, str) and cleaned_text.strip():
+                    final_map[k] = cleaned_text
+                    if original_text.strip() != cleaned_text.strip():
+                        logger.info(f"[OCR_CLEAN_DIFF] Key '{k}'\nOriginal: {original_text}\nCleaned : {cleaned_text}")
+                else:
+                    final_map[k] = original_text
+
+            logger.info(f"[OCR_CLEAN] Cleaned in {time.time() - start_t:.2f}s")
+            return final_map
+        except Exception as e:
+            logger.error(f"[OCR_CLEAN] Failed to batch clean OCR: {e}")
+            return mapped_answers
 
     def _calculate_coverage_score(self, student_text: str, reference_text: str, max_marks: int, student_emb=None):
         """
-        Optimized: batch-encodes all reference sentences in a single XLM-R forward pass
-        instead of one pass per sentence.
+        Measures how many key concepts from the reference the student covered.
+
+        FIX: The denominator is now capped to max_marks * 2 instead of
+        len(sentences) * 0.70. This means:
+        - A 4-mark question expects ~8 key concept sentences.
+        - A student who covers 4 of them gets 4/8 = 0.50 coverage (not 4/14 = 0.28).
+        - This correctly reflects partial credit for partial answers.
+
+        Previously, BM25 could return 20 long syllabus sentences as context, and a
+        student covering all the required points still got coverage ~0.21 because
+        the denominator was the full raw sentence count.
         """
         if not reference_text:
             return 0.0, "No reference"
 
         sentences = re.split(r"(?<=[.!?])\s+", reference_text)
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+        sentences = [s.strip() for s in sentences if len(s.strip()) >= 4]
 
         if not sentences:
             return 0.0, "No reference sentences"
 
-        # Use cached student embedding if provided
-        s_emb = student_emb if student_emb is not None else xlmr.encode(student_text, convert_to_tensor=True)
-
-        # -------------------------------------------------------
-        # Identify sentences not yet in the cache
-        # -------------------------------------------------------
-        missing_sentences = [s for s in sentences if s not in self._sentence_cache]
-        
-        if missing_sentences:
+        s_emb = student_emb if student_emb is not None else _embedding_cache.get(student_text)
+        if s_emb is None:
             with ml_semaphore:
-                # Batch encode only the new sentences
-                new_embs = xlmr.encode(missing_sentences, batch_size=32, convert_to_tensor=True)
-                for i, s in enumerate(missing_sentences):
-                    self._sentence_cache[s] = new_embs[i]
+                s_emb = xlmr.encode(student_text, convert_to_tensor=True)
 
-        # Assemble the full matrix of embeddings for THIS question
-        sentence_embs = torch.stack([self._sentence_cache[s] for s in sentences])
+        missing_sentences = [s for s in sentences if s not in _embedding_cache]
+        if missing_sentences:
+            ensure_sentences_cached(missing_sentences)
 
-        # Cosine similarities in one matrix operation
-        sims = util.cos_sim(s_emb, sentence_embs)[0]  # shape: (num_sentences,)
+        sentence_embs = torch.stack([_embedding_cache[s] for s in sentences])
+        sims = util.cos_sim(s_emb, sentence_embs)[0]
 
-        # Stricter hit threshold (0.45) for Sinhala concept matching
-        hits = int((sims >= 0.45).sum().item())
+        # Threshold: how similar must a sentence be to count as "covered"
+        # Relaxed from 0.32 to 0.28 to reward pooled concise bullet items without dilution.
+        threshold = 0.28 if max_marks <= 2 else 0.28
+        hits = int((sims >= threshold).sum().item())
 
-        # Stricter divisor (0.75 instead of 0.5)
-        ratio = hits / max(1, len(sentences) * 0.75)
+        # KEY FIX: Cap denominator to expected concept count for this question.
+        # Ensure deep essays (e.g. 18 marks) don't unreasonably penalize excellent answers
+        # by expecting 36 discrete points to score a 1.0 coverage. Cap to max_marks * 0.6.
+        expected_concepts = min(len(sentences), max_marks * 0.60)
+        ratio = hits / max(1, expected_concepts)
+
         return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
-
 
 
     # ----------------------------------------------------------
     # QUESTION MAPPING
     # ----------------------------------------------------------
     def _build_question_map(self, questions: List[Question]) -> Dict[str, Any]:
+        """Build a robust map of question IDs and human-readable identifiers."""
         q_map = {}
         for q in questions:
-            q_num = str(q.question_number).lower().replace(".", "")
-            q_map[q_num] = q
-            q_map[str(q.id)] = q
+            q_id_str = str(q.id)
+            q_num = str(q.question_number).lower().replace(".", "").strip()
+            part_name = getattr(q, 'part_name', '').lower().replace(" ", "_").strip()
 
-            for sq in q.sub_questions or []:
-                key = f"{q_num}{sq.label}".replace("(", "").replace(")", "")
-                q_map[key] = sq
-                q_map[str(sq.id)] = sq
+            q_map[q_id_str] = q
+
+            if part_name:
+                q_map[f"{part_name}_{q_num}"] = q
+
+            if q_num not in q_map:
+                q_map[q_num] = q
+
+            for sq in getattr(q, 'sub_questions', []) or []:
+                sq_id_str = str(sq.id)
+                sq_label = str(sq.label).lower().replace("(", "").replace(")", "").strip()
+                composite_key = f"{q_num}{sq_label}"
+
+                q_map[sq_id_str] = sq
+                if part_name:
+                    q_map[f"{part_name}_{composite_key}"] = sq
+
+                if composite_key not in q_map:
+                    q_map[composite_key] = sq
+
         return q_map
 
     def _find_matching_question(self, key: str, q_map: Dict[str, Any]):
         norm = key.lower().replace(" ", "").replace(".", "").replace("(", "").replace(")", "")
         return q_map.get(key) or q_map.get(norm)
 
-    # ----------------------------------------------------------
-    # LOADERS
-    # ----------------------------------------------------------
-    # These methods are now in AnswerEvaluationService and are no longer needed here.
-    
-    def _build_question_map(self, questions: List[Question]) -> Dict[str, Any]:
-        """Backward compatibility for building question map."""
-        q_map = {}
-        for q in questions:
-            q_num = str(q.question_number).lower().replace(".", "")
-            # Composite keys for AI mapping strings
-            q_map[q_num] = q
-            # Direct ID keys for precise mapping
-            q_map[str(q.id)] = q
-
-            for sq in getattr(q, "sub_questions", []) or []:
-                key = f"{q_num}{sq.label}".replace("(", "").replace(")", "")
-                q_map[key] = sq
-                q_map[str(sq.id)] = sq
-        return q_map
 
     # ----------------------------------------------------------
     # SYSTEM SCORING & RUBRIC WEIGHTS
     # ----------------------------------------------------------
     def _get_rubric_weights(self, eval_session) -> Dict[str, float]:
-        """Fetch weights for semantic, coverage, and relevance from the session's rubric."""
-        default_weights = {"semantic": 0.6, "coverage": 0.2, "relevance": 0.2}
+        """Fetch rubric weights. These apply to the system XLM-R scoring only."""
+        default_weights = {"semantic": 0.4, "coverage": 0.4, "relevance": 0.2}
 
         if not eval_session.rubric_id:
             logger.warning(f"No rubric_id for session {eval_session.id}, using default weights")
@@ -571,60 +1250,174 @@ class GradingService:
 
         return weights
 
-    def _calculate_system_score(self, student_text: str, reference_text: str, weights: Dict[str, float], max_marks: int = 1, student_emb=None, reference_emb=None) -> float:
-        """Calculate score using discrete snapping for short answers and weighted metrics for essays."""
+
+    def _calculate_depth_penalty(self, student_text: str, reference_text: str, max_marks: int, coverage: float = 0.0) -> float:
+        """
+        Soft penalty for very short essay answers.
+        Only applies to Paper II (max_marks > 2).
+        Does NOT apply to short answers — a correct 2-word answer is valid for Paper I.
+        """
+        if max_marks <= 2:
+            return 1.0
+
+        if coverage >= 0.95:
+            return 1.0
+
+        student_words = len(re.findall(r'\w+', student_text))
+
+        # Expected words could scale with max_marks: ~2 words per mark (concise bullet points)
+        expected_min_words = max_marks * 2
+
+        if student_words >= expected_min_words:
+            return 1.0
+
+        if student_words < expected_min_words * 0.3:
+            return 0.80
+        elif student_words < expected_min_words * 0.5:
+            return 0.90
+        elif student_words < expected_min_words * 0.7:
+            return 0.95
+
+        # Reasonable length: no penalty
+        return 1.0
+
+
+    def _calculate_formal_language_penalty(self, student_text: str, max_marks: int) -> float:
+        """
+        Penalize spoken Sinhala forms (කටවහර) in essay answers.
+        Paper II answers in Sinhala expect formal written language (ලිඛිත ව්‍යවහාරය).
+        Answers written in informal style lose marks for poor description style.
+        """
+        if max_marks <= 2:
+            return 1.0
+
+        spoken_keywords = {
+            "වුණා", "උණා", "කළා", "හැදුවා", "ගත්තා", "ආවා", "ගියා",
+            "තියෙනවා", "තිබුණා", "ඉන්නවා", "හිටියා", "දෙනවා", "දුන්නා",
+            "කියනවා", "කිව්වා", "කෙරුවා", "ඕන", "ඕනේ", "නෑ", "බෑ", "එක",
+            "හැදුණා", "වෙනවා", "ඉන්න", "ගහනවා"
+        }
+
+        # Cleaning punctuation to match words accurately
+        words = [w.strip('.,!?;:"()[]') for w in student_text.split()]
+        words = [w for w in words if w]
+        if not words:
+            return 1.0
+
+        spoken_count = 0
+        for w in words:
+            if any(w.endswith(kw) or w == kw for kw in spoken_keywords):
+                spoken_count += 1
+                
+        ratio = spoken_count / len(words)
+
+        # Moderated punishing modifiers for informal essays to prevent catastrophic score drops
+        if ratio > 0.15:
+            return 0.80
+        elif ratio > 0.08:
+            return 0.90
+        elif ratio > 0.04:
+            return 0.95
+
+        return 1.0
+
+
+    def _calculate_system_score(
+        self,
+        student_text: str,
+        reference_text: str,
+        weights: Dict[str, float],
+        max_marks: int = 1,
+        student_emb=None,
+        reference_emb=None
+    ) -> float:
+        """
+        Calculate the system score using XLM-R semantic similarity, coverage, and keyword relevance.
+
+        This is the SOLE marks-producing function. Gemini is never called here.
+        Marks flow: student_text → XLM-R embeddings → similarity scores → weighted sum → final ratio.
+
+        Paper I (max_marks <= 2): semantic + relevance blend, optimized for short factual answers.
+        Paper II (max_marks > 2): semantic + coverage + relevance, optimized for essay depth.
+        """
         if not reference_text or not student_text:
             return 0.0
 
-        # 1. Semantic Score (XLM-R)
-        semantic = self._semantic_similarity(student_text, reference_text, student_emb, reference_emb)
+        semantic = self._semantic_similarity(student_text, reference_text, student_emb, reference_emb, max_marks)
+        
+        # KEY FIX: If semantic score is 0, the answer is completely off-topic.
+        # Ensure 'relevance' (keyword matching) doesn't award free points to wrong/irrelevant answers.
+        if semantic <= 0.0:
+            logger.info(f"[SCORE_COMPONENTS] semantic=0.000 relevance=X.XXX max_marks={max_marks} -> SHORT CIRCUIT ZERO")
+            return 0.0
 
-        # Handle Short Factual Answers (Paper I Style: <= 2 marks)
-        if max_marks <= 2:
-            # Discrete snapping for short factual items
-            # Sinhala embeddings are naturally lower: use more lenient thresholds
-            # If meaning is mostly correct (>0.50), give full marks. If partially correct (>0.35), give half.
-            if semantic >= 0.50: return 1.0
-            if semantic >= 0.35: return 0.5
-            return semantic # Raw score for very low matches
-
-        # Handle Essay/Structured Answers (Paper II Style: > 2 marks)
-        # 2. Coverage Score (normalized for concise correct answers)
-        coverage, _ = self._calculate_coverage_score(student_text, reference_text, max_marks, student_emb)
-
-        # 3. Relevance Score
         relevance = self._calculate_relevance_score(student_text, reference_text)
 
-        # 4. Weighted Integration (Meaning-First: 75% Semantic)
-        # Shift weights to prioritize semantic meaning over word-count metrics
-        s_w = 0.75
-        c_w = 0.125
-        r_w = 0.125
-        
-        total = (s_w * semantic) + (c_w * coverage) + (r_w * relevance)
+        logger.info(
+            f"[SCORE_COMPONENTS] semantic={semantic:.3f} relevance={relevance:.3f} "
+            f"max_marks={max_marks} | answer='{student_text[:60]}'"
+        )
 
-        # Apply marking bands for distribution smoothing
-        banded_score = self._apply_marking_band(semantic, coverage)
-        
-        if semantic >= 0.85:
-            final_score = max(banded_score, total, 0.85)
-        elif semantic >= 0.60:
-            final_score = (banded_score * 0.60) + (total * 0.40)
+        # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # Paper I — Short Factual Answers (max_marks <= 2)
+        # ------------------------------------------------------------------
+        if max_marks <= 2:
+            # Consistent blend for ALL short answers — no gold-standard shortcut.
+            # Semantic (80%): dominates because XLM-R structural matching is robust
+            # Relevance (20%): tied to keyword matching which is noisy in Sinhala
+            combined = (0.80 * semantic) + (0.20 * relevance)
+            return float(combined)
+
+        # ------------------------------------------------------------------
+        # Paper II — Essay / Structured Answers (max_marks > 2)
+        # Coverage measures depth: how many key concepts did the student address?
+        # Semantic measures topicality: is the answer on the right subject?
+        # Relevance measures keyword overlap: does the answer use correct terms?
+        # ------------------------------------------------------------------
+        coverage, coverage_debug = self._calculate_coverage_score(
+            student_text, reference_text, max_marks, student_emb
+        )
+
+        logger.info(f"[COVERAGE] {coverage_debug} -> coverage_ratio={coverage:.3f}")
+
+        # Recalibrated blend for Paper II (Fairness Update March 2026)
+        if coverage > 0.60:
+            # High quality answer: value concepts (coverage) and keywords (relevance) more
+            e_s_w, e_c_w, e_r_w = 0.40, 0.45, 0.15
         else:
-            final_score = (banded_score * 0.20) + (total * 0.80)
+            # Lower quality or vague: semantic topicality is the safeguard
+            e_s_w, e_c_w, e_r_w = 0.60, 0.30, 0.10
 
-        return max(0.0, min(1.0, final_score))
+        score = (e_s_w * semantic) + (e_c_w * coverage) + (e_r_w * relevance)
+
+        # Apply depth penalty for very short essays
+        depth_mult = self._calculate_depth_penalty(student_text, reference_text, max_marks, coverage)
+        
+        # Apply formal language penalty for spoken-style essays
+        style_mult = self._calculate_formal_language_penalty(student_text, max_marks)
+        
+        score = score * depth_mult * style_mult
+
+        logger.info(
+            f"[ESSAY_SCORE] semantic={semantic:.3f} coverage={coverage:.3f} "
+            f"relevance={relevance:.3f} depth_mult={depth_mult:.2f} style_mult={style_mult:.2f} -> score={score:.3f}"
+        )
+
+        return float(score)
 
 
     def _calculate_relevance_score(self, student_text: str, reference_text: str) -> float:
-        """Calculate relevance using keyword recall with lenient filtering."""
+        """
+        Keyword recall: what fraction of the student's own words also appear in the reference?
+        Lenient — single-character Sinhala particles are included.
+        """
         if not reference_text or not student_text:
             return 0.0
 
         def get_keywords(text):
             words = re.findall(r'\w+', text.lower())
-            # For Sinhala, words slightly longer than 2 characters often carry meaning
-            return set([w for w in words if len(w) > 2])
+            return set([w for w in words if len(w) >= 1])
 
         student_words = get_keywords(student_text)
         ref_words = get_keywords(reference_text)
@@ -633,10 +1426,16 @@ class GradingService:
             return 1.0
 
         overlap = len(student_words & ref_words)
-        # Stricter recall divisor (0.7)
-        recall = overlap / max(1, len(ref_words) * 0.7)
+
+        # Short answers: use precision-style recall to avoid penalizing correct concise answers
+        if len(student_words) < 10:
+            recall = overlap / max(1, len(student_words))
+        else:
+            target_len = min(len(student_words) + 5, 12 + len(ref_words) * 0.4)
+            recall = overlap / max(1, target_len)
 
         return min(1.0, recall)
+
 
     def _resolve_display_number(self, question, q_number: str) -> str:
         """Resolve a human-readable question number."""
@@ -649,37 +1448,44 @@ class GradingService:
                 return str(question.label)
         return q_number
 
+
     # ----------------------------------------------------------
-    # GEMINI FEEDBACK
+    # GEMINI FEEDBACK — TEXT ONLY, NEVER MARKS
     # ----------------------------------------------------------
     def _get_batch_feedback_from_gemini(self, items: List[Dict]) -> Dict[str, Dict]:
         """
-        Request feedback for multiple questions in smaller concurrent batches.
-        Returns map of key -> {feedback: str, relevance_multiplier: float}.
+        Request Sinhala feedback text from Gemini for essay questions only.
+
+        CONTRACT:
+        - Input: scored_items with marks already finalized by XLM-R system.
+        - Output: map of key -> { feedback: str }
+        - Marks are NEVER read from Gemini output. Only "feedback" text is used.
+        - This function must never influence or modify awarded_marks.
         """
         if not items:
             return {}
 
         base_prompt = """
-You are an expert teacher in Sri Lanka. A system has already graded several student answers based on meaning and keyword coverage.
-Provide short, helpful feedback in Sinhala for each question, explaining why the student gained those marks, and what could be improved based on the reference.
+You are a senior examiner specializing in Sinhala history assessment.
+Your ONLY role is to write constructive feedback in Sinhala for each answer.
+The marks have already been finalized by the automated system. DO NOT suggest or assign marks.
 
-**CRITICAL INSTRUCTION:**
-1. You MUST also validate the core meaning and relevance of the answer. Provide a `relevance_multiplier`:
-   - `1.0` if the student's answer is highly relevant and the core meaning answers the question properly. Note: Short correct answers (e.g. naming 2 items) MUST get `1.0`.
-   - `0.5` if the answer is partially relevant but flawed or incomplete.
-   - `0.0` if the answer is complete gibberish, hallucinates, or does not address the question at all.
-2. If the student missed certain concepts, you MUST explicitly state the missing points using phrases like "අඩංගු විය යුතුය", "මඟ හැරී ඇත", "සඳහන් කළ යුතුය", or "පැහැදිලි කළ යුතුය". The system relies on these keywords to extract 'Missing Concepts' and 'Improvement Points'. Be encouraging but accurate.
-3. Return the results as a JSON object where names are the question keys, and values are objects containing strictly 'feedback' and 'relevance_multiplier'.
+FEEDBACK RULES:
+- Correct answers: confirm what is right, mention any minor missing detail.
+- Partial answers: state which points are correct and which are missing. Use phrases like
+  "අඩංගු විය යුතුය", "සඳහන් කළ යුතුය", "මඟ හැරී ඇත".
+- Wrong answers: explain what the answer should have covered.
+- Keep feedback to 2-4 sentences. Be specific. Write in Sinhala only.
 
-Example format:
+OUTPUT FORMAT — return ONLY a valid JSON object, no markdown, no explanation:
 {
-  "1": { "feedback": "මාතෘකාවට අදාළයි. නමුත් [X] අඩංගු විය යුතුය...", "relevance_multiplier": 1.0 },
-  "2අ": { "feedback": "මෙම පිළිතුර ප්රශ්නයට අදාළ නැත...", "relevance_multiplier": 0.0 }
+  "<key>": { "feedback": "ඔබේ ප්‍රතිපෝෂණය මෙහි..." },
+  "<key2>": { "feedback": "..." }
 }
 
 Questions to evaluate:
 """
+
         def process_chunk(chunk: List[Dict]) -> Dict[str, Dict]:
             chunk_prompt = base_prompt
             for item in chunk:
@@ -689,28 +1495,55 @@ Questions to evaluate:
                 chunk_prompt += f"\n--- Key: {item['key']} ---\n"
                 chunk_prompt += f"Question Number: {item['display_number']}\n"
                 chunk_prompt += f"Question: {q_text}\n"
-                chunk_prompt += f"Target Marks: {item['max_marks']}\n"
-                chunk_prompt += f"System Score Estimate: {item['awarded_marks']} (Ensure 'relevance_multiplier' validates this)\n"
-                chunk_prompt += f"Student Answer: {item['student_text']}\n"
-                chunk_prompt += f"Reference: {item['reference_text']}\n"
-            
+                chunk_prompt += f"Max Marks: {item['max_marks']}\n"
+                chunk_prompt += f"Student Answer: {str(item['student_text'])[:500]}\n"
+                chunk_prompt += f"Reference Context: {str(item['reference_text'])[:600]}\n"
+
             try:
-                response_json = self.gemini.generate_content(chunk_prompt, json_mode=True).get("text", "{}")
+                sent_keys = [it["key"] for it in chunk]
+                logger.info(f"Sending Gemini feedback batch for keys: {sent_keys}")
+
+                response_json = self.gemini.generate_content(chunk_prompt, json_mode=True).text or "{}"
                 try:
                     clean_json = re.sub(r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE)
-                    return json.loads(clean_json)
+                    data = json.loads(clean_json)
+
+                    if isinstance(data, list):
+                        merged_data = {}
+                        for item_dict in data:
+                            if isinstance(item_dict, dict):
+                                merged_data.update(item_dict)
+                        data = merged_data
+
+                    received_keys = list(data.keys()) if isinstance(data, dict) else []
+                    missing_keys = [k for k in sent_keys if k not in received_keys]
+                    if missing_keys:
+                        logger.warning(f"Gemini missed feedback keys: {missing_keys}")
+
+                    # Sanitize feedback text — cap length and remove corruption patterns
+                    if isinstance(data, dict):
+                        for q_key, q_val in data.items():
+                            if isinstance(q_val, dict):
+                                fb = q_val.get("feedback", "")
+                                if fb:
+                                    fb = re.sub(r'(.)\1{10,}', r'\1\1\1', fb)  # Remove repeated chars
+                                    q_val["feedback"] = fb[:600]
+
+                    return data
                 except Exception as e:
-                    logger.error(f"Failed to parse batched feedback JSON: {e}. Raw: {response_json}")
+                    logger.error(f"Failed to parse Gemini feedback JSON: {e}. Raw: {response_json}")
                     return {}
             except Exception as e:
-                logger.error(f"Batch Gemini feedback failed: {e}")
+                logger.error(f"Gemini feedback batch failed: {e}")
                 return {}
 
-        batch_size = 5
+        # Batch size 8: Gemini context window handles this easily, reduces API call count
+        batch_size = 8
         chunks = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
-        
+
         evaluation_data = {}
-        with ThreadPoolExecutor(max_workers=min(len(chunks), 4)) as executor:
+        # max_workers 6: more parallelism to reduce total wall-clock time
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 6)) as executor:
             future_to_chunk = {executor.submit(process_chunk, chunk): chunk for chunk in chunks}
             for future in as_completed(future_to_chunk):
                 try:
@@ -718,29 +1551,33 @@ Questions to evaluate:
                     if result:
                         evaluation_data.update(result)
                 except Exception as exc:
-                    logger.error(f"Chunk processing generated an exception: {exc}")
+                    logger.error(f"Gemini feedback chunk failed: {exc}")
 
-        # Wrap feedback with question identifiers, keep multiplier isolated
+        # Build final map — ONLY extract feedback text, never any numeric value
         final_map = {}
         for item in items:
             key = item["key"]
-            eval_result = evaluation_data.get(key, {})
-            multiplier = eval_result.get("relevance_multiplier", 1.0)
-            raw_feedback = eval_result.get("feedback", "(ප්‍රතිපෝෂණ ලබා ගත නොහැක)")
-            
+            eval_res_json = evaluation_data.get(key, {})
+            raw_feedback = eval_res_json.get("feedback", "(ප්‍රතිපෝෂණ ලබා ගත නොහැක)")
+
             final_map[key] = {
-                "relevance_multiplier": multiplier,
-                "feedback": f"**ප්‍රශ්නය {item['display_number']}**\n\n{raw_feedback}"
+                "feedback": f"**ප්‍රශ්නය {item['display_number']}** {raw_feedback}"
+                # NOTE: No "marks", "score", or numeric value is ever stored here.
+                # awarded_marks is set exclusively by _apply_discrete_bands().
             }
-        
+
         return final_map
 
+
     def _generate_overall_feedback(self, total_score, result_id):
+        """Generate a brief overall feedback summary in Sinhala. Text only, no marks logic."""
         try:
             prompt = f"""
 Total Score: {total_score}
-Give concise overall feedback in Sinhala.
+Write 2-3 sentences of overall feedback in Sinhala for this student.
+Comment on their performance and what they should focus on improving.
+Do not mention specific question numbers.
 """
-            return self.gemini.generate_content(prompt).get("text", "")
+            return self.gemini.generate_content(prompt).text or ""
         except Exception:
             return f"Total Score: {total_score}"

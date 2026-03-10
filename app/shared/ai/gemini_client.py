@@ -9,8 +9,7 @@ import time
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "gemini-3-flash-preview"
-
+MODEL_NAME = "gemini-2.5-flash-lite"
 # Shared safety settings
 SAFETY_SETTINGS = [
     types.SafetySetting(
@@ -30,7 +29,6 @@ SAFETY_SETTINGS = [
         threshold=types.HarmBlockThreshold.BLOCK_NONE,
     ),
 ]
-
 def gemini_generate(
     prompt: str,
     *,
@@ -53,7 +51,7 @@ def gemini_generate(
                 response_mime_type="application/json" if json_mode else "text/plain"
             ),
         )
-
+        print(f"DEBUG: gemini_generate called (fixed version). JSON Mode: {json_mode}, Model: {selected_model}")
         return response.text or ""
 
     except Exception as e:
