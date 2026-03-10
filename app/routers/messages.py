@@ -18,7 +18,8 @@ from app.schemas.message import (
     MessageContextChunkResponse,
     MessageSafetyReportResponse,
     XAIExplanationResponse,
-    GenerateResponseRequest
+    GenerateResponseRequest,
+    ProcessingLogResponse,
 )
 from app.schemas.resource import ResourceProcessResponse
 from app.services.message_service import MessageService
@@ -1039,4 +1040,47 @@ def get_message_safety_summary(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve safety summary",
+        )
+
+
+@router.get(
+    "/{message_id}/processing-logs",
+    response_model=List[ProcessingLogResponse],
+)
+def get_message_processing_logs(
+    message_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all processing logs for a specific message.
+    """
+    try:
+        message_service = MessageService(db)
+        message_service.get_message_with_ownership_check(message_id, current_user.id)
+
+        repo = ProcessingLogRepository(db)
+        logs = repo.get_logs_for_message(message_id)
+        return logs
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error retrieving processing logs for message {message_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve processing logs",
         )

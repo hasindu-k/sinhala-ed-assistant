@@ -225,6 +225,22 @@ class MessageDetail(BaseModel):
         from_attributes = True
 
 
+# Processing Log Schema
+class ProcessingLogResponse(BaseModel):
+    id: UUID
+    resource_id: UUID
+    user_id: Optional[UUID] = None
+    session_id: Optional[UUID] = None
+    message_id: Optional[UUID] = None
+    stage: str
+    progress: float
+    details: Optional[Any] = None
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+
 # AI Response Generation Request
 class GenerateResponseRequest(BaseModel):
     use_rag: bool = True
