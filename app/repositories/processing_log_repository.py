@@ -1,6 +1,6 @@
 # app/repositories/processing_log_repository.py
 
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Set
 from uuid import UUID
 from sqlalchemy.orm import Session
 
@@ -55,3 +55,34 @@ class ProcessingLogRepository:
             .order_by(ProcessingLog.timestamp.asc())
             .all()
         )
+
+    def get_resource_ids_with_logs(self, resource_ids: List[UUID]) -> Set[UUID]:
+        """Return the subset of resource_ids that have at least one processing log."""
+        if not resource_ids:
+            return set()
+        rows = (
+            self.db.query(ProcessingLog.resource_id)
+            .filter(ProcessingLog.resource_id.in_(resource_ids))
+            .distinct()
+            .all()
+        )
+        return {row[0] for row in rows}
+
+    def get_resource_message_ids(self, resource_ids: List[UUID]) -> Dict[UUID, UUID]:
+        """Return a mapping of resource_id -> message_id for the first non-null message_id log per resource."""
+        if not resource_ids:
+            return {}
+        rows = (
+            self.db.query(ProcessingLog.resource_id, ProcessingLog.message_id)
+            .filter(
+                ProcessingLog.resource_id.in_(resource_ids),
+                ProcessingLog.message_id.isnot(None),
+            )
+            .order_by(ProcessingLog.timestamp.asc())
+            .all()
+        )
+        result: Dict[UUID, UUID] = {}
+        for resource_id, message_id in rows:
+            if resource_id not in result:
+                result[resource_id] = message_id
+        return result

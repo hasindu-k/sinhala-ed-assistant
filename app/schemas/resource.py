@@ -39,6 +39,8 @@ class ResourceFileResponse(BaseModel):
     language: Optional[str] = None
     created_at: datetime
     resource_type: Optional[str] = None
+    has_processing_log: bool = False
+    message_id: Optional[UUID] = None
 
     class Config:
         from_attributes = True
