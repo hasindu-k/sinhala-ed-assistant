@@ -494,20 +494,18 @@ class GradingService:
                 system_ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
                 final_snapped_ratio = self._apply_discrete_bands(system_ratio, item["max_marks"])
                 final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
-
                 # Feedback text from Gemini (text only, never marks)
                 meaning_data = eval_data_map.get(item["key"], {})
                 feedback = meaning_data.get("feedback", "පිළිතුර අගය කරන ලදී.")
-
                 logger.info(
                     f"[FINAL_MARK] Q{item['display_number']} | "
                     f"system_ratio={system_ratio:.4f} -> snapped_ratio={final_snapped_ratio:.4f} -> "
                     f"final_marks={final_marks}/{item['max_marks']}"
                 )
+                item_for_persistence = item
             else:
                 final_marks = Decimal(0)
                 feedback = "පිළිතුර හමු නොවුණි (0 ලකුණු)."
-
                 if isinstance(target, SubQuestion) and target.question:
                     parent_q = target.question
                     parent_sqs = getattr(parent_q, 'sub_questions', []) or []
@@ -526,17 +524,32 @@ class GradingService:
                             final_marks = distributed.quantize(Decimal("0.5"), rounding=ROUND_HALF_UP)
                             feedback = "ප්‍රශ්නයේ සම්පූර්ණ පිළිතුරෙන් ලකුණු ලබා ගන්නා ලදී."
 
-                item = {
+                # Create a bare-bones item for scoring logic if not in scored_items
+                missing_item = {
                     "target": target,
                     "max_marks": self._resolve_max_marks(target),
                     "display_number": self._resolve_display_number(target, q_id)
                 }
+                # Try to find the key from mapped_answers if possible to capture the text even for skip-scored items
+                matched_key = next((k for k, v in answer_doc.mapped_answers.items() if str(getattr(self._find_matching_question(k, question_map), 'id', '')) == q_id), None)
+                if matched_key:
+                    missing_item["key"] = matched_key
+                    missing_item["student_text"] = answer_doc.mapped_answers[matched_key]
+                
+                item_for_persistence = missing_item
+
+            # Capture student text from multiple possible sources
+            student_text_captured = item_for_persistence.get("student_text") or \
+                                    item_for_persistence.get("student_answer") or \
+                                    (answer_doc.mapped_answers.get(item_for_persistence.get("key")) if item_for_persistence.get("key") else None)
+                                    
+            logger.info(f"DEBUG: Saving QuestionScore for Q_ID={target.id}. Captured text: {student_text_captured[:50] if student_text_captured else 'None'}")
 
             q_score_params = {
                 "evaluation_result_id": eval_result.id,
                 "awarded_marks": final_marks,
                 "feedback": feedback,
-                "student_answer": item.get("student_text") or item.get("student_answer")
+                "student_answer": student_text_captured
             }
             if isinstance(target, SubQuestion):
                 q_score_params["sub_question_id"] = target.id

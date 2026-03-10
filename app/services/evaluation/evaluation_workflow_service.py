@@ -425,19 +425,25 @@ class EvaluationWorkflowService:
             answer_mapping = map_student_answers(cleaned_answer_text, questions)
             self.answers.update_mapped_answers(answer_id, answer_mapping)
 
-            # PERSISTENCE: Save structured answers to student_answers table
-            for key, text in answer_mapping.items():
-                target = self._find_matching_question(key, question_map)
-                if target:
-                    try:
-                        self.answers.create_student_answer(
-                            answer_document_id=answer_id,
-                            answer_text=text,
-                            question_id=target.id if isinstance(target, Question) else None,
-                            sub_question_id=target.id if isinstance(target, SubQuestion) else None
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to save structured answer for {key}: {e}")
+        # PERSISTENCE: Save/Ensure structured answers in student_answers table
+        # We do this here (after mapping is established, whether cached or new)
+        # to ensure the structured table stays in sync.
+        yield ("processing_documents", "Ensuring structured answer persistence...", 45)
+        for key, text in answer_mapping.items():
+            target = self._find_matching_question(key, question_map)
+            if target:
+                try:
+                    # Logic here: our create_student_answer should ideally handle 
+                    # "update if exists" or it might just add duplicates.
+                    # Since this is a new table, we can just create if not exists
+                    self.answers.create_student_answer(
+                        answer_document_id=answer_id,
+                        answer_text=text,
+                        question_id=target.id if isinstance(target, Question) else None,
+                        sub_question_id=target.id if isinstance(target, SubQuestion) else None
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to save structured answer for {key}: {e}")
         
         # Grading
         yield ("evaluating_answers", "Starting grading process...", 50)
