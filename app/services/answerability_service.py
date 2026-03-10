@@ -36,10 +36,15 @@ class AnswerabilityService:
         "good evening", "hello", "hi", "hey"
     }
 
-    # Content generation intents - these should always be answerable if content exists
+    # Content generation intents - these are ALWAYS answerable if chunks exist
+    # These intents ask to GENERATE content FROM the provided material
     CONTENT_GENERATION_INTENTS = {
-        "summary", "qa_generate", "explanation"
+        "summary",      # "Summarize this content" - always possible if content exists
+        "qa_generate"   # "Generate questions from this" - always possible if content exists
     }
+    
+    # Topic-specific intents - these require the topic to be IN the content
+    # "explanation" is NOT in CONTENT_GENERATION_INTENTS because it asks about a specific topic
 
     @staticmethod
     def extract_key_terms(text: str) -> List[str]:
@@ -58,6 +63,65 @@ class AnswerabilityService:
         ]
         
         return key_terms
+
+    @staticmethod
+    def extract_main_topic(question: str) -> List[str]:
+        """
+        Extract the main topic(s) from a question.
+        For "Explain X", this returns X as the main topic.
+        """
+        question_lower = question.lower()
+        
+        # Pattern 1: "X පැහැදිලි කරන්න" or "X විස්තර කරන්න"
+        pattern1 = r"([\u0d80-\u0dff]+(?:\s+[\u0d80-\u0dff]+)*)\s+(?:පැහැදිලි|විස්තර)\s+කරන්න"
+        match1 = re.search(pattern1, question_lower)
+        if match1:
+            topic = match1.group(1).strip()
+            logger.debug(f"Extracted topic using pattern1: '{topic}'")
+            return [topic]
+        
+        # Pattern 2: "X ගැන පැහැදිලි කරන්න" or "X ගැන විස්තර කරන්න"
+        pattern2 = r"([\u0d80-\u0dff]+(?:\s+[\u0d80-\u0dff]+)*)\s+ගැන\s+(?:පැහැදිලි|විස්තර)\s+කරන්න"
+        match2 = re.search(pattern2, question_lower)
+        if match2:
+            topic = match2.group(1).strip()
+            logger.debug(f"Extracted topic using pattern2: '{topic}'")
+            return [topic]
+        
+        # Pattern 3: "X යනු කුමක්ද" (What is X)
+        pattern3 = r"([\u0d80-\u0dff]+(?:\s+[\u0d80-\u0dff]+)*)\s+යනු\s+කුමක්ද"
+        match3 = re.search(pattern3, question_lower)
+        if match3:
+            topic = match3.group(1).strip()
+            logger.debug(f"Extracted topic using pattern3: '{topic}'")
+            return [topic]
+        
+        # Pattern 4: "X කියන්න" (Tell about X)
+        pattern4 = r"([\u0d80-\u0dff]+(?:\s+[\u0d80-\u0dff]+)*)\s+කියන්න"
+        match4 = re.search(pattern4, question_lower)
+        if match4:
+            topic = match4.group(1).strip()
+            logger.debug(f"Extracted topic using pattern4: '{topic}'")
+            return [topic]
+        
+        # Pattern 5: "Explain X" or "Tell me about X" (English)
+        pattern5 = r"(?:explain|tell\s+me\s+about|describe)\s+([a-zA-Z\s]+)"
+        match5 = re.search(pattern5, question_lower)
+        if match5:
+            topic = match5.group(1).strip()
+            logger.debug(f"Extracted topic using pattern5: '{topic}'")
+            return [topic]
+        
+        # Fallback: extract all meaningful terms
+        words = re.findall(r"[a-zA-Zඅ-෴]{3,}", question_lower)
+        meaningful = [w for w in words if w not in AnswerabilityService.STOPWORDS]
+        
+        if meaningful:
+            logger.debug(f"Fallback extracted topics: {meaningful[:3]}")
+            return meaningful[:3]
+        
+        logger.debug("No clear topic found in question")
+        return []
 
     @staticmethod
     def calculate_relevance_score(question: str, context: str, chunks: List[Dict]) -> float:
@@ -93,10 +157,10 @@ class AnswerabilityService:
                 term_matches += 1
                 matched_terms.append(term)
         
-        # If no terms match at all, score should be low
+        # If no terms match at all, score should be very low
         if term_matches == 0:
             logger.debug(f"No question terms found in context: {question_terms}")
-            return 0.1  # Return a very low score instead of 0
+            return 0.0
         
         term_overlap_ratio = term_matches / len(question_terms)
         
@@ -121,8 +185,8 @@ class AnswerabilityService:
         
         # Combine scores with weights
         relevance_score = (
-            term_overlap_ratio * 0.4 +      # Term overlap
-            avg_chunk_similarity * 0.4 +     # Semantic similarity
+            term_overlap_ratio * 0.5 +      # Term overlap (higher weight)
+            avg_chunk_similarity * 0.3 +     # Semantic similarity
             phrase_score * 0.2                # Phrase matches
         )
         
@@ -160,13 +224,17 @@ class AnswerabilityService:
         question: str, 
         context: str, 
         chunks: List[Dict], 
-        intent: str = "qa_answer",  # Add intent parameter
+        intent: str = "qa_answer",
         threshold: float = 0.3
     ) -> bool:
         """
         Determine if the context contains content relevant to the question.
         Returns True if relevance score exceeds threshold.
-        Intent-aware: Content generation intents are always answerable if chunks exist.
+        
+        Intent-aware handling:
+        - summary, qa_generate: ALWAYS answerable if chunks exist (generate from content)
+        - explanation: MUST have topic match in context
+        - qa_answer: MUST have term matches and meet threshold
         """
         # Handle empty cases
         if not context or not context.strip():
@@ -179,9 +247,8 @@ class AnswerabilityService:
             logger.info("Greeting detected - treating as answerable")
             return True
         
-        # INTENT-AWARE HANDLING:
-        # For content generation intents (summary, qa_generate, explanation),
-        # if we have chunks, the question is answerable regardless of term matching
+        # For TRUE content generation intents (summary, qa_generate), 
+        # if we have chunks, the question is answerable
         if intent in AnswerabilityService.CONTENT_GENERATION_INTENTS:
             if chunks and len(chunks) > 0:
                 logger.info(f"Content generation intent '{intent}' with chunks available - treating as answerable")
@@ -190,7 +257,35 @@ class AnswerabilityService:
                 logger.info(f"Content generation intent '{intent}' but no chunks - unanswerable")
                 return False
         
-        # For QA_ANSWER intents, we need stricter relevance checking
+        # For explanation intent, we need to check if the TOPIC exists in context
+        if intent == "explanation":
+            # Extract main topic from question
+            topics = AnswerabilityService.extract_main_topic(question)
+            
+            if not topics:
+                logger.info("No clear topic found in explanation question - treating as unanswerable")
+                return False
+            
+            # Check if any topic appears in context (as a whole phrase)
+            context_lower = context.lower()
+            for topic in topics:
+                if topic in context_lower:
+                    logger.info(f"Explanation topic '{topic}' found in context - answerable")
+                    return True
+                
+                # For multi-word topics, check if most words appear
+                topic_words = topic.split()
+                if len(topic_words) > 1:
+                    matches = sum(1 for word in topic_words if word in context_lower)
+                    match_ratio = matches / len(topic_words)
+                    if match_ratio >= 0.7:  # 70% of words match
+                        logger.info(f"Explanation topic '{topic}' partially found ({match_ratio:.0%} words) - answerable")
+                        return True
+            
+            logger.info(f"Explanation topics {topics} not found in context - unanswerable")
+            return False
+        
+        # For QA_ANSWER intents, we need strict relevance checking
         # Extract question terms
         question_terms = AnswerabilityService.extract_key_terms(question)
         
@@ -229,9 +324,25 @@ class AnswerabilityService:
         if any(greeting in normalized for greeting in AnswerabilityService.GREETING_TERMS):
             return True
         
-        # For content generation intents, if context exists, it's answerable
+        # For summary and qa_generate, if context exists, it's answerable
         if intent in AnswerabilityService.CONTENT_GENERATION_INTENTS:
             return bool(context and context.strip())
+        
+        # For explanation, check if topic exists in context
+        if intent == "explanation":
+            topics = AnswerabilityService.extract_main_topic(question)
+            if not topics:
+                return False
+            context_lower = context.lower()
+            for topic in topics:
+                if topic in context_lower:
+                    return True
+                topic_words = topic.split()
+                if len(topic_words) > 1:
+                    matches = sum(1 for word in topic_words if word in context_lower)
+                    if matches / len(topic_words) >= 0.7:
+                        return True
+            return False
         
         key_terms = AnswerabilityService.extract_key_terms(question)
 
