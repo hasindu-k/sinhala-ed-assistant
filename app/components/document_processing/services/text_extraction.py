@@ -2,8 +2,10 @@ import pdfplumber
 import pytesseract
 import cv2
 import numpy as np
+import os
 from typing import Literal
 from app.components.document_processing.services.table_detection import detect_tables_with_yolo
+from app.components.document_processing.ocr_config import OCR_LANG, OCR_CONFIG_EXTRA
 
 import logging
 logger = logging.getLogger(__name__)
@@ -23,7 +25,7 @@ if ULTRALYTICS_AVAILABLE:
         logger.error(f"Failed to load layout YOLO model: {e}")
         layout_model = None
 
-lang = "sin+eng"  # Tesseract language setting for Sinhala and English
+lang = OCR_LANG  # Tesseract language setting from config
 
 def classify_text_type(image_input: str) -> Literal["handwritten", "printed", "unknown"]:
     """
@@ -152,6 +154,8 @@ def process_ocr_for_images_with_tables(images, force_layout_analysis: bool = Fal
         img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
+        logger.debug("TESSDATA_PREFIX: %s", os.environ.get("TESSDATA_PREFIX"))
+
         tess_config = (
             "--oem 1 "
             "--psm 6 "
@@ -214,6 +218,8 @@ def process_ocr_for_images_with_tables(images, force_layout_analysis: bool = Fal
             # Use bitwise NOT to exclude the table areas from OCR
             non_table_area = cv2.bitwise_and(gray, gray, mask=cv2.bitwise_not(table_mask))
 
+            logger.debug("TESSDATA_PREFIX: %s", os.environ.get("TESSDATA_PREFIX"))
+            
             full_page_text = pytesseract.image_to_string(
                 non_table_area,
                 lang=lang,
@@ -231,6 +237,8 @@ def process_ocr_for_images_with_tables(images, force_layout_analysis: bool = Fal
 
             table_crop = gray[y1:y2, x1:x2]
 
+            logger.debug("TESSDATA_PREFIX: %s", os.environ.get("TESSDATA_PREFIX"))
+            
             table_config = (
                 "--oem 1 "
                 "--psm 6 "
