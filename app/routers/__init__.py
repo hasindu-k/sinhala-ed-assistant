@@ -5,3 +5,4 @@ from . import evaluation
 from . import rubrics
 from . import users
 from . import auth
+from . import websockets

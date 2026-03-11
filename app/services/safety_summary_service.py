@@ -122,13 +122,9 @@ class SafetySummaryService:
         """Compute summary values from flagged sentences (for caching at creation time)"""
         logger.info(f"flagged sentences count: {len(flagged)}, is_unanswerable: {is_unanswerable}")
         
-        if is_unanswerable or not flagged:
+        if is_unanswerable:
             # Clean response or unanswerable
-            return {
-                "computed_severity": "low",
-                "computed_confidence_score": 1.0,
-                "computed_reliability": "fully_supported",
-            }
+            return None
         
         # Compute summary once here
         pairs = [(item.get("sentence", ""), item.get("evidence", "")) for item in flagged[:10]]

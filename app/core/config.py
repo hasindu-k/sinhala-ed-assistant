@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Embedding model for RAG
     MODEL_EMBEDDING_NAME: str = "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
 
+    # HuggingFace Hub token (optional, suppresses rate-limit warnings)
+    HF_TOKEN: Optional[str] = None
+
     # Email (SMTP)
     MAIL_MAILER: str = "smtp"
     MAIL_HOST: str = "smtp.gmail.com"
