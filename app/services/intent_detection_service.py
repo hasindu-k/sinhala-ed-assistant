@@ -17,7 +17,7 @@ class IntentDetectionService:
     Option 3: Hybrid Rule + Semantic Gate
     """
 
-    GREETING_RULES = ["hello", "hi", "hey", "හායි", "හලෝ", "ආයුබෝවන්", "කොහොමද", "ගුඩ් මෝනින්", "good morning", "good afternoon", "good evening"]
+    GREETING_RULES = ["hello", "hi", "hey", "හායි", "හලෝ", "ආයුබෝවන්", "ගුඩ් මෝනින්", "good morning", "good afternoon", "good evening"]
     SUMMARY_RULES = ["සාරාංශ", "සංක්ෂිප්ත", "කෙටියෙන්", "මුල් අදහස්"]
     QA_GENERATE_RULES = ["ප්‍රශ්න", "පිළිතුරු", "qa", "q&a", "සාදන්න", "හදන්න"]
     QA_ANSWER_RULES = ["යනු කුමක්ද", "කියන්න"]
@@ -48,8 +48,6 @@ class IntentDetectionService:
         if any(w in q for w in cls.QA_ANSWER_RULES) or q.endswith("?"):
             return "qa_answer"
         
-        if any(w in q for w in cls.GREETING_RULES):
-            return "greeting"
 
         if any(w in q for w in cls.GREETING_RULES):
             return "greeting"
