@@ -61,7 +61,7 @@ class ResourceProcessorService:
 
             # Stage 1
             if progress_callback:
-                progress_callback("Preparing Document", 20.0, None)
+                progress_callback("Preparing Document", 4.0, None)
 
             if file_ext == ".pdf":
 
@@ -121,7 +121,7 @@ class ResourceProcessorService:
 
         # Stage: Detect language from PDF metadata
         if progress_callback:
-            progress_callback("Analyzing Document Language", 22.0, None)
+            progress_callback("Analyzing Document Language", 6.0, None)
 
         lang_hint = self._sniff_pdf_language(file_path, detect_language_from_text)
             
@@ -146,19 +146,19 @@ class ResourceProcessorService:
 
         # OCR fallback
         if progress_callback:
-            progress_callback("Converting PDF to Images", 30.0, None)
+            progress_callback("Converting PDF to Images", 8.0, None)
 
         images = convert_file_to_images(file_path, "pdf")
 
         # Text classification
         if images:
             if progress_callback:
-                progress_callback("Classifying Text Type", 35.0, None)
+                progress_callback("Classifying Text Type", 10.0, None)
 
             detected_text_type = self._classify_first_image(images[0], classify_text_type)
 
             if progress_callback:
-                progress_callback("Text Type Detected", 37.0, {"text_type": detected_text_type})
+                progress_callback("Text Type Detected", 11.0, {"text_type": detected_text_type})
 
         # Layout analysis decision
         if resource_type:
@@ -167,7 +167,7 @@ class ResourceProcessorService:
             force_layout = True
 
         if progress_callback:
-            progress_callback("Running OCR Extraction", 40.0, None)
+            progress_callback("Running OCR Extraction", 12.0, None)
 
         extracted_text, page_count = process_ocr_for_images_with_tables(
             images,
@@ -176,19 +176,23 @@ class ResourceProcessorService:
         )
 
         if progress_callback:
-            progress_callback("Cleaning Extracted Text", 55.0, None)
+            preview = extracted_text[:300].strip() if extracted_text else ""
+            progress_callback("Completed OCR Extraction", 40.0, {"preview": preview})
+
+        if progress_callback:
+            progress_callback("Cleaning Extracted Text", 41.0, None)
 
         cleaned_text = basic_clean(extracted_text)
 
         if progress_callback:
-            progress_callback("Detecting Language from Text", 58.0, None)
+            progress_callback("Detecting Language from Text", 43.0, None)
 
         inferred_lang = detect_language_from_text(cleaned_text)
 
         final_lang = lang_hint if lang_hint != "unknown" else inferred_lang
 
         if progress_callback:
-            progress_callback("Language Detection Completed", 60.0, {"detected_language": final_lang})
+            progress_callback("Language Detection Completed", 45.0, {"detected_language": final_lang})
 
         logger.info(
             f"Final detected language for PDF: {final_lang} "
@@ -316,7 +320,12 @@ class ResourceProcessorService:
 
         return "unknown"
 
-    def _create_chunks(self, text: str, resource_id: str) -> List[Dict[str, Any]]:
+    def _create_chunks(
+        self,
+        text: str,
+        resource_id: str,
+        progress_callback: Optional[Callable[[str, float, Optional[Dict[str, Any]]], None]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Split text into chunks and generate embeddings.
         
@@ -326,7 +335,7 @@ class ResourceProcessorService:
         from app.components.document_processing.services.embedding_service import embed_chunks
         
         try:
-            embedded_chunks = embed_chunks(text, doc_id=resource_id)
+            embedded_chunks = embed_chunks(text, doc_id=resource_id, progress_callback=progress_callback)
             return embedded_chunks
         except Exception as e:
             logger.error(f"Failed to create chunks for resource {resource_id}: {e}")
@@ -384,12 +393,17 @@ class ResourceProcessorService:
         
         logger.info("Prepared %d valid chunks for resource %s", valid_chunks, resource_id)
 
-    def _create_document_embedding(self, text: str, resource_id: str) -> Optional[List[float]]:
+    def _create_document_embedding(
+        self,
+        text: str,
+        resource_id: str,
+        progress_callback: Optional[Callable[[str, float, Optional[Dict[str, Any]]], None]] = None,
+    ) -> Optional[List[float]]:
         """Generate a document-level embedding for fast filtering."""
         from app.components.document_processing.services.embedding_service import embed_document_text
         
         try:
-            embedding = embed_document_text(text)
+            embedding = embed_document_text(text, progress_callback=progress_callback)
             if embedding:
                 logger.info("Generated document embedding for resource %s", resource_id)
             return embedding
@@ -419,7 +433,7 @@ class ResourceProcessorService:
         """
         # Stage 1
         if progress_callback:
-            progress_callback("Starting Processing", 5.0, None)
+            progress_callback("Starting Processing", 0.0, None)
 
         # Check if already processed
         if resource.extracted_text:
@@ -460,7 +474,7 @@ class ResourceProcessorService:
 
         # Stage 2
         if progress_callback:
-            progress_callback("Validating Document", 15.0, None)
+            progress_callback("Validating Document", 2.0, None)
 
         self._validate_resource_file(resource)
 
@@ -490,7 +504,7 @@ class ResourceProcessorService:
         if progress_callback:
             progress_callback(
                 "OCR Completed",
-                60.0,
+                47.0,
                 {"pages": page_count}
             )
 
@@ -504,7 +518,7 @@ class ResourceProcessorService:
             if progress_callback:
                 progress_callback(
                     "Generating Document Embedding",
-                    70.0,
+                    55.0,
                     None
                 )
 
@@ -519,7 +533,8 @@ class ResourceProcessorService:
 
                 document_embedding = self._create_document_embedding(
                     extracted_text,
-                    str(resource.id)
+                    str(resource.id),
+                    progress_callback=progress_callback,
                 )
 
                 if document_embedding:
@@ -530,17 +545,17 @@ class ResourceProcessorService:
             if progress_callback:
                 progress_callback(
                     "Creating Text Chunks",
-                    80.0,
+                    75.0,
                     None
                 )
 
-            chunks = self._create_chunks(extracted_text, str(resource.id))
+            chunks = self._create_chunks(extracted_text, str(resource.id), progress_callback=progress_callback)
 
             # Stage: saving
             if progress_callback:
                 progress_callback(
                     "Saving Chunks",
-                    90.0,
+                    95.0,
                     {"chunks": len(chunks)}
                 )
 

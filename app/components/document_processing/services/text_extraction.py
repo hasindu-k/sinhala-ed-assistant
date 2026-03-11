@@ -154,10 +154,27 @@ def process_ocr_for_images_with_tables(
     page_count = 0
     total_images = len(images) if images else 1
 
+     # Fixed progress ranges
+    START_PERCENT = 12.0  # Start of OCR phase
+    END_PERCENT = 40.0     # End of OCR phase (before "Completed OCR Extraction")
+    RANGE = END_PERCENT - START_PERCENT
+
+    PROGRESS_PER_PAGE = RANGE / total_images
+
     for idx, pil_img in enumerate(images):
         page_count += 1
-        page_progress = 40 + ((idx + 1) / total_images) * 15
         
+        # Calculate base progress for this page
+        page_base = START_PERCENT + (idx * PROGRESS_PER_PAGE)
+        
+        # Layout analysis gets 40% of this page's allocation
+        # OCR extraction gets 60% of this page's allocation
+        layout_share = PROGRESS_PER_PAGE * 0.4
+        ocr_share = PROGRESS_PER_PAGE * 0.6
+
+        layout_progress = page_base + (layout_share * 0.5)  # Mid-point of layout share
+        ocr_progress = page_base + layout_share + (ocr_share * 0.5)  # After layout
+
         if progress_callback:
             details = {
                 "current_page": page_count,
@@ -165,7 +182,7 @@ def process_ocr_for_images_with_tables(
                 "current_action": f"Layout analysis page {page_count} of {total_images}"
             }
 
-            progress_callback("Layout Analysis", page_progress - 5, details)
+            progress_callback("Layout Analysis", layout_progress, details)
 
         img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -218,10 +235,11 @@ def process_ocr_for_images_with_tables(
             details = {
                 "current_page": page_count,
                 "total_pages": total_images,
-                "current_action": f"OCR extraction page {page_count} of {total_images}"
+                "current_action": f"OCR extraction page {page_count} of {total_images}",
+                "tables_detected": num_tables,
             }
 
-            progress_callback("OCR Extraction", page_progress, details)
+            progress_callback("OCR Extraction", ocr_progress, details)
 
         page_text = ""
 
@@ -291,11 +309,6 @@ def process_ocr_for_images_with_tables(
         )
 
         extracted_text += page_output
-
-    preview_text = extracted_text[:100].replace("\n", " ")
-
-    if progress_callback:
-        progress_callback("Completed OCR Extraction", 55.0, {"preview": preview_text})
 
     return extracted_text, page_count
 
