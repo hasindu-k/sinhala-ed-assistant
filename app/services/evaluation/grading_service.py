@@ -22,6 +22,7 @@ from app.shared.models.answer_evaluation import (
     AnswerDocument,
     EvaluationResult,
     QuestionScore,
+    MarkingReference,
 )
 from app.shared.models.question_papers import Question, SubQuestion
 from app.shared.models.session_resources import SessionResource
@@ -44,6 +45,8 @@ class GradingService:
     def __init__(self, db: Session):
         self.db = db
         self.gemini = GeminiClient()
+        from app.repositories.evaluation.marking_reference_repository import MarkingReferenceRepository
+        self.marking_refs = MarkingReferenceRepository(db)
 
 
     # ----------------------------------------------------------
@@ -205,26 +208,47 @@ class GradingService:
             })
 
         # Batch-extract reference points from Gemini
-        # Use class-level cache keyed by eval_session_id to avoid re-extracting
-        # when grading multiple students in the same session.
-        cache_key = str(eval_session_id)
+        # NEW: Check for approved MarkingReference in DB first
+        db_refs = self.marking_refs.get_references_by_session(eval_session_id)
+        approved_refs = {str(ref.question_id or ref.sub_question_id): ref.reference_answer for ref in db_refs if ref.is_approved and ref.reference_answer}
+        
         gemini_ref_map: Dict[str, str] = {}
+        
+        if approved_refs:
+            logger.info(f"Using {len(approved_refs)} approved marking references from DB.")
+            # Map back to keys used in question_map for compatibility
+            for q_info in questions_for_extraction:
+                target_id = str(q_info['target'].id)
+                if target_id in approved_refs:
+                    gemini_ref_map[q_info['key']] = approved_refs[target_id]
 
-        with GradingService._gemini_ref_cache_lock:
-            cached = GradingService._gemini_ref_cache.get(cache_key)
-
-        if cached is not None:
-            gemini_ref_map = cached
-            logger.info(f"Using cached Gemini references for session {cache_key} ({len(gemini_ref_map)} refs).")
-        elif syllabus_text and questions_for_extraction:
-            gemini_ref_map = self._batch_extract_reference_points(
-                questions_for_extraction, syllabus_text
-            )
-            # Store in class-level cache for other students in same session
+        # If not all refs are covered by approved DB entries, use cache/Gemini as fallback
+        missing_any = any(q['key'] not in gemini_ref_map for q in questions_for_extraction)
+        
+        if missing_any:
+            cache_key = str(eval_session_id)
             with GradingService._gemini_ref_cache_lock:
-                GradingService._gemini_ref_cache[cache_key] = gemini_ref_map
+                cached = GradingService._gemini_ref_cache.get(cache_key)
 
-        logger.info(f"Gemini extracted references for {len(gemini_ref_map)}/{len(questions_for_extraction)} questions.")
+            if cached is not None:
+                # Merge cached into our map (prioritize DB over cache if both exist, though unlikely)
+                for k, v in cached.items():
+                    if k not in gemini_ref_map:
+                        gemini_ref_map[k] = v
+                logger.info(f"Using cached Gemini references for session {cache_key}.")
+            elif syllabus_text and questions_for_extraction:
+                # Still missing some? Call Gemini for the remaining ones
+                remaining_questions = [q for q in questions_for_extraction if q['key'] not in gemini_ref_map]
+                if remaining_questions:
+                    new_refs = self._batch_extract_reference_points(
+                        remaining_questions, syllabus_text
+                    )
+                    gemini_ref_map.update(new_refs)
+                    # Store in class-level cache
+                    with GradingService._gemini_ref_cache_lock:
+                        GradingService._gemini_ref_cache[cache_key] = gemini_ref_map
+
+        logger.info(f"Final reference map size: {len(gemini_ref_map)}/{len(questions_for_extraction)}")
 
         # -------------------------------------------------------
         # PHASE 0.5: Pre-calculate all embeddings (SPEEDUP)
@@ -494,20 +518,18 @@ class GradingService:
                 system_ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
                 final_snapped_ratio = self._apply_discrete_bands(system_ratio, item["max_marks"])
                 final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
-
                 # Feedback text from Gemini (text only, never marks)
                 meaning_data = eval_data_map.get(item["key"], {})
                 feedback = meaning_data.get("feedback", "පිළිතුර අගය කරන ලදී.")
-
                 logger.info(
                     f"[FINAL_MARK] Q{item['display_number']} | "
                     f"system_ratio={system_ratio:.4f} -> snapped_ratio={final_snapped_ratio:.4f} -> "
                     f"final_marks={final_marks}/{item['max_marks']}"
                 )
+                item_for_persistence = item
             else:
                 final_marks = Decimal(0)
                 feedback = "පිළිතුර හමු නොවුණි (0 ලකුණු)."
-
                 if isinstance(target, SubQuestion) and target.question:
                     parent_q = target.question
                     parent_sqs = getattr(parent_q, 'sub_questions', []) or []
@@ -526,16 +548,32 @@ class GradingService:
                             final_marks = distributed.quantize(Decimal("0.5"), rounding=ROUND_HALF_UP)
                             feedback = "ප්‍රශ්නයේ සම්පූර්ණ පිළිතුරෙන් ලකුණු ලබා ගන්නා ලදී."
 
-                item = {
+                # Create a bare-bones item for scoring logic if not in scored_items
+                missing_item = {
                     "target": target,
                     "max_marks": self._resolve_max_marks(target),
                     "display_number": self._resolve_display_number(target, q_id)
                 }
+                # Try to find the key from mapped_answers if possible to capture the text even for skip-scored items
+                matched_key = next((k for k, v in answer_doc.mapped_answers.items() if str(getattr(self._find_matching_question(k, question_map), 'id', '')) == q_id), None)
+                if matched_key:
+                    missing_item["key"] = matched_key
+                    missing_item["student_text"] = answer_doc.mapped_answers[matched_key]
+                
+                item_for_persistence = missing_item
+
+            # Capture student text from multiple possible sources
+            student_text_captured = item_for_persistence.get("student_text") or \
+                                    item_for_persistence.get("student_answer") or \
+                                    (answer_doc.mapped_answers.get(item_for_persistence.get("key")) if item_for_persistence.get("key") else None)
+                                    
+            logger.info(f"DEBUG: Saving QuestionScore for Q_ID={target.id}. Captured text: {student_text_captured[:50] if student_text_captured else 'None'}")
 
             q_score_params = {
                 "evaluation_result_id": eval_result.id,
                 "awarded_marks": final_marks,
                 "feedback": feedback,
+                "student_answer": student_text_captured
             }
             if isinstance(target, SubQuestion):
                 q_score_params["sub_question_id"] = target.id
@@ -917,6 +955,79 @@ class GradingService:
         return context
 
 
+    def generate_initial_marking_scheme(
+        self,
+        evaluation_session_id: UUID,
+        syllabus_text: str,
+        questions: List[Dict[str, Any]]
+    ) -> List[MarkingReference]:
+        """
+        Phase 0 Extra: Extract marking references from Gemini and save for user review.
+        'questions' is a list of dicts: {'key': str, 'target': Question|SubQuestion, 'text': str}
+        """
+        logger.info(f"Generating initial marking scheme for session {evaluation_session_id}")
+        
+        # 1. Build enrichment data for extraction
+        extraction_questions = []
+        for q_info in questions:
+            target = q_info['target']
+            q_id = q_info['key']
+            
+            # Resolve question number
+            q_num = ""
+            if isinstance(target, Question):
+                q_num = target.question_number or ""
+            elif isinstance(target, SubQuestion):
+                p_num = getattr(target.question, 'question_number', '') if target.question else ''
+                q_num = f"{p_num}.{target.label}" if p_num else (target.label or "")
+            
+            # Resolve max marks
+            max_marks = self._resolve_max_marks(target)
+            
+            extraction_questions.append({
+                "key": q_id,
+                "display_number": q_num,
+                "question_text": q_info['text'],
+                "max_marks": max_marks
+            })
+
+        # 2. Extract from Gemini using existing batch logic
+        extracted_refs = self._batch_extract_reference_points(extraction_questions, syllabus_text)
+        
+        # 3. Save to MarkingReference table
+        saved_refs = []
+        # Clear existing unapproved ones if any
+        self.marking_refs.delete_session_references(evaluation_session_id)
+        
+        for q_enriched in extraction_questions:
+            q_id = q_enriched['key']
+            q_num = q_enriched['display_number']
+            q_text = q_enriched['question_text']
+            ref_answer = extracted_refs.get(q_id)
+            
+            # Find the original target object
+            original_q_info = next((it for it in questions if it['key'] == q_id), None)
+            target = original_q_info['target'] if original_q_info else None
+
+            ref_obj = self.marking_refs.create_reference(
+                evaluation_session_id=evaluation_session_id,
+                question_id=target.id if isinstance(target, Question) else None,
+                sub_question_id=target.id if isinstance(target, SubQuestion) else None,
+                question_number=q_num,
+                question_text=q_text,
+                reference_answer=ref_answer
+            )
+            saved_refs.append(ref_obj)
+            
+        logger.info("========================================================================")
+        logger.info(f" MARKING SCHEME SUMMARY FOR SESSION: {evaluation_session_id}")
+        for r in saved_refs:
+            preview = (r.reference_answer[:70] + "...") if r.reference_answer else "EMPTY"
+            logger.info(f" Q{r.question_number}: {preview}")
+        logger.info("========================================================================")
+            
+        return saved_refs
+
     def _batch_extract_reference_points(
         self,
         questions: List[Dict],
@@ -931,24 +1042,29 @@ class GradingService:
         
         Returns: map of question_key -> reference_answer_text
         """
-        if not questions or not syllabus_text:
+        if not questions:
             return {}
 
         # Truncate syllabus to fit Gemini context (keep first 12000 chars for better coverage)
         syllabus_for_prompt = syllabus_text[:12000]
         if len(syllabus_text) > 12000:
             syllabus_for_prompt += "\n... [truncated]"
+        
+        logger.info(f"[GEMINI_EXTRACTION] Starting extraction for {len(questions)} questions.")
+        logger.info(f"[GEMINI_EXTRACTION] Syllabus text length: {len(syllabus_text)} chars.")
+        if not syllabus_text.strip():
+            logger.warning("[GEMINI_EXTRACTION] SYLLABUS TEXT IS EMPTY! Gemini will fallback to generation mode.")
 
         base_prompt = f"""You are a Sinhala education expert. Your task is to READ the syllabus/marking scheme content below and EXTRACT the specific answer points that each question is looking for.
 
 IMPORTANT RULES:
-1. Use the syllabus content as your PRIMARY source. If the syllabus covers the topic area of a question, extract relevant facts, concepts, names, and dates from it.
-2. For short-answer questions (1-2 marks): provide the exact expected answer in 1-2 sentences.
-3. For essay questions (3+ marks): provide a numbered list of key points the answer should cover.
-4. Write answer points in Sinhala (matching the syllabus language).
-5. If the syllabus DOES NOT cover the topic area of a question AT ALL, DO NOT write "NOT_FOUND". Instead, infer the appropriate grade/age level from the provided text, and GENERATE a few simple, accurate factual points in Sinhala that correctly answer the question for that student level.
+1. Use the syllabus content as your EXCLUSIVE source if the information is present. Do not summarize or simplify if the syllabus provides detail.
+2. If the syllabus DOES NOT cover the topic area of a question AT ALL, only then should you use your internal knowledge to provide a factually correct answer suitable for a student at this level.
+3. For short-answer questions (1-2 marks): provide the exact expected answer in 1-2 sentences.
+4. For essay questions (3+ marks): provide a numbered list of key points the answer should cover.
+5. Write answer points in Sinhala (matching the syllabus language).
 6. Be SPECIFIC — extract or generate actual facts, names, dates, and concepts.
-7. Match questions to syllabus content by TOPIC, not by exact wording. For example, if Q3 asks about "වැව් ඉදිකිරීම" (reservoir construction) and the syllabus discusses "වාරිමාර්ග සංවර්ධනය" (irrigation development), they are about the SAME topic.
+7. Match questions to syllabus content by TOPIC.
 
 === SYLLABUS / MARKING SCHEME CONTENT ===
 {syllabus_for_prompt}
@@ -990,6 +1106,7 @@ Questions:
                 clean_json = re.sub(
                     r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE
                 )
+                logger.info(f"[GEMINI_EXTRACTION] Raw Response for chunk: {clean_json}")
                 data = json.loads(clean_json)
 
                 if isinstance(data, list):
