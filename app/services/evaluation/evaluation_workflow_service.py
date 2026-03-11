@@ -710,7 +710,8 @@ class EvaluationWorkflowService:
                         resource_id=res_id,
                         role="answer_script",
                         status="already_processed",
-                        message="Answer script already processed."
+                        message="Answer script already processed.",
+                        answer_document_id=existing_ad.id
                     ))
                 else:
                     # Process it
@@ -728,7 +729,8 @@ class EvaluationWorkflowService:
                         resource_id=res_id,
                         role="answer_script",
                         status="processed",
-                        message="Answer script processed successfully."
+                        message="Answer script processed successfully.",
+                        answer_document_id=existing_ad.id
                     ))
 
             except Exception as e:
@@ -956,7 +958,8 @@ class EvaluationWorkflowService:
                         resource_id=res_id,
                         role="answer_script",
                         status="already_processed",
-                        message="Answer script already processed."
+                        message="Answer script already processed.",
+                        answer_document_id=existing_ad.id
                     )
                 else:
                     if not existing_ad:
@@ -973,7 +976,8 @@ class EvaluationWorkflowService:
                         resource_id=res_id,
                         role="answer_script",
                         status="processed",
-                        message="Answer script processed successfully."
+                        message="Answer script processed successfully.",
+                        answer_document_id=existing_ad.id
                     )
                 
                 current_step += 1
