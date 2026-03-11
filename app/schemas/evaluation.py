@@ -63,6 +63,7 @@ class UserEvaluationContextResponse(BaseModel):
 class StartEvaluationRequest(BaseModel):
     chat_session_id: UUID
     answer_resource_ids: List[UUID]
+    run_grading: bool = True
 
 
 class ProcessDocumentsRequest(BaseModel):
@@ -312,3 +313,23 @@ class EvaluationResultDetail(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# Marking Reference Schemas
+class MarkingReferenceResponse(BaseModel):
+    id: UUID
+    evaluation_session_id: UUID
+    question_id: Optional[UUID] = None
+    sub_question_id: Optional[UUID] = None
+    question_number: Optional[str] = None
+    question_text: Optional[str] = None
+    reference_answer: Optional[str] = None
+    is_approved: bool = False
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MarkingReferenceUpdate(BaseModel):
+    reference_answer: str
