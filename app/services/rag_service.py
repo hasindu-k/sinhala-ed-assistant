@@ -116,23 +116,6 @@ class RAGService:
                 parent_msg_id=user_message_id
             )
             
-            # For unanswerable questions, save minimal report with is_unanswerable=True
-            from app.services.safety_summary_service import SafetySummaryService
-            
-            computed_values = SafetySummaryService.compute_from_flagged([], is_unanswerable=True)
-            
-            self.safety_service.create_safety_report(
-                assistant_msg.id,
-                {
-                    "missing_concepts": [],
-                    "extra_concepts": [],
-                    "flagged_sentences": [],
-                    "reasoning": "No relevant content found - legitimate refusal",
-                    **computed_values,
-                    "xai_explanation": None  # No XAI for unanswerable
-                }
-            )
-            
             return {
                 "assistant_message_id": assistant_msg.id,
                 "content": refusal_text,
@@ -200,24 +183,6 @@ class RAGService:
                     }
                     for i, h in enumerate(hits)
                 ],
-            )
-            
-            # Save safety report for refusal (with is_unanswerable=True to skip safety checks)
-            from app.services.safety_summary_service import SafetySummaryService
-            
-            # Define computed values for unanswerable question (null metrics)
-            computed_values = SafetySummaryService.compute_from_flagged([], is_unanswerable=True)
-            
-            self.safety_service.create_safety_report(
-                assistant_msg.id,
-                {
-                    "missing_concepts": [],
-                    "extra_concepts": [],
-                    "flagged_sentences": [],
-                    "reasoning": "Retrieved content lacks relevant information for question",
-                    **computed_values,
-                    "xai_explanation": None  # No XAI for unanswerable
-                }
             )
             
             return {
