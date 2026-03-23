@@ -1,3 +1,4 @@
+#app/utils/sinhala_summary_prompt_builder.py
 import logging
 from typing import Optional
  
@@ -87,6 +88,11 @@ def build_summary_prompt(
  
 🧠 භාෂා නියම:
 {rules['instruction']}
+ 
+🚫 වැලකිය යුතු කරුණු:
+• වාක්‍ය අංක නොදිය (උදාහරණ: 1., 2., •, - වැනි ලකුණු භාවිතා නොකරන්න)
+• බුලට් ලිස්ට් ලෙස ලිවීමෙන් වළකින්න
+• සාරාංශය සම්පූර්ණ වාක්‍ය ලෙස ලියා ඉදිරිපත් කරන්න
  
 🔒 ZERO HALLUCINATION නියම:
 • අන්තර්ගතයේ නොමැති කරුණු එකතු නොකරන්න

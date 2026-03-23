@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.shared.models.message_relations import MessageSafetyReport
 
 
+
 class MessageSafetyRepository:
     """Data access for MessageSafetyReport."""
 
@@ -17,11 +18,18 @@ class MessageSafetyRepository:
     def create_safety_report(self, message_id: UUID, report_data: Dict) -> MessageSafetyReport:
         row = MessageSafetyReport(
             message_id=message_id,
-            missing_concepts=json.dumps(report_data.get("missing_concepts")),
-            extra_concepts=json.dumps(report_data.get("extra_concepts")),
-            flagged_sentences=json.dumps(report_data.get("flagged_sentences")),
-            reasoning=json.dumps(report_data.get("reasoning")),
+            missing_concepts=report_data.get("missing_concepts"),
+            extra_concepts=report_data.get("extra_concepts"),
+            flagged_sentences=report_data.get("flagged_sentences"),
+            reasoning=report_data.get("reasoning"),
+            xai_explanation=report_data.get("xai_explanation"),
+            # Persist computed summary values to database
+            computed_severity=report_data.get("computed_severity"),
+            computed_confidence_score=report_data.get("computed_confidence_score"),
+            computed_reliability=report_data.get("computed_reliability"),
         )
+
+        # logger.info(f"computed_confidence_score: {report_data.get('computed_confidence_score')}")
         self.db.add(row)
         self.db.commit()
         self.db.refresh(row)

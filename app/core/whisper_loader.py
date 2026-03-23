@@ -1,7 +1,8 @@
 import torch
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
-MODEL_NAME = "Lingalingeswaran/whisper-small-sinhala"
+# Path to the saved model
+MODEL_PATH = "app/models/whisper-sinhala-accent-model"
 
 class WhisperLoader:
     _processor = None
@@ -10,8 +11,16 @@ class WhisperLoader:
 
     @classmethod
     def load(cls):
+        # Check if model and processor are already loaded
         if cls._processor is None or cls._model is None:
-            cls._processor = WhisperProcessor.from_pretrained(MODEL_NAME)
-            cls._model = WhisperForConditionalGeneration.from_pretrained(MODEL_NAME)
+            # Load the Whisper processor and model
+            cls._processor = WhisperProcessor.from_pretrained(MODEL_PATH)
+            cls._model = WhisperForConditionalGeneration.from_pretrained(MODEL_PATH)
+
+            # Move the model to the appropriate device (GPU if available)
             cls._model.to(cls._device)
+
+            # Enable mixed precision for faster inference if on GPU
+            cls._model.half()  # Use FP16 (mixed precision)
+            
         return cls._processor, cls._model, cls._device

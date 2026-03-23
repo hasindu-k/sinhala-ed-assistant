@@ -1,12 +1,15 @@
-#  app/services/resource_service.py
+# app/services/resource_service.py
+
 import os
 from pathlib import Path
-from typing import Optional, List, Iterable, Set
+from typing import Optional, List, Iterable, Set, Callable, Dict, Any
 from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.repositories.resource_repository import ResourceRepository
 from app.shared.models.resource_file import ResourceFile
+from app.shared.models.resource_chunks import ResourceChunk
+from app.shared.models.message_relations import MessageContextChunk
 
 # Configure upload directory
 UPLOAD_DIR = Path("uploads")
@@ -42,6 +45,48 @@ class ResourceService:
         return file_path
 
     def upload_resource_from_file(
+        self,
+        user_id: UUID,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        *,
+        commit: bool = True,
+        resource_type: Optional[str] = None,
+    ):
+        """Handle complete file upload process with validation."""
+        # Validate
+        self.validate_file_upload(filename, content_type, content)
+        
+        # Save to disk
+        try:
+            file_path = self.save_file_to_disk(user_id, filename, content)
+        except Exception as e:
+            raise ValueError(f"Failed to save file: {e}")
+        
+        # Create database record
+        try:
+            resource = self.repository.upload_resource(
+                user_id=user_id,
+                original_filename=filename,
+                storage_path=str(file_path),
+                mime_type=content_type,
+                size_bytes=len(content),
+                source_type="user_upload",
+                commit=commit,
+            )
+            self.process_resource(resource.id, user_id, resource_type=resource_type)
+            return resource
+        except Exception as e:
+            # Cleanup file if database save failed
+            if file_path.exists():
+                try:
+                    file_path.unlink()
+                except Exception:
+                    pass
+            raise
+
+    def only_upload_resource_from_file(
         self,
         user_id: UUID,
         filename: str,
@@ -167,6 +212,26 @@ class ResourceService:
     def delete_resource(self, resource_id: UUID, user_id: UUID, *, commit: bool = True):
         """Delete resource and associated file after ownership validation."""
         resource = self.get_resource_with_ownership_check(resource_id, user_id)
+
+        chunk_ids = (
+            self.db.query(ResourceChunk.id)
+            .filter(ResourceChunk.resource_id == resource_id)
+            .all()
+        )
+        chunk_ids = [row.id for row in chunk_ids]
+
+        if chunk_ids:
+            (
+                self.db.query(MessageContextChunk)
+                .filter(MessageContextChunk.chunk_id.in_(chunk_ids))
+                .delete(synchronize_session=False)
+            )
+
+        (
+            self.db.query(ResourceChunk)
+            .filter(ResourceChunk.resource_id == resource_id)
+            .delete(synchronize_session=False)
+        )
         
         # Delete physical file
         if resource.storage_path and os.path.exists(resource.storage_path):
@@ -183,7 +248,13 @@ class ResourceService:
         else:
             self.db.flush()
     
-    def process_resource(self, resource_id: UUID, user_id: UUID):
+    def process_resource(
+        self, 
+        resource_id: UUID, 
+        user_id: UUID, 
+        resource_type: Optional[str] = None,
+        progress_callback: Optional[Callable[[str, float, Optional[Dict[str, Any]]], None]] = None
+    ):
         """Process resource (OCR, chunk, embed) after validation."""
         resource = self.get_resource_with_ownership_check(resource_id, user_id)
         
@@ -191,7 +262,7 @@ class ResourceService:
         from app.components.document_processing.services.resource_processor_service import ResourceProcessorService
         
         processor = ResourceProcessorService(self.db)
-        result = processor.process_resource(resource)
+        result = processor.process_resource(resource, resource_type=resource_type, progress_callback=progress_callback)
         
         return result
 

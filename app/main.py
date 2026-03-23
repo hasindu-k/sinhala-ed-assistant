@@ -5,11 +5,13 @@ from app.logging_config import setup_logging
 setup_logging()
 
 import logging
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-
+from app.routers import (
+    websockets,
+)
+from app.core.whisper_loader import WhisperLoader
 from app.api.v1.router import api_router
 from app.core.database import Base, engine
 
@@ -23,26 +25,38 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten this in production
+    allow_origins=[
+        "http://localhost:64792",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(websockets.router)
+app.include_router(api_router, prefix="/api/v1")
+
 @app.on_event("startup")
 def on_startup():
     logger.info("Starting Sinhala Educational Assistant API...")
+
     try:
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables created/verified successfully")
     except Exception as e:
         logger.warning(
-            "Could not connect to database during startup: %s. "
-            "The application will start but database operations may fail. "
-            "Ensure PostgreSQL is running on the configured host and port.",
+            "Could not connect to database during startup: %s",
             str(e)
         )
 
+    try:
+        logger.info("Loading Whisper model at startup...")
+        WhisperLoader.load()
+        logger.info("Whisper model loaded successfully.")
+    except Exception as e:
+        logger.error("Whisper model failed to load: %s", str(e))
 
 def custom_openapi():
     """Add Bearer auth security scheme to OpenAPI and apply to protected endpoints."""
@@ -91,8 +105,6 @@ def custom_openapi():
 
 
 app.openapi = custom_openapi
-
-app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/")
 def root():

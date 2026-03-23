@@ -1,4 +1,5 @@
-#app/services/session_resource_service.py
+# app/services/session_resource_service.py
+
 from typing import List
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -18,5 +19,17 @@ class SessionResourceService:
     def get_session_resources(self, session_id: UUID) -> List:
         return self.repository.get_session_resources(session_id)
 
+    def get_resources_by_session_id(self, session_id: UUID) -> List:
+        return self.repository.get_resources_by_session_id(session_id)
+
     def detach_all_resources(self, session_id: UUID) -> int:
         return self.repository.delete_resources_for_session(session_id)
+
+    def detach_resource(self, session_id: UUID, resource_id: UUID, label: str = None) -> bool:
+        """Remove a single resource link from a session. Returns True if found and removed."""
+        return self.repository.detach_resource_from_session(session_id, resource_id, label)
+
+    def detach_resources_by_label(self, session_id: UUID, label: str) -> bool:
+        """Remove all resource links with a specific label from a session. Returns True if found and removed."""
+        return self.repository.detach_resources_by_label(session_id, label)
+

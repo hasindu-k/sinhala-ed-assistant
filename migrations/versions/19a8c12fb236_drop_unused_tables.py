@@ -17,10 +17,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Drop tables
-    op.drop_table('user_question_paper')
-    op.drop_table('chat_messages')
-    op.drop_table('chunks')
+    # Drop tables safely
+    op.execute("DROP TABLE IF EXISTS user_question_paper CASCADE")
+    op.execute("DROP TABLE IF EXISTS chat_messages CASCADE")
+    op.execute("DROP TABLE IF EXISTS chunks CASCADE")
 
 
 def downgrade() -> None:

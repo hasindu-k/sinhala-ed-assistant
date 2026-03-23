@@ -1,3 +1,5 @@
+# app/routers/messages.py
+
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -15,8 +17,11 @@ from app.schemas.message import (
     MessageAttachmentWithResource,
     MessageContextChunkResponse,
     MessageSafetyReportResponse,
-    GenerateResponseRequest
+    XAIExplanationResponse,
+    GenerateResponseRequest,
+    ProcessingLogResponse,
 )
+from app.schemas.resource import ResourceProcessResponse
 from app.services.message_service import MessageService
 from app.services.message_attachment_service import MessageAttachmentService
 from app.services.message_context_service import MessageContextService
@@ -29,7 +34,13 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
 from app.shared.models.message import Message
-from typing import List
+from app.routers.websockets import manager
+import asyncio
+from typing import List, Optional, Dict, Any
+from app.services.safety_summary_service import SafetySummaryService
+from fastapi import status
+from app.schemas.safety_summary import SafetySummaryResponse
+from app.repositories.processing_log_repository import ProcessingLogRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -69,6 +80,17 @@ def create_user_message(
             transcript=payload.transcript,
             audio_duration_sec=payload.audio_duration_sec,
         )
+        
+        # 🎯 Generate intelligent title if this is a new session with default title
+        if session_id in ("undefined", "null", "", None) and payload.content:
+            try:
+                from app.components.document_processing.services.classifier_service import generate_session_title
+                intelligent_title = generate_session_title(payload.content)
+                chat_session_service.update_session_title(parsed_session_id, current_user.id, intelligent_title)
+                logger.info(f"Generated title '{intelligent_title}' for new session {parsed_session_id}")
+            except Exception as e:
+                logger.warning(f"Failed to generate session title: {e}")
+                # Continue with default "New Chat" title
 
         attachments = payload.attachments or []
         if attachments:
@@ -91,15 +113,24 @@ def create_user_message(
                 )
             
             attachment_service = MessageAttachmentService(db)
+            session_resource_service = SessionResourceService(db)
+            
             for att in attachments:
+                # Attach to message
                 attachment_service.attach_resource(
                     message_id=message.id,
                     resource_id=att.resource_id,
                     display_name=att.display_name,
                     attachment_type=att.attachment_type,
                 )
+                
+                # Also attach to session
+                session_resource_service.attach_resource_to_session(
+                    session_id=parsed_session_id,
+                    resource_id=att.resource_id,
+                )
 
-            logger.info(f"Attached {len(attachments)} resources to message {message.id}")
+            logger.info(f"Attached {len(attachments)} resources to message {message.id} and session {parsed_session_id}")
 
         logger.info(f"User message created: {message.id} in session {parsed_session_id} by user {current_user.id}")
 
@@ -390,6 +421,162 @@ def detach_files_from_message(
             detail="Failed to detach resources"
         )
 
+
+@router.post("/{message_id}/attachments/process", response_model=List[ResourceProcessResponse])
+async def process_message_attachments(
+    message_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    OCR, chunk, and embed all resources attached to a message.
+
+    Args:
+        message_id: ID of the message whose attachments should be processed
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        List of processing results for each attached resource
+
+    Raises:
+        HTTPException 400: No attachments or validation error
+        HTTPException 403: User doesn't own the session
+        HTTPException 404: Message not found
+        HTTPException 500: Processing error
+    """
+    try:
+        message_service = MessageService(db)
+        message = message_service.get_message_with_ownership_check(message_id, current_user.id)
+
+        attachment_service = MessageAttachmentService(db)
+        attachments = attachment_service.get_message_resources(message_id)
+        resource_ids = list({att.resource_id for att in attachments})
+
+        # If no message attachments, fall back to session resources
+        if not resource_ids:
+            session_resource_service = SessionResourceService(db)
+            session_resources = session_resource_service.get_session_resources(message.session_id)
+            resource_ids = list({res.resource_id for res in session_resources})
+
+        if not resource_ids:
+            raise ValueError("No attachments found for this message or session")
+
+        resource_service = ResourceService(db)
+        processing_log_repo = ProcessingLogRepository(db)
+        results = []
+        loop = asyncio.get_running_loop()
+
+        total_resources = len(resource_ids)
+
+        progress_log = []
+
+        for idx, resource_id in enumerate(resource_ids):
+            # Capture loop variables for the callback closure
+            current_res_id = resource_id
+            current_index = idx + 1
+            progress_log.clear()
+
+            def progress_callback(
+                stage: str,
+                progress: float,
+                details: Optional[Dict[str, Any]] = None,
+                _res_id=current_res_id,
+                _index=current_index,
+            ):
+                event = {
+                    "stage": stage,
+                    "progress": progress,
+                    "details": details,
+                }
+                progress_log.append(event)
+
+                # Persist to database
+                try:
+                    processing_log_repo.create(
+                        resource_id=_res_id,
+                        stage=stage,
+                        progress=progress,
+                        details=details,
+                        user_id=current_user.id,
+                        session_id=message.session_id,
+                        message_id=message_id,
+                    )
+                    db.commit()
+                except Exception as log_err:
+                    logger.warning(
+                        "Failed to persist processing log | resource=%s stage=%s: %s",
+                        _res_id, stage, log_err,
+                    )
+                    db.rollback()
+
+                logger.info(
+                    "Progress update | user=%s resource=%s stage=%s progress=%s",
+                    current_user.id,
+                    _res_id,
+                    stage,
+                    progress,
+                )
+
+                asyncio.run_coroutine_threadsafe(
+                    manager.send_personal_message(
+                        {
+                            "type": "processing_progress",
+                            "resource_id": str(_res_id),
+                            "message_id": str(message_id),
+                            "stage": stage,
+                            "progress": round(progress, 1),
+                            "document_index": _index,
+                            "total_documents": total_resources,
+                            "details": details,
+                        },
+                        str(current_user.id),
+                    ),
+                    loop,
+                )
+
+            # Run synchronous processing in a thread pool to allow async WebSocket messages
+            result = await asyncio.to_thread(
+                resource_service.process_resource,
+                resource_id=resource_id,
+                user_id=current_user.id,
+                progress_callback=progress_callback,
+            )
+
+            result["processing_steps"] = progress_log.copy()
+
+            results.append(result)
+
+        logger.info(
+            "Processed %s attachments for message %s by user %s",
+            len(results),
+            message_id,
+            current_user.id,
+        )
+        return results
+
+    except ValueError as e:
+        logger.warning(f"Validation error processing attachments for message {message_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except PermissionError as e:
+        logger.warning(f"User {current_user.id} attempted unauthorized processing for message {message_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(
+            f"Error processing attachments for message {message_id} for user {current_user.id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process message attachments"
+        )
+
 @router.post("/{message_id}/generate", response_model=MessageResponse)
 def generate_ai_response(
     message_id: UUID,
@@ -433,6 +620,20 @@ def generate_ai_response(
             user_id=current_user.id,
             resource_ids=resource_ids,
         )
+
+        # Attach safety summary to generated assistant message
+        try:
+            summary_service = SafetySummaryService(db)
+            summary = summary_service.build_summary(assistant_message.id)
+            if summary:  # Only create dict if summary exists
+                assistant_message.safety_summary = {
+                    "overall_severity": summary.get("overall_severity"),
+                    "confidence_score": summary.get("confidence_score"),
+                    "reliability": summary.get("reliability"),
+                }
+        except Exception as e:
+            logger.debug(f"No safety summary for generated message {assistant_message.id}: {e}")
+
         logger.info(f"AI response generated for message {message_id} by user {current_user.id}")
         return assistant_message
         
@@ -485,10 +686,26 @@ def get_message_history(
         message_service = MessageService(db)
         messages = message_service.list_session_messages_with_attachments(session_id)
 
-        # Build response including resource_ids per message
+        # Build response including resource_ids and safety summary per message
+        summary_service = SafetySummaryService(db)
+        log_repo = ProcessingLogRepository(db)
+        message_ids_with_logs = log_repo.get_message_ids_with_logs([m.id for m in messages])
         response_messages = []
         for message in messages:
             resource_ids = [att.resource_id for att in getattr(message, "attachments", [])]
+
+            safety_summary = None
+            if getattr(message, "role", None) == "assistant":
+                try:
+                    summary = summary_service.build_summary(message.id)
+                    if summary:  # Only create dict if summary exists
+                        safety_summary = {
+                            "overall_severity": summary.get("overall_severity"),
+                            "confidence_score": summary.get("confidence_score"),
+                            "reliability": summary.get("reliability"),
+                        }
+                except Exception as e:
+                    logger.debug(f"No safety summary for message {message.id}: {e}")
 
             response_messages.append({
                 "id": message.id,
@@ -502,6 +719,9 @@ def get_message_history(
                 "audio_duration_sec": message.audio_duration_sec,
                 "created_at": message.created_at,
                 "resource_ids": resource_ids,
+                "parent_msg_id": message.parent_msg_id,
+                "safety_summary": safety_summary,
+                "has_processing_log": message.id in message_ids_with_logs,
             })
         
         logger.debug(f"Retrieved {len(messages)} messages with attachments for session {session_id} by user {current_user.id}")
@@ -701,7 +921,7 @@ def get_message_safety_report(
         message_service.get_message_with_ownership_check(message_id, current_user.id)
         
         safety_service = MessageSafetyService(db)
-        safety_report = safety_service.get_safety_report(message_id)
+        safety_report = safety_service.get_safety_report_with_xai(message_id)
         
         if not safety_report:
             logger.warning(f"Safety report not found for message {message_id} by user {current_user.id}")
@@ -732,4 +952,138 @@ def get_message_safety_report(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve safety report"
+        )
+
+@router.get("/{message_id}/xai", response_model= XAIExplanationResponse)
+def get_message_xai_explanation(
+    message_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Fetch only the XAI explanation attached to a safety report."""
+    try:
+        message_service = MessageService(db)
+        message_service.get_message_with_ownership_check(message_id, current_user.id)
+
+        safety_service = MessageSafetyService(db)
+        report = safety_service.get_safety_report_with_xai(message_id)
+        if not report or report.xai_explanation is None:
+            logger.warning(f"XAI explanation not found for message {message_id} by user {current_user.id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="XAI explanation not available for this message"
+            )
+        return {"xai_explanation": report.xai_explanation}
+    except ValueError as e:
+        logger.warning(f"Message {message_id} not found for XAI request by user {current_user.id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except PermissionError as e:
+        logger.warning(f"User {current_user.id} attempted unauthorized access to XAI for message {message_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving XAI for message {message_id} for user {current_user.id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve XAI explanation"
+        )
+
+
+@router.get(
+    "/{message_id}/safety-summary",
+    response_model=SafetySummaryResponse
+)
+def get_message_safety_summary(
+    message_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get a user-facing safety summary for an assistant message.
+
+    This endpoint provides a high-level risk assessment without
+    exposing raw hallucination details.
+    """
+    try:
+        # Ownership check (reuse existing logic)
+        message_service = MessageService(db)
+        message_service.get_message_with_ownership_check(
+            message_id, current_user.id
+        )
+
+        summary_service = SafetySummaryService(db)
+        summary = summary_service.build_summary(message_id)
+
+        return summary
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error retrieving safety summary for message {message_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve safety summary",
+        )
+
+
+@router.get(
+    "/{message_id}/processing-logs",
+    response_model=List[ProcessingLogResponse],
+)
+def get_message_processing_logs(
+    message_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all processing logs for a specific message.
+    """
+    try:
+        message_service = MessageService(db)
+        message_service.get_message_with_ownership_check(message_id, current_user.id)
+
+        repo = ProcessingLogRepository(db)
+        logs = repo.get_logs_for_message(message_id)
+        return logs
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error retrieving processing logs for message {message_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve processing logs",
         )

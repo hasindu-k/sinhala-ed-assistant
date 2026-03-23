@@ -10,7 +10,7 @@ ALLOWED_TYPES = {
     "audio/mpeg": "MP3 audio"
 }
 
-MAX_SIZE_MB = 5 
+MAX_SIZE_MB = 8 
 MAX_SIZE = MAX_SIZE_MB * 1024 * 1024  # 5MB
 MAX_FILES = 10
 

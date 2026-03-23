@@ -25,8 +25,8 @@ def approximate_token_count(text: str) -> int:
 
 def chunk_text(
     text: str,
-    max_tokens: int = 300,
-    overlap_tokens: int = 30
+    max_tokens: int = 220,
+    overlap_tokens: int = 60
 ) -> List[Dict]:
     """
     Chunk text into metadata chunks:

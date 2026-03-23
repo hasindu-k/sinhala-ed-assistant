@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.shared.models.chat_session import ChatSession
+from app.shared.models.session_resources import SessionResource
 
 
 class ChatSessionRepository:
@@ -22,6 +23,7 @@ class ChatSessionRepository:
         description: Optional[str] = None,
         grade: Optional[int] = None,
         subject: Optional[str] = None,
+        rubric_id: Optional[UUID] = None,
         session_id: Optional[UUID] = None,
     ) -> ChatSession:
         # Allow caller to provide a specific session ID (useful when creating
@@ -35,6 +37,7 @@ class ChatSessionRepository:
             description=description,
             grade=grade,
             subject=subject,
+            rubric_id=rubric_id,
         )
         if session_id:
             session_kwargs["id"] = session_id
@@ -63,3 +66,33 @@ class ChatSessionRepository:
             .first()
         )
         return session is not None
+
+    def attach_resource(self, session_id: UUID, resource_id: UUID, role: str):
+        """Attach a resource to a session with a specific role (label)."""
+        # Check if resource is already attached
+        existing = self.db.query(SessionResource).filter(
+            SessionResource.session_id == session_id,
+            SessionResource.resource_id == resource_id
+        ).first()
+        
+        if existing:
+            existing.label = role
+        else:
+            # Check if a resource with this role already exists for this session, if so, replace it?
+            # The user said "latest uploaded things until user upload new ones".
+            # So if we attach a new "question_paper", we should probably remove the old "question_paper".
+            if role in ["question_paper", "syllabus"]:
+                self.db.query(SessionResource).filter(
+                    SessionResource.session_id == session_id,
+                    SessionResource.label == role
+                ).delete()
+            
+            session_resource = SessionResource(
+                session_id=session_id,
+                resource_id=resource_id,
+                label=role
+            )
+            self.db.add(session_resource)
+        
+        self.db.commit()
+

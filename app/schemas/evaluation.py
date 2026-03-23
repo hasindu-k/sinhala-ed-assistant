@@ -1,5 +1,7 @@
+# app/schemas/evaluation.py
+
 from pydantic import BaseModel, Field
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Union, Any
 from uuid import UUID
 from datetime import datetime
 from decimal import Decimal
@@ -17,6 +19,7 @@ class EvaluationResourceRole(str, Enum):
     syllabus = "syllabus"
     question_paper = "question_paper"
     answer_script = "answer_script"
+    rubric = "rubric"
 
 
 # Evaluation Session Schemas
@@ -47,6 +50,54 @@ class EvaluationResourceAttach(BaseModel):
     role: EvaluationResourceRole
 
 
+from app.schemas.resource import ResourceFileResponse
+from app.schemas.rubric import RubricResponse
+
+class UserEvaluationContextResponse(BaseModel):
+    syllabus: Optional[ResourceFileResponse] = None
+    question_paper: Optional[ResourceFileResponse] = None
+    rubric: Optional[RubricResponse] = None
+    paper_config: Optional[List[Dict]] = None
+
+
+class StartEvaluationRequest(BaseModel):
+    chat_session_id: UUID
+    answer_resource_ids: List[UUID]
+    run_grading: bool = True
+
+
+class ProcessDocumentsRequest(BaseModel):
+    chat_session_id: UUID
+    answer_resource_ids: List[UUID]
+
+
+class DocumentProcessingStatus(BaseModel):
+    resource_id: UUID
+    role: str
+    status: str  # "processed", "already_processed", "failed"
+    message: Optional[str] = None
+
+
+class ProcessDocumentsResponse(BaseModel):
+    results: List[DocumentProcessingStatus]
+
+
+class AnswerMappingResponse(BaseModel):
+    answer_document_id: UUID
+    mapped_answers: Optional[Dict[str, Any]] = None
+    extracted_text: Optional[str] = None
+
+
+class SyllabusContentResponse(BaseModel):
+    resource_id: UUID
+    extracted_text: Optional[str] = None
+
+
+class RubricContentResponse(BaseModel):
+    resource_id: UUID
+    extracted_text: Optional[str] = None
+
+
 class EvaluationResourceResponse(BaseModel):
     id: UUID
     evaluation_session_id: UUID
@@ -60,34 +111,70 @@ class EvaluationResourceResponse(BaseModel):
 # Paper Config Schemas
 class PaperConfigCreate(BaseModel):
     paper_part: Optional[str] = None
+    question_type: Optional[str] = None  # e.g., 'short', 'essay'
     subject_name: Optional[str] = None
     medium: Optional[str] = None
+    total_marks: Optional[int] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
-    selection_rules: Optional[Dict[str, int]] = None
+    selection_rules: Optional[Dict[str, Any]] = None
+    is_confirmed: Optional[bool] = False
+
+    def get_question_type(self):
+        # Default: Paper/Part I = mcq, II = short, III = essay
+        if self.question_type:
+            return self.question_type
+        if self.paper_part:
+            part = self.paper_part.strip().lower()
+            if part in ["part i", "paper i"]:
+                return "mcq"
+            if part in ["part ii", "paper ii"]:
+                return "short"
+            if part in ["part iii", "paper iii"]:
+                return "essay"
+        return None
 
 
 class PaperConfigUpdate(BaseModel):
     paper_part: Optional[str] = None
+    question_type: Optional[str] = None
     subject_name: Optional[str] = None
     medium: Optional[str] = None
+    total_marks: Optional[int] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
-    selection_rules: Optional[Dict[str, int]] = None
+    selection_rules: Optional[Dict[str, Any]] = None
     is_confirmed: Optional[bool] = None
 
 
 class PaperConfigResponse(BaseModel):
     id: UUID
-    evaluation_session_id: UUID
+    chat_session_id: Optional[UUID] = None
+    evaluation_session_id: Optional[UUID] = None
     paper_part: Optional[str] = None
+    question_type: Optional[str] = None  # e.g., 'mcq', 'short', 'essay'
     subject_name: Optional[str] = None
     medium: Optional[str] = None
+    total_marks: Optional[int] = None
     weightage: Optional[Decimal] = None
     total_main_questions: Optional[int] = None
-    selection_rules: Optional[Dict[str, int]] = None
+    selection_rules: Optional[Dict[str, Any]] = None
     is_confirmed: Optional[bool] = None
     created_at: datetime
+
+    def get_question_type(self):
+        # Default: Paper/Part I = mcq, II = short, III = essay
+        if self.question_type:
+            return self.question_type
+        if self.paper_part:
+            part = self.paper_part.strip().lower()
+            if part in ["part i", "paper i"]:
+                return "mcq"
+            if part in ["part ii", "paper ii"]:
+                return "short"
+            if part in ["part iii", "paper iii"]:
+                return "essay"
+        return None
 
     class Config:
         from_attributes = True
@@ -127,11 +214,37 @@ class QuestionPaperResponse(BaseModel):
         from_attributes = True
 
 
+# Sub Question Schemas
+class SubQuestionCreate(BaseModel):
+    label: Optional[str] = None
+    sub_question_text: Optional[str] = None
+    max_marks: Optional[int] = None
+    question_type: Optional[str] = None  # e.g., 'essay', 'short', 'mcq'
+    correct_answer: Optional[str] = None  # For MCQ/short answer
+
+
+class SubQuestionResponse(BaseModel):
+    id: UUID
+    question_id: UUID
+    parent_sub_question_id: Optional[UUID] = None
+    label: Optional[str] = None
+    sub_question_text: Optional[str] = None
+    max_marks: Optional[int] = None
+    question_type: Optional[str] = None  # e.g., 'essay', 'short', 'mcq'
+    correct_answer: Optional[str] = None  # For MCQ/short answer
+    children: List['SubQuestionResponse'] = []
+
+    class Config:
+        from_attributes = True
+
+
 # Question Schemas
 class QuestionCreate(BaseModel):
     question_number: Optional[str] = None
     question_text: Optional[str] = None
     max_marks: Optional[int] = None
+    question_type: Optional[str] = None  # e.g., 'essay', 'short', 'mcq'
+    correct_answer: Optional[str] = None  # For MCQ/short answer
 
 
 class QuestionResponse(BaseModel):
@@ -140,24 +253,9 @@ class QuestionResponse(BaseModel):
     question_number: Optional[str] = None
     question_text: Optional[str] = None
     max_marks: Optional[int] = None
-
-    class Config:
-        from_attributes = True
-
-
-# Sub Question Schemas
-class SubQuestionCreate(BaseModel):
-    label: Optional[str] = None
-    sub_question_text: Optional[str] = None
-    max_marks: Optional[int] = None
-
-
-class SubQuestionResponse(BaseModel):
-    id: UUID
-    question_id: UUID
-    label: Optional[str] = None
-    sub_question_text: Optional[str] = None
-    max_marks: Optional[int] = None
+    question_type: Optional[str] = None  # e.g., 'essay', 'short', 'mcq'
+    correct_answer: Optional[str] = None  # For MCQ/short answer
+    sub_questions: List[SubQuestionResponse] = Field(default=[], validation_alias="root_sub_questions")
 
     class Config:
         from_attributes = True
@@ -183,7 +281,8 @@ class EvaluationResultResponse(BaseModel):
 
 # Question Score Schemas
 class QuestionScoreCreate(BaseModel):
-    sub_question_id: UUID
+    question_id: Optional[UUID] = None
+    sub_question_id: Optional[UUID] = None
     awarded_marks: Optional[Decimal] = None
     feedback: Optional[str] = None
 
@@ -191,7 +290,8 @@ class QuestionScoreCreate(BaseModel):
 class QuestionScoreResponse(BaseModel):
     id: UUID
     evaluation_result_id: UUID
-    sub_question_id: UUID
+    question_id: Optional[UUID] = None
+    sub_question_id: Optional[UUID] = None
     awarded_marks: Optional[Decimal] = None
     feedback: Optional[str] = None
 
@@ -201,12 +301,35 @@ class QuestionScoreResponse(BaseModel):
 
 # Combined Evaluation Result with Details
 class EvaluationResultDetail(BaseModel):
+
     id: UUID
     answer_document_id: UUID
     total_score: Optional[Decimal] = None
-    overall_feedback: Optional[str] = None
+    grade: Optional[str] = None
+    feedback: Optional[dict] = None  # {overall_feedback, missing_concepts, improvement_points}
+    marks_summary: Optional[Dict[str, List[Dict[str, Any]]]] = None
     evaluated_at: datetime
-    question_scores: list[QuestionScoreResponse] = []
+    question_feedbacks: list[QuestionScoreResponse] = []
 
     class Config:
         from_attributes = True
+
+
+# Marking Reference Schemas
+class MarkingReferenceResponse(BaseModel):
+    id: UUID
+    evaluation_session_id: UUID
+    question_id: Optional[UUID] = None
+    sub_question_id: Optional[UUID] = None
+    question_number: Optional[str] = None
+    question_text: Optional[str] = None
+    reference_answer: Optional[str] = None
+    is_approved: bool = False
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MarkingReferenceUpdate(BaseModel):
+    reference_answer: str

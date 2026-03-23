@@ -61,6 +61,7 @@ class MessageRepository:
         content: Optional[str],
         model_info: Optional[Dict] = None,
         grade_level: Optional[str] = None,
+        parent_msg_id: Optional[UUID] = None,
     ) -> Message:
         msg = Message(
             session_id=session_id,
@@ -72,6 +73,7 @@ class MessageRepository:
             prompt_tokens=(model_info or {}).get("prompt_tokens"),
             completion_tokens=(model_info or {}).get("completion_tokens"),
             total_tokens=(model_info or {}).get("total_tokens"),
+            parent_msg_id=parent_msg_id,
         )
         self.db.add(msg)
         self.db.commit()

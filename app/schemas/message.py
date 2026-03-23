@@ -1,3 +1,5 @@
+# app/schemas/message.py
+
 from pydantic import BaseModel
 from typing import Optional, Any, List
 from uuid import UUID
@@ -37,13 +39,28 @@ class MessageAttachment(BaseModel):
     attachment_type: Optional[str] = "pdf"
 
 class MessageCreate(BaseModel):
-    modality: MessageModality
-    content: Optional[str] = None
+    content: str
+    role: str = "user"
+    modality: MessageModality = MessageModality.text
     audio_url: Optional[str] = None
+    transcript: Optional[str] = None
+    audio_duration_sec: Optional[Decimal] = None
+    grade_level: Optional[str] = None  
+    attachments: Optional[List[MessageAttachment]] = None
+
+
+class MessageUpdate(BaseModel):
+    content: Optional[str] = None
     transcript: Optional[str] = None
     audio_duration_sec: Optional[Decimal] = None
     grade_level: Optional[GradeLevel] = None
     attachments: Optional[List[MessageAttachment]] = None
+
+
+class MessageSafetySummary(BaseModel):
+    overall_severity: Optional[str] = None
+    confidence_score: Optional[float] = None
+    reliability: Optional[str] = None
 
 
 class MessageResponse(BaseModel):
@@ -58,6 +75,9 @@ class MessageResponse(BaseModel):
     audio_duration_sec: Optional[Decimal] = None
     created_at: datetime
     resource_ids: list[UUID] = []
+    parent_msg_id: Optional[UUID] = None
+    safety_summary: Optional[MessageSafetySummary] = None
+    has_processing_log: bool = False
 
     class Config:
         from_attributes = True
@@ -163,12 +183,20 @@ class MessageSafetyReportCreate(BaseModel):
 class MessageSafetyReportResponse(BaseModel):
     id: UUID
     message_id: UUID
-    missing_concepts: Optional[str] = None
-    extra_concepts: Optional[str] = None
-    flagged_sentences: Optional[str] = None
+    missing_concepts: Optional[List[str]] = None
+    extra_concepts: Optional[List[str]] = None
+    flagged_sentences: Optional[List[Any]] = None
     reasoning: Optional[str] = None
+    xai_explanation: Optional[Any] = None
     created_at: datetime
 
+
+class XAIExplanationResponse(BaseModel):
+    """Return only the stored explanation for a message."""
+    xai_explanation: Optional[Any] = None
+
+    class Config:
+        from_attributes = True
     class Config:
         from_attributes = True
 
@@ -192,6 +220,22 @@ class MessageDetail(BaseModel):
     attachments: list[MessageAttachmentResponse] = []
     context_chunks: list[MessageContextChunkResponse] = []
     safety_report: Optional[MessageSafetyReportResponse] = None
+
+    class Config:
+        from_attributes = True
+
+
+# Processing Log Schema
+class ProcessingLogResponse(BaseModel):
+    id: UUID
+    resource_id: UUID
+    user_id: Optional[UUID] = None
+    session_id: Optional[UUID] = None
+    message_id: Optional[UUID] = None
+    stage: str
+    progress: float
+    details: Optional[Any] = None
+    timestamp: datetime
 
     class Config:
         from_attributes = True
