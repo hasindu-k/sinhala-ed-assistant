@@ -19,21 +19,38 @@ class SafetySummaryService:
             return None
 
         # If summary was pre-computed and cached, return it immediately (fast path)
-        if (hasattr(report, 'computed_severity') and report.computed_severity and 
-            hasattr(report, 'computed_confidence_score') and report.computed_confidence_score is not None and
-            hasattr(report, 'computed_reliability') and report.computed_reliability):
-            return {
-                "overall_severity": report.computed_severity,
-                "confidence_score": report.computed_confidence_score,
-                "reliability": report.computed_reliability,
-                "message": self._summary_message(report.computed_severity, report.computed_confidence_score),
-                "has_details": report.computed_severity != "low",
-                "flags": {"flagged_sentences": len(report.flagged_sentences or [])},
-                "xai_explanation": getattr(report, 'xai_explanation', None)
-            }
+        # We check for presence of cached values, allowing None for unanswerable questions
+        if hasattr(report, 'computed_severity') and hasattr(report, 'computed_confidence_score'):
+            # If records are explicitly None, they represent an unanswerable question's summary
+            # We return them as-is. For old records where these might be NULL but not intended 
+            # as unanswerable, they will still eventually fall through if we aren't careful, 
+            # but usually these are set together.
+            if report.computed_severity is None and report.computed_confidence_score is None:
+                return {
+                    "overall_severity": None,
+                    "confidence_score": None,
+                    "reliability": None,
+                    "message": None,
+                    "has_details": False,
+                    "flags": {"flagged_sentences": len(report.flagged_sentences or [])},
+                    "xai_explanation": getattr(report, 'xai_explanation', None)
+                }
+            
+            # If they are not None, return the cached values
+            if report.computed_severity and report.computed_confidence_score is not None:
+                return {
+                    "overall_severity": report.computed_severity,
+                    "confidence_score": report.computed_confidence_score,
+                    "reliability": report.computed_reliability,
+                    "message": self._summary_message(report.computed_severity, report.computed_confidence_score),
+                    "has_details": report.computed_severity != "low",
+                    "flags": {"flagged_sentences": len(report.flagged_sentences or [])},
+                    "xai_explanation": getattr(report, 'xai_explanation', None)
+                }
 
         # Fallback: compute on demand if not cached
-        flagged = report.flagged_sentences or []
+        # Explicitly cast to list to resolve potential slicing issues with JSONB
+        flagged: List[Dict] = list(report.flagged_sentences or [])
 
         if not flagged:
             return {
@@ -103,8 +120,11 @@ class SafetySummaryService:
             "xai_explanation": getattr(report, 'xai_explanation', None)
         }
 
-    def _summary_message(self, severity: str, confidence: float) -> str:
+    def _summary_message(self, severity: Optional[str], confidence: Optional[float]) -> Optional[str]:
         """Generate user-friendly summary message."""
+        if severity is None:
+            return None
+            
         if severity == "high":
             return (
                 "Some parts of this answer are not clearly supported "
@@ -122,12 +142,18 @@ class SafetySummaryService:
         """Compute summary values from flagged sentences (for caching at creation time)"""
         logger.info(f"flagged sentences count: {len(flagged)}, is_unanswerable: {is_unanswerable}")
         
-        if is_unanswerable:
-            # Clean response or unanswerable
-            return None
+        if is_unanswerable :
+            # Return null values for unanswerable questions
+            return {
+                "computed_severity": None,
+                "computed_confidence_score": None,
+                "computed_reliability": None,
+            }
         
         # Compute summary once here
-        pairs = [(item.get("sentence", ""), item.get("evidence", "")) for item in flagged[:10]]
+        # Explicitly cast to list to resolve potential slicing issues with JSONB
+        flagged_list: List[Dict] = list(flagged or [])
+        pairs = [(item.get("sentence", ""), item.get("evidence", "")) for item in flagged_list[:10]]
         similarities = SemanticSimilarityService.similarity_batch(pairs)
         
         severities = []

@@ -49,9 +49,6 @@ class IntentDetectionService:
             return "qa_answer"
         
 
-        if any(w in q for w in cls.GREETING_RULES):
-            return "greeting"
-
         # -------- Step 2: Semantic gate --------
         query_vec = generate_text_embedding(query)
         if not query_vec:
