@@ -303,7 +303,9 @@ def create_evaluation_session(
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        error_text = str(exc)
+        status_code = status.HTTP_400_BAD_REQUEST if "Marking schema must be confirmed before grading" in error_text else status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status_code, detail=error_text)
     except Exception as exc:
         logger.error(f"Failed to create evaluation session for chat {payload.session_id}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create evaluation session")
@@ -386,7 +388,9 @@ def get_syllabus_content(
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        error_text = str(exc)
+        status_code = status.HTTP_400_BAD_REQUEST if "Marking schema must be confirmed before grading" in error_text else status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status_code, detail=error_text)
     except Exception as exc:
         logger.error(f"Failed to get syllabus content: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get syllabus content")

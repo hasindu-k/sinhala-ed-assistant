@@ -1622,19 +1622,10 @@ class EvaluationWorkflowService:
         return self.marking_schemas.get_or_create_schema(session_id, user_id)
 
     def save_marking_schema(self, session_id: UUID, payload: MarkingSchemaUpdateRequest, user_id: UUID):
-        return self.marking_schemas.save_schema(
-            session_id=session_id,
-            questions=[question.model_dump() if hasattr(question, "model_dump") else question.dict() for question in payload.questions],
-            user_id=user_id,
-            confirmed=False,
-        )
+        return self.marking_schemas.save_schema(session_id=session_id, payload=payload, user_id=user_id, confirmed=False)
 
     def confirm_marking_schema(self, session_id: UUID, payload: MarkingSchemaUpdateRequest, user_id: UUID):
-        return self.marking_schemas.confirm_schema(
-            session_id=session_id,
-            questions=[question.model_dump() if hasattr(question, "model_dump") else question.dict() for question in payload.questions],
-            user_id=user_id,
-        )
+        return self.marking_schemas.confirm_schema(session_id=session_id, payload=payload, user_id=user_id)
 
     def delete_marking_schema(self, session_id: UUID, user_id: UUID) -> bool:
         return self.marking_schemas.delete_schema(session_id, user_id)

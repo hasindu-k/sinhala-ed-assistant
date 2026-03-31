@@ -7,7 +7,11 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.repositories.evaluation.marking_schema_repository import MarkingSchemaRepository
-from app.schemas.evaluation import MarkingSchemaQuestionResponse, MarkingSchemaResponse
+from app.schemas.evaluation import (
+    MarkingSchemaQuestionResponse,
+    MarkingSchemaResponse,
+    MarkingSchemaUpdateRequest,
+)
 from app.services.evaluation.evaluation_session_service import EvaluationSessionService
 from app.services.resource_service import ResourceService
 from app.services.session_resource_service import SessionResourceService
@@ -46,7 +50,7 @@ class MarkingSchemaService:
     def save_schema(
         self,
         session_id: UUID,
-        questions: List[Dict[str, Any]],
+        payload: Any,
         user_id: UUID,
         confirmed: bool = False,
     ) -> MarkingSchemaResponse:
@@ -55,7 +59,7 @@ class MarkingSchemaService:
         if not schema:
             schema = self.repository.create_marking_schema(eval_session.id, is_confirmed=confirmed)
 
-        normalized_items = self._normalize_items(questions)
+        normalized_items = self._normalize_items(self._extract_questions_payload(payload))
         self.repository.replace_marking_schema_items(schema.id, normalized_items)
         schema = self.repository.update_marking_schema(schema.id, is_confirmed=confirmed)
         self._sync_schema_resource(schema.id, eval_session.session_id, user_id)
@@ -68,8 +72,8 @@ class MarkingSchemaService:
 
         return self._to_response(schema)
 
-    def confirm_schema(self, session_id: UUID, questions: List[Dict[str, Any]], user_id: UUID) -> MarkingSchemaResponse:
-        return self.save_schema(session_id, questions, user_id, confirmed=True)
+    def confirm_schema(self, session_id: UUID, payload: Any, user_id: UUID) -> MarkingSchemaResponse:
+        return self.save_schema(session_id, payload, user_id, confirmed=True)
 
     def delete_schema(self, session_id: UUID, user_id: UUID) -> bool:
         eval_session = self._resolve_eval_session(session_id, user_id)
@@ -132,7 +136,6 @@ class MarkingSchemaService:
         workflow = EvaluationWorkflowService(self.db)
         syllabus_text, rubric_text, questions = workflow._get_evaluation_context(eval_session_id)
         grader = GradingService(self.db)
-
         leaf_targets = self._flatten_leaf_targets(questions)
         reference_map = grader.build_reference_map_for_targets(
             eval_session_id=eval_session_id,
@@ -143,12 +146,13 @@ class MarkingSchemaService:
 
         items: List[Dict[str, Any]] = []
         for index, target in enumerate(leaf_targets):
+            reference_text = reference_map.get(target["key"], "")
             items.append(
                 {
                     "question_id": target["question_id"],
                     "question_number": target["question_number"],
                     "question_text": target["question_text"],
-                    "reference_text": reference_map.get(target["key"], ""),
+                    "reference_text": reference_text,
                     "max_marks": target["max_marks"],
                     "part_name": target["part_name"],
                     "sort_order": index,
@@ -204,6 +208,19 @@ class MarkingSchemaService:
             sort_order += 1
 
         return targets
+
+    def _extract_questions_payload(self, payload: Any) -> List[Dict[str, Any]]:
+        if isinstance(payload, MarkingSchemaUpdateRequest):
+            return [
+                question.model_dump() if hasattr(question, "model_dump") else question.dict()
+                for question in payload.questions
+            ]
+        if hasattr(payload, "questions"):
+            return [
+                question.model_dump() if hasattr(question, "model_dump") else question.dict()
+                for question in payload.questions
+            ]
+        return payload
 
     def _normalize_items(self, questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []

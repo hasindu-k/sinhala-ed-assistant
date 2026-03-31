@@ -96,7 +96,7 @@ def test_save_schema_sets_draft_state():
 
     result = service.save_schema(
         session_id,
-        questions=[{"question_number": "1", "question_text": "Q", "reference_text": "R"}],
+        payload=[{"question_number": "1", "question_text": "Q", "reference_text": "R"}],
         user_id=uuid4(),
         confirmed=False,
     )
@@ -120,7 +120,7 @@ def test_confirm_schema_sets_confirmed_state():
 
     result = service.confirm_schema(
         session_id,
-        questions=[{"question_number": "1", "question_text": "Q", "reference_text": "R"}],
+        payload=[{"question_number": "1", "question_text": "Q", "reference_text": "R"}],
         user_id=uuid4(),
     )
 

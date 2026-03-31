@@ -166,7 +166,7 @@ class GradingService:
         # BM25 (_get_reference_context) is kept as fallback.
         # -------------------------------------------------------
         if progress_callback:
-            progress_callback("evaluating_answers", "Extracting reference answers from syllabus (AI)...", percent=3)
+            progress_callback("evaluating_answers", "Loading confirmed marking references...", percent=3)
 
         # Collect question info for Gemini batch extraction
         questions_for_extraction: List[Dict] = []
@@ -217,7 +217,7 @@ class GradingService:
         if cached is not None:
             gemini_ref_map = cached
             logger.info(f"Using cached Gemini references for session {cache_key} ({len(gemini_ref_map)} refs).")
-        elif syllabus_text and questions_for_extraction:
+        elif False and syllabus_text and questions_for_extraction:
             gemini_ref_map = self._batch_extract_reference_points(
                 questions_for_extraction, syllabus_text
             )
