@@ -104,4 +104,23 @@ class ResourceRepository:
             self.db.query(ResourceFile)
             .filter(ResourceFile.id.in_(resource_ids))
             .all()
-        ) 
+        )
+
+    def update_resource_extracted_text(
+        self,
+        resource_id: UUID,
+        extracted_text: Optional[str],
+        *,
+        commit: bool = True,
+    ) -> Optional[ResourceFile]:
+        resource = self.get_resource(resource_id)
+        if not resource:
+            return None
+
+        resource.extracted_text = extracted_text
+        if commit:
+            self.db.commit()
+            self.db.refresh(resource)
+        else:
+            self.db.flush()
+        return resource

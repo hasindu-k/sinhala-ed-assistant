@@ -97,6 +97,39 @@ class RubricContentResponse(BaseModel):
     extracted_text: Optional[str] = None
 
 
+class MarkingSchemaQuestionResponse(BaseModel):
+    id: str
+    question_id: Optional[UUID] = None
+    question_number: str
+    question_text: str
+    reference_text: str
+    max_marks: Optional[int] = None
+    part_name: Optional[str] = None
+
+
+class MarkingSchemaResponse(BaseModel):
+    id: UUID
+    session_id: UUID
+    resource_id: Optional[UUID] = None
+    is_confirmed: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    questions: List[MarkingSchemaQuestionResponse] = []
+
+
+class MarkingSchemaQuestionUpdate(BaseModel):
+    question_id: Optional[UUID] = None
+    question_number: str
+    question_text: str
+    reference_text: str
+    max_marks: Optional[int] = None
+    part_name: Optional[str] = None
+
+
+class MarkingSchemaUpdateRequest(BaseModel):
+    questions: List[MarkingSchemaQuestionUpdate]
+
+
 class EvaluationResourceResponse(BaseModel):
     id: UUID
     evaluation_session_id: UUID
