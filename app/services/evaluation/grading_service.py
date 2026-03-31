@@ -782,10 +782,6 @@ class GradingService:
         questions_for_extraction: List[Dict[str, Any]] = []
         for target_info in targets:
             target = target_info["target"]
-            correct = getattr(target, "correct_answer", None)
-            if correct and not self._is_placeholder_answer(correct):
-                continue
-
             question_text = target_info.get("question_text") or ""
             if not question_text.strip():
                 continue
@@ -817,10 +813,26 @@ class GradingService:
         final_map: Dict[str, str] = {}
         for target_info in targets:
             target = target_info["target"]
-            final_map[target_info["key"]] = gemini_ref_map.get(target_info["key"]) or self._get_reference_context(
+            extracted_reference = gemini_ref_map.get(target_info["key"], "")
+            if extracted_reference and not self._is_placeholder_answer(extracted_reference):
+                final_map[target_info["key"]] = extracted_reference
+                continue
+
+            syllabus_reference = self._get_reference_context(
                 target,
                 syllabus_text,
                 rubric_text,
+                prefer_gold_standard=False,
+            )
+            if syllabus_reference and not self._is_placeholder_answer(syllabus_reference):
+                final_map[target_info["key"]] = syllabus_reference
+                continue
+
+            final_map[target_info["key"]] = self._get_reference_context(
+                target,
+                syllabus_text,
+                rubric_text,
+                prefer_gold_standard=True,
             )
         return final_map
 
@@ -988,10 +1000,15 @@ class GradingService:
                     return True
         return False
 
-    def _get_reference_context(self, question, syllabus_text: str, rubric_text: str) -> str:
-        # Gold standard: use correct_answer if available and NOT a placeholder
+    def _get_reference_context(
+        self,
+        question,
+        syllabus_text: str,
+        rubric_text: str,
+        prefer_gold_standard: bool = True,
+    ) -> str:
         correct = getattr(question, "correct_answer", None)
-        if correct and not self._is_placeholder_answer(correct):
+        if prefer_gold_standard and correct and not self._is_placeholder_answer(correct):
             logger.info(f"Using Gold Standard context for question {getattr(question, 'id')}")
             return correct.strip()
 
@@ -1000,6 +1017,9 @@ class GradingService:
 
         source = syllabus_text
         if not source:
+            if correct and not self._is_placeholder_answer(correct):
+                logger.info(f"Using Gold Standard context for question {getattr(question, 'id')}")
+                return correct.strip()
             return ""
 
         chunks = [c.strip() for c in source.split("\n") if len(c.strip()) > 5]
