@@ -12,13 +12,15 @@ from app.schemas.evaluation import (
     PaperConfigCreate,
     PaperConfigUpdate,
     AnswerDocumentCreate,
+    MarkingSchemaUpdateRequest,
 )
 from app.services.evaluation.evaluation_session_service import EvaluationSessionService
 from app.services.evaluation.evaluation_resource_service import EvaluationResourceService
 from app.services.evaluation.question_paper_service import QuestionPaperService
 from app.services.evaluation.paper_config_service import PaperConfigService
 from app.services.evaluation.answer_evaluation_service import AnswerEvaluationService
-from app.shared.models.question_papers import Question, SubQuestion, QuestionPaper
+from app.services.evaluation.marking_schema_service import MarkingSchemaService
+from app.shared.models.question_papers import Question, SubQuestion
 from app.shared.models.evaluation_session import EvaluationSession
 from app.services.chat_session_service import ChatSessionService
 from app.services.resource_service import ResourceService
@@ -41,6 +43,7 @@ class EvaluationWorkflowService:
         self.question_papers = QuestionPaperService(db)
         self.paper_configs = PaperConfigService(db)
         self.answers = AnswerEvaluationService(db)
+        self.marking_schemas = MarkingSchemaService(db)
         self.chat_sessions = ChatSessionService(db)
         self.resource_files = ResourceService(db)
         self.usage = UsageService(db)
@@ -121,6 +124,9 @@ class EvaluationWorkflowService:
         self._get_eval_session_with_owner_check(answer_doc.evaluation_session_id, user_id)
         return answer_doc
 
+    def _ensure_marking_schema_confirmed_for_session(self, session_id: UUID, user_id: UUID):
+        return self.marking_schemas.ensure_schema_confirmed(session_id, user_id)
+
     def create_session(self, payload: EvaluationSessionCreate, user_id: UUID):
         self._ensure_chat_session_owner(payload.session_id, user_id)
         
@@ -171,7 +177,9 @@ class EvaluationWorkflowService:
                     resource_id=resource_id,
                     student_identifier=f"Student-{resource_id}" # Placeholder
                 )
-            
+
+        self._ensure_marking_schema_confirmed_for_session(session.id, user_id)
+
         # 3. Update Status to Processing
         self.sessions.update_evaluation_session(session.id, status="processing")
         
@@ -190,6 +198,7 @@ class EvaluationWorkflowService:
 
         logger.info(f"Starting parallel background evaluation for session {session_id} "
                     f"({len(answer_resource_ids)} sheets)")
+        self._ensure_marking_schema_confirmed_for_session(session_id, user_id)
 
         import time as _time
         _start = _time.time()
@@ -317,6 +326,7 @@ class EvaluationWorkflowService:
         logger.info(f"Stream: Starting evaluation for session {session_id}")
 
         try:
+            self._ensure_marking_schema_confirmed_for_session(session_id, user_id)
             for resource_id in answer_resource_ids:
                 
                 # Find the answer document
@@ -453,8 +463,10 @@ class EvaluationWorkflowService:
         eval_session = self.sessions.get_evaluation_session(answer_doc.evaluation_session_id)
         if not eval_session: raise ValueError("Evaluation session not found")
 
+        self._ensure_marking_schema_confirmed_for_session(eval_session.id, user_id)
         syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
         question_map = self._build_question_map_helper(questions)
+        reference_map = self.marking_schemas.get_confirmed_reference_map(eval_session.id, user_id)
 
         # Use cached mapping from the document processing step.
         # The mapping prompt now retries on JSON parse failures, so the cached mapping
@@ -565,6 +577,7 @@ class EvaluationWorkflowService:
                     syllabus_text=syllabus_text,
                     rubric_text=rubric_text,
                     question_map=question_map,
+                    reference_map=reference_map,
                     progress_callback=queue_callback,
                     include_feedback=include_feedback
                 )
@@ -1565,9 +1578,11 @@ class EvaluationWorkflowService:
         if not eval_session:
             raise ValueError("Evaluation session not found")
 
+        self._ensure_marking_schema_confirmed_for_session(eval_session.id, user_id)
+
         syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
-        
         question_map = self._build_question_map_helper(questions)
+        reference_map = self.marking_schemas.get_confirmed_reference_map(eval_session.id, user_id)
 
         # 1. Fix OCR errors in student answer
         if answer_doc.mapped_answers:
@@ -1622,6 +1637,7 @@ class EvaluationWorkflowService:
             syllabus_text=syllabus_text,
             rubric_text=rubric_text,
             question_map=question_map,
+            reference_map=reference_map,
             progress_callback=progress_callback,
             include_feedback=include_feedback
         )
@@ -1691,6 +1707,18 @@ class EvaluationWorkflowService:
         from app.services.evaluation.grading_service import GradingService
         grader = GradingService(self.db)
         return grader.generate_feedback_for_result(answer_id, user_id)
+
+    def get_marking_schema(self, session_id: UUID, user_id: UUID):
+        return self.marking_schemas.get_or_create_schema(session_id, user_id)
+
+    def save_marking_schema(self, session_id: UUID, payload: MarkingSchemaUpdateRequest, user_id: UUID):
+        return self.marking_schemas.save_schema(session_id=session_id, payload=payload, user_id=user_id, confirmed=False)
+
+    def confirm_marking_schema(self, session_id: UUID, payload: MarkingSchemaUpdateRequest, user_id: UUID):
+        return self.marking_schemas.confirm_schema(session_id=session_id, payload=payload, user_id=user_id)
+
+    def delete_marking_schema(self, session_id: UUID, user_id: UUID) -> bool:
+        return self.marking_schemas.delete_schema(session_id, user_id)
 
 
     def get_evaluation_result(self, answer_id: UUID, user_id: UUID):

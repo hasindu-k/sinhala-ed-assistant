@@ -102,6 +102,7 @@ class GradingService:
         syllabus_text: str,
         rubric_text: str,
         question_map: Dict,
+        reference_map: Optional[Dict[str, str]] = None,
         progress_callback: Optional[Callable[[str, str, Optional[int]], None]] = None,
         include_feedback: bool = True,
     ) -> EvaluationResult:
@@ -168,7 +169,7 @@ class GradingService:
         # BM25 (_get_reference_context) is kept as fallback.
         # -------------------------------------------------------
         if progress_callback:
-            progress_callback("evaluating_answers", "Extracting reference answers from syllabus (AI)...", percent=3)
+            progress_callback("evaluating_answers", "Loading confirmed marking references...", percent=3)
 
         # Collect question info for Gemini batch extraction
         questions_for_extraction: List[Dict] = []
@@ -213,20 +214,18 @@ class GradingService:
         approved_refs = {str(ref.question_id or ref.sub_question_id): ref.reference_answer for ref in db_refs if ref.is_approved and ref.reference_answer}
         
         gemini_ref_map: Dict[str, str] = {}
-        
-        if approved_refs:
-            logger.info(f"Using {len(approved_refs)} approved marking references from DB.")
-            # Map back to keys used in question_map for compatibility
-            for q_info in questions_for_extraction:
-                target_id = str(q_info['target'].id)
-                if target_id in approved_refs:
-                    gemini_ref_map[q_info['key']] = approved_refs[target_id]
 
-        # If not all refs are covered by approved DB entries, use cache/Gemini as fallback
-        missing_any = any(q['key'] not in gemini_ref_map for q in questions_for_extraction)
-        
-        if missing_any:
-            cache_key = str(eval_session_id)
+        with GradingService._gemini_ref_cache_lock:
+            cached = GradingService._gemini_ref_cache.get(cache_key)
+
+        if cached is not None:
+            gemini_ref_map = cached
+            logger.info(f"Using cached Gemini references for session {cache_key} ({len(gemini_ref_map)} refs).")
+        elif False and syllabus_text and questions_for_extraction:
+            gemini_ref_map = self._batch_extract_reference_points(
+                questions_for_extraction, syllabus_text
+            )
+            # Store in class-level cache for other students in same session
             with GradingService._gemini_ref_cache_lock:
                 cached = GradingService._gemini_ref_cache.get(cache_key)
 
@@ -249,6 +248,28 @@ class GradingService:
                         GradingService._gemini_ref_cache[cache_key] = gemini_ref_map
 
         logger.info(f"Final reference map size: {len(gemini_ref_map)}/{len(questions_for_extraction)}")
+
+        if progress_callback:
+            progress_callback("evaluating_answers", "Loading confirmed marking references...", percent=3)
+
+        reference_map = reference_map or {}
+        if not reference_map:
+            raise ValueError("Marking schema must be confirmed before grading")
+
+        gemini_ref_map = {}
+        missing_reference_keys: List[str] = []
+        for key in answer_doc.mapped_answers.keys():
+            target = self._find_matching_question(key, question_map)
+            if not target:
+                continue
+            saved_reference = self._get_saved_reference_text(reference_map, key, target)
+            if saved_reference:
+                gemini_ref_map[key] = saved_reference
+            else:
+                missing_reference_keys.append(str(key))
+
+        if missing_reference_keys:
+            raise ValueError("Marking schema must be confirmed before grading")
 
         # -------------------------------------------------------
         # PHASE 0.5: Pre-calculate all embeddings (SPEEDUP)
@@ -678,6 +699,7 @@ class GradingService:
 
         syllabus_text, rubric_text, questions = workflow._get_evaluation_context(eval_session.id)
         question_map = workflow._build_question_map_helper(questions)
+        reference_map = self._load_confirmed_reference_map(eval_session.id, eval_session.session_id, user_id)
 
         scores = self.db.query(QuestionScore).filter(QuestionScore.evaluation_result_id == result.id).all()
 
@@ -702,7 +724,9 @@ class GradingService:
                 key = str(target.id)
 
             display_number = self._resolve_display_number(target, key)
-            reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
+            reference_text = self._get_saved_reference_text(reference_map, key, target)
+            if not reference_text:
+                continue
 
             scored_items.append({
                 "key": key,
@@ -782,6 +806,98 @@ class GradingService:
             raise
 
         return result
+
+
+    def build_reference_map_for_targets(
+        self,
+        eval_session_id: UUID,
+        syllabus_text: str,
+        rubric_text: str,
+        targets: List[Dict[str, Any]],
+    ) -> Dict[str, str]:
+        questions_for_extraction: List[Dict[str, Any]] = []
+        for target_info in targets:
+            target = target_info["target"]
+            question_text = target_info.get("question_text") or ""
+            if not question_text.strip():
+                continue
+
+            questions_for_extraction.append(
+                {
+                    "key": target_info["key"],
+                    "target": target,
+                    "question_text": question_text,
+                    "max_marks": target_info.get("max_marks") or self._resolve_max_marks(target),
+                    "display_number": target_info.get("question_number") or target_info["key"],
+                    "question_type": getattr(target, "question_type", "short") or "short",
+                }
+            )
+
+        cache_key = str(eval_session_id)
+        gemini_ref_map: Dict[str, str] = {}
+        with GradingService._gemini_ref_cache_lock:
+            cached = GradingService._gemini_ref_cache.get(cache_key)
+
+        if cached is not None:
+            gemini_ref_map = cached
+            logger.info("Using cached marking references for session %s (%s refs).", cache_key, len(gemini_ref_map))
+        elif syllabus_text and questions_for_extraction:
+            gemini_ref_map = self._batch_extract_reference_points(questions_for_extraction, syllabus_text)
+            with GradingService._gemini_ref_cache_lock:
+                GradingService._gemini_ref_cache[cache_key] = gemini_ref_map
+
+        final_map: Dict[str, str] = {}
+        for target_info in targets:
+            target = target_info["target"]
+            extracted_reference = gemini_ref_map.get(target_info["key"], "")
+            if extracted_reference and not self._is_placeholder_answer(extracted_reference):
+                final_map[target_info["key"]] = extracted_reference
+                continue
+
+            syllabus_reference = self._get_reference_context(
+                target,
+                syllabus_text,
+                rubric_text,
+                prefer_gold_standard=False,
+            )
+            if syllabus_reference and not self._is_placeholder_answer(syllabus_reference):
+                final_map[target_info["key"]] = syllabus_reference
+                continue
+
+            final_map[target_info["key"]] = self._get_reference_context(
+                target,
+                syllabus_text,
+                rubric_text,
+                prefer_gold_standard=True,
+            )
+        return final_map
+
+    def _get_saved_reference_text(self, reference_map: Dict[str, str], key: str, target: Any) -> str:
+        candidates = [str(key), self._normalize_question_lookup_key(key)]
+        target_id = getattr(target, "id", None)
+        if target_id:
+            candidates.append(str(target_id))
+
+        display_number = self._resolve_display_number(target, key)
+        candidates.append(str(display_number))
+        candidates.append(self._normalize_question_lookup_key(display_number))
+
+        for candidate in candidates:
+            if candidate in reference_map and reference_map[candidate]:
+                return reference_map[candidate]
+        return ""
+
+    def _normalize_question_lookup_key(self, value: str) -> str:
+        return re.sub(r"[\s().]", "", str(value or "").lower())
+
+    def _load_confirmed_reference_map(self, eval_session_id: UUID, session_id: UUID, user_id: UUID) -> Dict[str, str]:
+        from app.services.evaluation.marking_schema_service import MarkingSchemaService
+
+        schema_service = MarkingSchemaService(self.db)
+        try:
+            return schema_service.get_confirmed_reference_map(eval_session_id, user_id)
+        except Exception:
+            return schema_service.get_confirmed_reference_map(session_id, user_id)
 
 
     # ----------------------------------------------------------
@@ -920,10 +1036,15 @@ class GradingService:
                     return True
         return False
 
-    def _get_reference_context(self, question, syllabus_text: str, rubric_text: str) -> str:
-        # Gold standard: use correct_answer if available and NOT a placeholder
+    def _get_reference_context(
+        self,
+        question,
+        syllabus_text: str,
+        rubric_text: str,
+        prefer_gold_standard: bool = True,
+    ) -> str:
         correct = getattr(question, "correct_answer", None)
-        if correct and not self._is_placeholder_answer(correct):
+        if prefer_gold_standard and correct and not self._is_placeholder_answer(correct):
             logger.info(f"Using Gold Standard context for question {getattr(question, 'id')}")
             return correct.strip()
 
@@ -932,6 +1053,9 @@ class GradingService:
 
         source = syllabus_text
         if not source:
+            if correct and not self._is_placeholder_answer(correct):
+                logger.info(f"Using Gold Standard context for question {getattr(question, 'id')}")
+                return correct.strip()
             return ""
 
         chunks = [c.strip() for c in source.split("\n") if len(c.strip()) > 5]

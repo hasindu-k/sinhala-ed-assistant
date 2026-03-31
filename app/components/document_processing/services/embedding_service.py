@@ -83,7 +83,7 @@ def embed_chunks(
             "embedding": vec,
             "embedding_model": EMBED_MODEL,
             "start_char": c_start,
-            "end_char": c_end
+            "end_char": c_end,
         })
 
     return results

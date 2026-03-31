@@ -1,7 +1,7 @@
 # app/shared/models/evaluation_session.py
 
 import uuid
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean, Numeric
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean, Numeric, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 
@@ -49,3 +49,31 @@ class PaperConfig(Base):
     
     is_confirmed = Column(Boolean, nullable=True, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class MarkingSchema(Base):
+    __tablename__ = "marking_schemas"
+    __table_args__ = (
+        UniqueConstraint("evaluation_session_id", name="uq_marking_schemas_evaluation_session_id"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_session_id = Column(UUID(as_uuid=True), ForeignKey("evaluation_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    resource_id = Column(UUID(as_uuid=True), ForeignKey("resource_files.id", ondelete="SET NULL"), nullable=True)
+    is_confirmed = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class MarkingSchemaItem(Base):
+    __tablename__ = "marking_schema_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    marking_schema_id = Column(UUID(as_uuid=True), ForeignKey("marking_schemas.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    question_number = Column(String, nullable=False)
+    question_text = Column(Text, nullable=False)
+    reference_text = Column(Text, nullable=False)
+    max_marks = Column(Integer, nullable=True)
+    part_name = Column(String, nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
