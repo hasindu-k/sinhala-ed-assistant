@@ -81,16 +81,35 @@ class AnswerEvaluationService:
     def create_question_score(
         self,
         evaluation_result_id: UUID,
-        sub_question_id: UUID,
-        awarded_marks: Decimal,
-        feedback: Optional[str] = None
+        sub_question_id: Optional[UUID] = None,
+        question_id: Optional[UUID] = None,
+        awarded_marks: Decimal = Decimal(0),
+        feedback: Optional[str] = None,
+        student_answer: Optional[str] = None
     ):
-        """Create a score for a sub-question."""
+        """Create a score for a question or sub-question."""
         return self.repository.create_question_score(
             evaluation_result_id=evaluation_result_id,
             sub_question_id=sub_question_id,
+            question_id=question_id,
             awarded_marks=awarded_marks,
-            feedback=feedback
+            feedback=feedback,
+            student_answer=student_answer
+        )
+
+    def create_student_answer(
+        self,
+        answer_document_id: UUID,
+        answer_text: str,
+        question_id: Optional[UUID] = None,
+        sub_question_id: Optional[UUID] = None
+    ):
+        """Register a student answer."""
+        return self.repository.create_student_answer(
+            answer_document_id=answer_document_id,
+            answer_text=answer_text,
+            question_id=question_id,
+            sub_question_id=sub_question_id
         )
     
     def get_question_scores_by_result(self, evaluation_result_id: UUID) -> List:

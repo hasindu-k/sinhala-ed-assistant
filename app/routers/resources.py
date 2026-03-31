@@ -2,6 +2,7 @@
 
 import logging
 from typing import List, Optional
+from urllib.parse import quote
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status, Query
 from fastapi.responses import FileResponse
 import os
@@ -718,7 +719,10 @@ def view_resource(
             )
 
         filename = resource.original_filename or os.path.basename(resource.storage_path)
-        headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+        encoded_filename = quote(filename)
+        headers = {
+            "Content-Disposition": f"inline; filename*=UTF-8''{encoded_filename}"
+        }
 
         return FileResponse(
             path=resource.storage_path,
