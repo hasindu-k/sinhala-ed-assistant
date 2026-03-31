@@ -26,7 +26,7 @@ from app.services.chat_session_service import ChatSessionService
 from app.services.resource_service import ResourceService
 from app.components.document_processing.services.classifier_service import extract_complete_exam_data, fix_sinhala_ocr, map_student_answers, extract_rubric_answers
 from app.components.document_processing.services.ocr_service import extract_and_clean_text_from_file
-from app.shared.models.answer_evaluation import QuestionScore, MarkingReference
+from app.shared.models.answer_evaluation import QuestionScore
 from app.services.usage_service import UsageService
 import logging
 
@@ -366,71 +366,6 @@ class EvaluationWorkflowService:
             logger.error(f"Critical error in evaluation stream: {e}")
             self.sessions.update_evaluation_session(session_id, status="failed")
             yield make_event(f"Evaluation process failed: {str(e)}", status="failed", stage="failed")
-
-    def get_or_create_marking_scheme(self, session_id: UUID, user_id: UUID):
-        """Fetches or generates the marking scheme for a session."""
-        from app.services.evaluation.grading_service import GradingService
-        
-        eval_session = self._get_eval_session_with_owner_check(session_id, user_id)
-        
-        # Check if already exists in DB
-        existing = self.db.query(MarkingReference).filter(MarkingReference.evaluation_session_id == session_id).all()
-        
-        # Stricter check: if we have NO records, or if ALL records are empty, we MUST regenerate.
-        # If some are empty, we might still want to regenerate to be safe.
-        has_real_answers = any(ref.reference_answer and len(ref.reference_answer.strip()) > 5 for ref in existing)
-        
-        if existing and has_real_answers:
-            logger.info(f"Marking Scheme: Returning {len(existing)} cached references for session {session_id}")
-            return existing
-        
-        if existing:
-             logger.info(f"Marking Scheme: Found {len(existing)} records but they appear empty. REGENERATING.")
-        else:
-             logger.info(f"Marking Scheme: No existing records found. GENERATING for session {session_id}")
-
-        # Generate new one
-        # 1. Get syllabus text
-        syllabus_text = ""
-        from app.shared.models.session_resources import SessionResource
-        syllabus_res = self.db.query(SessionResource).filter_by(session_id=eval_session.session_id, label="syllabus").first()
-        if syllabus_res:
-            res = self.resource_files.get_resource(syllabus_res.resource_id)
-            syllabus_text = res.extracted_text if res else ""
-        
-        logger.info(f"Marking Scheme Generation: Found syllabus resource? {syllabus_res is not None}. Text length: {len(syllabus_text)}")
-        
-        # 2. Get questions
-        paper = self.db.query(QuestionPaper).filter_by(evaluation_session_id=session_id).first()
-        if not paper:
-             # Try chat session level if not attached to eval session yet
-             paper = self.db.query(QuestionPaper).filter_by(chat_session_id=eval_session.session_id).first()
-        
-        if not paper:
-            raise ValueError("Question paper not found for this session.")
-        
-        from app.shared.models.question_papers import Question, SubQuestion
-        questions = self.db.query(Question).filter_by(question_paper_id=paper.id).all()
-        
-        flat_questions = []
-        for q in questions:
-            q_text = q.question_text or ""
-            flat_questions.append({"key": str(q.id), "target": q, "text": q_text})
-            for sq in q.sub_questions:
-                sq_text = sq.sub_question_text or ""
-                flat_questions.append({"key": str(sq.id), "target": sq, "text": sq_text})
-        
-        # 3. Call grading service to generate
-        gs = GradingService(self.db)
-        return gs.generate_initial_marking_scheme(session_id, syllabus_text, flat_questions)
-
-    def approve_marking_scheme(self, session_id: UUID, user_id: UUID):
-        """Approves the marking scheme for a session."""
-        self._get_eval_session_with_owner_check(session_id, user_id)
-        from app.repositories.evaluation.marking_reference_repository import MarkingReferenceRepository
-        repo = MarkingReferenceRepository(self.db)
-        repo.approve_session_references(session_id)
-        return {"status": "success", "message": "Marking scheme approved."}
 
     def evaluate_answer_generator(self, answer_id: UUID, user_id: UUID, include_feedback: bool = False):
         """

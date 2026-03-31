@@ -689,66 +689,6 @@ def get_answer_mapping(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get answer mapping")
 
 
-@router.get("/sessions/{session_id}/marking-scheme", response_model=List[MarkingReferenceResponse])
-def get_marking_scheme(
-    session_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    Get or generate the marking scheme (Gemini reference answers) for an evaluation session.
-    """
-    service = EvaluationWorkflowService(db)
-    try:
-        return service.get_or_create_marking_scheme(session_id, current_user.id)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    except Exception as exc:
-        logger.error(f"Failed to get marking scheme for session {session_id}: {exc}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get marking scheme")
-
-
-@router.put("/marking-scheme/{reference_id}", response_model=MarkingReferenceResponse)
-def update_marking_reference(
-    reference_id: UUID,
-    payload: MarkingReferenceUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    Update a specific reference answer in the marking scheme.
-    """
-    # Note: We need a way to check ownership of the reference_id.
-    # For now, we'll use the repository directly via the service.
-    from app.repositories.evaluation.marking_reference_repository import MarkingReferenceRepository
-    repo = MarkingReferenceRepository(db)
-    ref = repo.update_reference(reference_id, payload.reference_answer)
-    if not ref:
-        raise HTTPException(status_code=404, detail="Marking reference not found")
-    return ref
-
-
-@router.post("/sessions/{session_id}/marking-scheme/approve")
-def approve_marking_scheme(
-    session_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    Approve the entire marking scheme for a session to allow grading to proceed.
-    """
-    service = EvaluationWorkflowService(db)
-    try:
-        return service.approve_marking_scheme(session_id, current_user.id)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
-    except Exception as exc:
-        logger.error(f"Failed to approve marking scheme for session {session_id}: {exc}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to approve marking scheme")
-
-
 @router.get("/answers/{answer_id}/mapping-details")
 def get_answer_mapping_details(
     answer_id: UUID,
