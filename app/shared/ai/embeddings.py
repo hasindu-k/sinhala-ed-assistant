@@ -24,8 +24,6 @@ xlmr = SentenceTransformer(
     "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
 )
 
-client = GeminiClient.get_client()
-
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIM = 768
 
@@ -38,6 +36,11 @@ def generate_embedding(text: str) -> list[float]:
         return []
 
     try:
+        # Move client initialization inside to avoid startup crash if API keys missing
+        client = GeminiClient.get_client()
+        if not client:
+            return []
+            
         result = client.models.embed_content(
             model=EMBED_MODEL,
             contents=text,
