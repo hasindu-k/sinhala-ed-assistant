@@ -593,6 +593,10 @@ class GradingService:
                                     
             logger.info(f"DEBUG: Saving QuestionScore for Q_ID={target.id}. Captured text: {student_text_captured[:50] if student_text_captured else 'None'}")
 
+            has_student_text = bool(
+                student_text_captured and str(student_text_captured).strip().lower() not in ["null", "none", ""]
+            )
+
             q_score_params = {
                 "evaluation_result_id": eval_result.id,
                 "awarded_marks": final_marks,
@@ -618,13 +622,17 @@ class GradingService:
             else:
                 if getattr(target, 'sub_questions', []): is_leaf = False
 
+            # New attempt tracking: count only rows that actually captured student text,
+            # so selection logic reflects real attempts instead of placeholder rows.
+            main_q_id = str(main_q.id) if main_q else "orphan"
+            if main_q_id not in part_scores[part_name]:
+                part_scores[part_name][main_q_id] = {"marks": [], "attempted": 0}
+
+            if has_student_text:
+                part_scores[part_name][main_q_id]["attempted"] += 1
+
             if is_leaf:
-                main_q_id = str(main_q.id) if main_q else "orphan"
-                if main_q_id not in part_scores[part_name]:
-                    part_scores[part_name][main_q_id] = {"marks": [], "attempted": 0}
                 part_scores[part_name][main_q_id]["marks"].append(final_marks)
-                if any(str(it["target"].id) == str(target.id) for it in scored_items):
-                    part_scores[part_name][main_q_id]["attempted"] += 1
 
         self.db.flush()
 
@@ -646,12 +654,24 @@ class GradingService:
             count = part_rules.get('count') or part_rules.get('total') or part_rules.get('choose_any')
 
             if is_selection_mode and count and len(main_q_entries) > int(count):
-                # SYNC: Sort by total marks (descending), then by attempted sub-questions (descending)
-                main_q_entries.sort(key=lambda x: (x[0], x[1]), reverse=True)
-                selected = main_q_entries[:int(count)]
+                # New selection rule: prefer genuinely attempted main questions;
+                # only backfill with unattempted zero-mark questions when the paper
+                # requires more selected slots than were actually answered.
+                attempted_entries = [e for e in main_q_entries if e[1] > 0]
+                unattempted_entries = [e for e in main_q_entries if e[1] <= 0]
+                attempted_entries.sort(key=lambda x: (x[0], x[1]), reverse=True)
+                unattempted_entries.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+                selected = attempted_entries[:int(count)]
+                if len(selected) < int(count):
+                    selected.extend(unattempted_entries[: int(count) - len(selected)])
+
                 selected_totals = [e[0] for e in selected]
                 attempted_count = sum(1 for e in selected if e[1] > 0)
-                logger.info(f"Part {part_name}: Selected best {count}/{len(main_q_entries)} questions ({attempted_count} attempted).")
+                logger.info(
+                    f"Part {part_name}: Selected best {count}/{len(main_q_entries)} questions "
+                    f"({attempted_count} actually attempted)."
+                )
                 total_score_val += sum(selected_totals)
             else:
                 total_score_val += sum(e[0] for e in main_q_entries)
@@ -717,14 +737,13 @@ class GradingService:
             if not target:
                 continue
 
-            key = None
-            for k, val in answer_doc.mapped_answers.items():
-                if str(target.id) in str(val) or k == str(target.id):
-                    key = k
-                    break
+            # New feedback guard: skip placeholder rows so generated feedback only
+            # talks about answers the student actually wrote.
+            student_text = (qs.student_answer or "").strip()
+            if not student_text or student_text.lower() in ["null", "none"]:
+                continue
 
-            if not key:
-                key = str(target.id)
+            key = str(target.id)
 
             display_number = self._resolve_display_number(target, key)
             reference_text = self._get_saved_reference_text(reference_map, key, target)
@@ -733,7 +752,7 @@ class GradingService:
 
             scored_items.append({
                 "key": key,
-                "student_text": answer_doc.mapped_answers.get(key, ""),
+                "student_text": student_text,
                 "reference_text": reference_text,
                 "target": target,
                 "max_marks": self._resolve_max_marks(target),
@@ -989,7 +1008,10 @@ class GradingService:
         - Paper I / Short: Below 0.20 gives zero
         - Paper II / Essay: Below 0.15 gives zero (more lenient for depth coverage)
         """
-        high_threshold = 0.78
+        # New essay calibration: do not auto-promote essays to full marks from
+        # merely "good" similarity. Paper II should keep separation between
+        # partial, good, and excellent answers.
+        high_threshold = 0.78 if max_marks <= 2 else 0.97
         low_threshold = 0.20 if max_marks <= 2 else 0.15
 
         if ratio >= high_threshold: return 1.0

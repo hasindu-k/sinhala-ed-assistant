@@ -1,6 +1,8 @@
 # app/services/evaluation/evaluation_workflow_service.py
 
 import re
+import threading
+import time
 from typing import Optional, List, Union, Tuple, Dict, Any
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -36,6 +38,11 @@ logger = logging.getLogger(__name__)
 class EvaluationWorkflowService:
     """Orchestrates evaluation-related operations while keeping routers thin."""
 
+    # New in-memory coordination guard: ensures one answer document is graded
+    # by only one request path at a time.
+    _active_answer_evaluations: Dict[str, threading.Event] = {}
+    _active_answer_evaluations_lock = threading.Lock()
+
     def __init__(self, db: Session):
         self.db = db
         self.sessions = EvaluationSessionService(db)
@@ -47,6 +54,27 @@ class EvaluationWorkflowService:
         self.chat_sessions = ChatSessionService(db)
         self.resource_files = ResourceService(db)
         self.usage = UsageService(db)
+
+    def _acquire_answer_evaluation_slot(self, answer_id: UUID) -> Tuple[bool, threading.Event]:
+        # New helper for stream/background coordination.
+        key = str(answer_id)
+        with self._active_answer_evaluations_lock:
+            existing = self._active_answer_evaluations.get(key)
+            if existing is not None:
+                return False, existing
+
+            event = threading.Event()
+            self._active_answer_evaluations[key] = event
+            return True, event
+
+    def _release_answer_evaluation_slot(self, answer_id: UUID, event: threading.Event) -> None:
+        # Release the shared evaluation slot once grading is fully finished.
+        key = str(answer_id)
+        with self._active_answer_evaluations_lock:
+            current = self._active_answer_evaluations.get(key)
+            if current is event:
+                event.set()
+                del self._active_answer_evaluations[key]
 
     def _normalize_question_number(self, q_num: str) -> str:
         """Normalize question number (e.g. '1.', 'Q1' -> '1')"""
@@ -372,174 +400,55 @@ class EvaluationWorkflowService:
         Generator version of evaluate_answer.
         Yields (stage, message, percent) tuples.
         """
-        # This duplicates logic from evaluate_answer but yields updates.
-        # Ideally we refactor evaluate_answer to use this, but for safety I'll keep them separate or make evaluate_answer consume this.
-        
-        answer_doc = self._ensure_answer_owner(answer_id, user_id)
-        
-        yield ("processing_documents", "Checking answer resource...", 5)
-
-        # Get the answer document with OCR text
-        answer_resource = self.resource_files.get_resource(answer_doc.resource_id)
-        if not answer_resource:
-            raise ValueError("Answer resource not found")
-
-        # OCR
-        if not answer_resource.extracted_text:
-            yield ("processing_documents", "Extracting text from answer script (OCR)...", 10)
-            ocr_text, _ = extract_and_clean_text_from_file(answer_resource.storage_path)
-            self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
-        else:
-            ocr_text = answer_resource.extracted_text
-        
-        yield ("processing_documents", "Loading evaluation context...", 20)
-        
-        # Context loading
-        eval_session = self.sessions.get_evaluation_session(answer_doc.evaluation_session_id)
-        if not eval_session: raise ValueError("Evaluation session not found")
-
-        self._ensure_marking_schema_confirmed_for_session(eval_session.id, user_id)
-        syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
-        question_map = self._build_question_map_helper(questions)
-        reference_map = self.marking_schemas.get_confirmed_reference_map(eval_session.id, user_id)
-
-        # Use cached mapping from the document processing step.
-        # The mapping prompt now retries on JSON parse failures, so the cached mapping
-        # is reliable. Do NOT remap here to avoid double evaluation.
-        needs_remap = False
-
-
-        
-        if answer_doc.mapped_answers and not needs_remap:
-
-            yield ("processing_documents", "Using existing answer mapping...", 30)
-            answer_mapping = answer_doc.mapped_answers
-            if not answer_resource.extracted_text:
-                 cleaned_answer_text = fix_sinhala_ocr(ocr_text)
-            else:
-                 cleaned_answer_text = answer_resource.extracted_text
-        else:
-            if answer_doc.mapped_answers:
-                yield ("processing_documents", "Refreshing partial mapping...", 30)
-            else:
-                yield ("processing_documents", "Correcting OCR errors...", 30)
-                
-            # PERSISTENCE: Only fix if not already fixed/extracted
-            if not answer_resource.extracted_text or len(answer_resource.extracted_text) < 10:
-                cleaned_answer_text = fix_sinhala_ocr(ocr_text)
-                # Save the fixed version back to the resource so we don't fix it again
-                self.resource_files.update_resource_extracted_text(answer_resource.id, cleaned_answer_text)
-            else:
-                cleaned_answer_text = answer_resource.extracted_text
-                logger.info("Using previously extracted/fixed answer text.")
-            
-            yield ("processing_documents", f"Mapping answers to {len(questions)} questions...", 40)
-            answer_mapping = map_student_answers(cleaned_answer_text, questions)
-            self.answers.update_mapped_answers(answer_id, answer_mapping)
-
-        # PERSISTENCE: Save/Ensure structured answers in student_answers table
-        # We do this here (after mapping is established, whether cached or new)
-        # to ensure the structured table stays in sync.
-        yield ("processing_documents", "Ensuring structured answer persistence...", 45)
-        for key, text in answer_mapping.items():
-            target = self._find_matching_question(key, question_map)
-            if target:
-                try:
-                    # Logic here: our create_student_answer should ideally handle 
-                    # "update if exists" or it might just add duplicates.
-                    # Since this is a new table, we can just create if not exists
-                    self.answers.create_student_answer(
-                        answer_document_id=answer_id,
-                        answer_text=text,
-                        question_id=target.id if isinstance(target, Question) else None,
-                        sub_question_id=target.id if isinstance(target, SubQuestion) else None
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to save structured answer for {key}: {e}")
-        
-        # Grading
-        yield ("evaluating_answers", "Starting grading process...", 50)
-        
-        from app.services.evaluation.grading_service import GradingService
-        grader = GradingService(self.db)
-        
-        # We need to hook into grading service too. 
-        # Since I added progress_callback to grade_answer_document, I can use it!
-        
-        def internal_callback(stage, msg, percent=None):
-            # Map internal grading stages to our generator yields
-            # Base progress for grading is 50% to 100%
-            base = 50
-            if percent:
-                adjusted = base + (percent / 2) # Scale 0-100 to 50-100 range roughly
-            else:
-                adjusted = base
-            
-            # We can't yield from here directly (callback).
-            # So we need a way to pass this out.
-            # Since we are inside a generator `evaluate_answer_generator`, we can't yield from a callback.
-            # This is the same problem.
-            pass
-
-        # Actually, I can't easily stream from `grader.grade_answer_document` unless I change IT to a generator too.
-        # Or I use a queue.
-        # Given the complexity, I will just yield major steps here and NOT use the callback for now, 
-        # OR I will just accept that `grade_answer_document` is a black box that takes time.
-        
-        # BUT the user specifically asked for "steps on the backend terminal... to frontend".
-        # The logs show "Grading question X...".
-        
-        # I will make `grade_answer_document` a generator? No, it returns a value.
-        # I will use a queue to communicate from the callback to this generator.
         import queue
-        q = queue.Queue()
-        
-        def queue_callback(stage, msg, percent=None):
-            q.put((stage, msg, percent))
-            
         import threading
-        
-        # Run grading in a separate thread so we can consume the queue in this generator
-        result_container = {}
-        error_container = {}
-        
-        def run_grading():
+
+        q = queue.Queue()
+
+        def queue_callback(stage, msg, percent=None):
+            # New bridge: route progress callbacks from the synchronous
+            # evaluation path back into the streaming generator.
+            q.put((stage, msg, percent))
+
+        result_container: Dict[str, Any] = {}
+        error_container: Dict[str, Exception] = {}
+
+        def run_evaluation():
             try:
-                result_container['result'] = grader.grade_answer_document(
-                    answer_doc_id=answer_id,
+                # Reuse the main evaluation path so stream requests and background
+                # requests follow the same logic and locking behavior.
+                result_container["result"] = self.evaluate_answer(
+                    answer_id=answer_id,
                     user_id=user_id,
-                    eval_session_id=eval_session.id,
-                    syllabus_text=syllabus_text,
-                    rubric_text=rubric_text,
-                    question_map=question_map,
-                    reference_map=reference_map,
                     progress_callback=queue_callback,
-                    include_feedback=include_feedback
+                    include_feedback=include_feedback,
                 )
-            except Exception as e:
-                error_container['error'] = e
+            except Exception as exc:
+                error_container["error"] = exc
             finally:
-                q.put(None) # Sentinel
-        
-        t = threading.Thread(target=run_grading)
-        t.start()
-        
+                q.put(None)
+
+        worker = threading.Thread(
+            target=run_evaluation,
+            name=f"evaluate_answer_stream_{answer_id}",
+            daemon=True,
+        )
+        worker.start()
+
         while True:
             item = q.get()
             if item is None:
                 break
             stage, msg, percent = item
-            # Scale progress: 50 + (percent/2)
-            p = 50 + (percent / 2) if percent is not None else None
-            yield (stage, msg, p)
-            
-        t.join()
-        
-        if 'error' in error_container:
-            raise error_container['error']
-            
+            yield (stage, msg, percent)
+
+        worker.join()
+
+        if "error" in error_container:
+            raise error_container["error"]
+
         yield ("completed", "Evaluation completed.", 100)
-        return result_container.get('result')
+        return result_container.get("result")
 
     def list_sessions(self, user_id: UUID, session_id: Optional[UUID] = None) -> List:
         if session_id:
@@ -1380,7 +1289,13 @@ class EvaluationWorkflowService:
 
         # OCR the answer script if not already done
         if not answer_resource.extracted_text:
-            ocr_text, _ = extract_and_clean_text_from_file(answer_resource.storage_path)
+            # New answer-sheet extraction path: skip layout-block OCR so we favor
+            # full-page capture of the student's written answers.
+            ocr_text, _ = extract_and_clean_text_from_file(
+                answer_resource.storage_path,
+                force_layout_analysis=False,
+                resource_type="answer_sheet",
+            )
             # Update the resource with extracted text
             self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
         else:
@@ -1478,6 +1393,19 @@ class EvaluationWorkflowService:
 
     def evaluate_answer(self, answer_id: UUID, user_id: UUID, progress_callback=None, include_feedback: bool = False):
         """Evaluate answer with recursive sub-question support."""
+        # New lock: if the frontend triggers both `/start` and `/evaluate/stream`,
+        # the second caller waits instead of starting a conflicting grading run.
+        acquired, active_event = self._acquire_answer_evaluation_slot(answer_id)
+        if not acquired:
+            logger.info("Evaluation already in progress for answer document %s. Waiting for the active run.", answer_id)
+            active_event.wait(timeout=180)
+            existing = self.answers.get_evaluation_result_by_answer_document(answer_id)
+            if existing:
+                return existing
+            acquired, active_event = self._acquire_answer_evaluation_slot(answer_id)
+            if not acquired:
+                raise RuntimeError(f"Evaluation is still in progress for answer document {answer_id}.")
+
         answer_doc = self._ensure_answer_owner(answer_id, user_id)
 
         # Check if already evaluated - FORCE RE-EVALUATION if requested or just proceed
@@ -1502,7 +1430,13 @@ class EvaluationWorkflowService:
         if not answer_resource.extracted_text:
             if progress_callback:
                 progress_callback("processing_documents", "Extracting text from answer script (OCR)...")
-            ocr_text, _ = extract_and_clean_text_from_file(answer_resource.storage_path)
+            # New answer-sheet extraction path: skip layout-block OCR so we favor
+            # full-page capture of the student's written answers.
+            ocr_text, _ = extract_and_clean_text_from_file(
+                answer_resource.storage_path,
+                force_layout_analysis=False,
+                resource_type="answer_sheet",
+            )
             # Update the resource with extracted text
             self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
         else:
@@ -1554,10 +1488,25 @@ class EvaluationWorkflowService:
 
             # Save mapping for future use
             self.answers.update_mapped_answers(answer_id, answer_mapping)
+
+        # Previous rebuild behavior is intentionally disabled for now.
+        # Keeping the older block below makes it easier to revisit, but the
+        # second Gemini mapping pass was causing drift and worse Paper II
+        # accuracy than the mapping already saved during document processing.
+        if False and answer_doc.mapped_answers:
+            if progress_callback:
+                progress_callback("processing_documents", "Refreshing answer mapping with current rules...")
+            logger.info("Rebuilding existing answer mapping with current extraction rules...")
+            answer_mapping = map_student_answers(cleaned_answer_text, questions)
+
+            if not answer_mapping:
+                logger.error("Mapping refresh failed: Gemini returned an empty response.")
+                raise ValueError("à¶±à·’à¶»à·€à¶¯à·Šâ€à¶º à¶½à·™à·ƒ à¶´à·’à·…à·’à¶­à·”à¶»à·” à·„à¶³à·”à¶±à· à¶œà·à¶±à·“à¶¸à¶§ à¶±à·œà·„à·à¶šà·’ à·€à·’à¶º. à¶šà¶»à·”à¶«à·à¶šà¶» à¶±à·à·€à¶­ à¶‹à¶­à·Šà·ƒà·à·„ à¶šà¶»à¶±à·Šà¶±. (AI Rate Limited)")
+
+            self.answers.update_mapped_answers(answer_id, answer_mapping)
         
-        # Log the mapping for debugging
-        logger.info(f"Mapped {len(answer_mapping)} answers.")
-        logger.debug(f"Answer Mapping: {answer_mapping}")
+        # New debug aid: log the accepted mapping in a readable way before grading.
+        self._log_answer_mapping_preview(answer_id, answer_mapping, questions)
 
         # 3. Perform Grading
         if progress_callback:
@@ -1565,19 +1514,63 @@ class EvaluationWorkflowService:
         logger.info("Starting grading process...")
         from app.services.evaluation.grading_service import GradingService
         grader = GradingService(self.db)
-        result = grader.grade_answer_document(
-            answer_doc_id=answer_id,
-            user_id=user_id,
-            eval_session_id=eval_session.id,
-            syllabus_text=syllabus_text,
-            rubric_text=rubric_text,
-            question_map=question_map,
-            reference_map=reference_map,
-            progress_callback=progress_callback,
-            include_feedback=include_feedback
-        )
-        logger.info(f"Grading completed for answer document {answer_id}.")
-        return result
+        try:
+            result = grader.grade_answer_document(
+                answer_doc_id=answer_id,
+                user_id=user_id,
+                eval_session_id=eval_session.id,
+                syllabus_text=syllabus_text,
+                rubric_text=rubric_text,
+                question_map=question_map,
+                reference_map=reference_map,
+                progress_callback=progress_callback,
+                include_feedback=include_feedback
+            )
+            logger.info(f"Grading completed for answer document {answer_id}.")
+            return result
+        finally:
+            if acquired:
+                self._release_answer_evaluation_slot(answer_id, active_event)
+
+    def _log_answer_mapping_preview(self, answer_doc_id: UUID, answer_mapping: Dict[str, Any], questions: List[Question]) -> None:
+        """New debug helper: emit a compact preview of accepted mappings before grading starts."""
+        try:
+            question_map = self._build_question_map_helper(questions)
+            logger.info(
+                "[MAPPING_PREVIEW] Answer document %s has %d accepted mapped answers.",
+                answer_doc_id,
+                len(answer_mapping or {}),
+            )
+
+            for key, value in (answer_mapping or {}).items():
+                if not value or str(value).strip().lower() in ["null", "none", ""]:
+                    continue
+
+                target = self._find_matching_question(str(key), question_map)
+                if isinstance(target, SubQuestion) and getattr(target, "question", None):
+                    label = f"{target.question.question_number}({target.label})"
+                    part_name = getattr(target.question, "part_name", "Unknown")
+                elif isinstance(target, Question):
+                    label = str(target.question_number)
+                    part_name = getattr(target, "part_name", "Unknown")
+                else:
+                    label = str(key)
+                    part_name = "Unknown"
+
+                preview = str(value).replace("\r", " ").replace("\n", " ").strip()
+                logger.info(
+                    "[MAPPING_PREVIEW] key=%s | part=%s | label=%s | text=%s",
+                    key,
+                    part_name,
+                    label,
+                    preview[:120],
+                )
+        except Exception as exc:
+            logger.warning(
+                "[MAPPING_PREVIEW] Failed to log mapping preview for %s: %s",
+                answer_doc_id,
+                exc,
+            )
 
     def _get_evaluation_context(self, eval_session_id: UUID) -> Tuple[str, str, List[Question]]:
         """Helper to load all context required for evaluation."""
@@ -1619,22 +1612,43 @@ class EvaluationWorkflowService:
         return syllabus_text, rubric_text, unique_questions
 
     def _build_question_map_helper(self, questions: List[Question]) -> Dict:
-        """Helper to build a map for quick question lookup."""
-        q_map = {}
+        """Helper to build a part-aware map for quick question lookup."""
+        q_map: Dict[str, Any] = {}
+
+        def normalize(value: str) -> str:
+            return re.sub(r"[\s().]", "", str(value or "").lower())
+
+        def process_sub_questions(sub_questions: List[SubQuestion], parent_number: str, part_name: str):
+            # New part-aware indexing keeps repeated labels like `1` in different
+            # paper parts from colliding during answer lookup.
+            for sq in sub_questions or []:
+                sq_id = str(sq.id)
+                sq_label = normalize(sq.label)
+                composite_key = f"{parent_number}{sq_label}"
+
+                q_map[sq_id] = sq
+                if part_name:
+                    q_map[f"{part_name}_{composite_key}"] = sq
+                if composite_key not in q_map:
+                    q_map[composite_key] = sq
+
+                children = getattr(sq, "children", []) or []
+                if children:
+                    process_sub_questions(children, composite_key, part_name)
+
         for q in questions:
-            q_num = str(q.question_number).lstrip('0')
-            # Index by question number variants
-            q_map[q_num] = q
-            q_map[str(q.question_number)] = q
-            # Index by ID
-            q_map[str(q.id)] = q
-            
-            for sq in getattr(q, "sub_questions", []) or []:
-                sq_label = str(sq.label).lower().strip()
-                # Index by combinations: "1a", "1(a)", etc.
-                q_map[f"{q_num}{sq_label}"] = sq
-                q_map[f"{q_num}({sq_label})"] = sq
-                q_map[str(sq.id)] = sq
+            q_id = str(q.id)
+            q_num = normalize(str(q.question_number).lstrip('0') or str(q.question_number))
+            part_name = normalize(getattr(q, "part_name", "")).replace("paperii", "paper_ii").replace("paperi", "paper_i")
+
+            q_map[q_id] = q
+            if part_name:
+                q_map[f"{part_name}_{q_num}"] = q
+            if q_num not in q_map:
+                q_map[q_num] = q
+
+            process_sub_questions(getattr(q, "sub_questions", []) or [], q_num, part_name)
+
         return q_map
 
     def generate_feedback(self, answer_id: UUID, user_id: UUID):

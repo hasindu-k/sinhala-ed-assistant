@@ -442,6 +442,10 @@ CRITICAL RULES — READ CAREFULLY
 
 6. **OCR CLEANING ONLY**: Fix obvious Sinhala OCR errors. Do NOT correct the student's actual content.
 
+7. **NEVER INFER FROM CONTENT SIMILARITY**: If a student answer discusses the right topic but there is no visible marker for that exact question label, DO NOT map it.
+
+8. **SUB-QUESTION STRICTNESS**: Do not map a text to `5(අ)`, `5(ආ)`, etc. unless the OCR contains a visible marker such as `5(අ)`, `5 අ`, `5.අ`, `(අ)` under question 5, or another clearly equivalent written marker.
+
 ========================
 HOW TO FIND QUESTION MARKERS
 ========================
@@ -481,6 +485,36 @@ STUDENT ANSWER TEXT
 {answer_text}
 """
 
+PAPER_II_MAIN_BLOCK_PROMPT = """
+You are a STRICT answer extraction AI for Sri Lankan exam papers.
+You are given ONE already-isolated Paper II answer block for a single main question number.
+
+Your job:
+- map the student's writing inside this one block to the given sub-question IDs only
+- return ONLY text that visibly appears in this block
+- do NOT use topic matching from outside this block
+
+Rules:
+1. The OCR block already belongs to main question {main_no}. Do NOT map outside this main question.
+2. Prefer visible sub-question markers like `(අ)`, `(ආ)`, `(ඇ)`, `අ)`, `ආ)`, `a`, `b`, `c`.
+3. If inner sub-question markers are weak or missing, but the student clearly wrote multiple answers in sequence inside this same main-question block, split them in the same order as the provided structure.
+4. If the block only supports one sub-question answer confidently, return only that one.
+5. Copy the student's wording from the block. Only do light OCR cleanup.
+6. Do NOT invent missing answers.
+
+Return raw JSON only:
+{{"uuid": "student answer text"}}
+
+MAIN QUESTION NUMBER:
+{main_no}
+
+SUB-QUESTION STRUCTURE:
+{structure}
+
+OCR BLOCK:
+{answer_text}
+"""
+
 
 def _is_hallucinated_question_text(mapped_text: str, q_text: str, threshold: float = 0.85) -> bool:
     """
@@ -509,6 +543,704 @@ def _is_hallucinated_question_text(mapped_text: str, q_text: str, threshold: flo
 
     return False
 
+
+def _normalize_marker_text(text: str) -> str:
+    # New helper: normalize OCR-heavy text before checking whether
+    # a mapped snippet is actually anchored to a visible question marker.
+    return re.sub(r'[\s\.,;:!?\-()\[\]{}"\'`]+', '', str(text or "").lower())
+
+
+def _build_label_marker_patterns(label: str) -> list[str]:
+    # New helper: build tolerant regex patterns for the label styles students
+    # commonly write, so we validate mappings against markers, not semantics.
+    raw_label = str(label or "").strip()
+    if not raw_label:
+        return []
+
+    patterns = []
+    normalized = _normalize_marker_text(raw_label)
+    match = re.match(r'^(\d+)(?:\(([^\)]+)\))?$', raw_label)
+
+    if match:
+        main_no, sub_label = match.groups()
+        if sub_label:
+            sub_clean = re.escape(sub_label.strip())
+            patterns.extend([
+                rf'(?<!\d){re.escape(main_no)}\s*[\.\-:)]?\s*\(\s*{sub_clean}\s*\)',
+                rf'(?<!\d){re.escape(main_no)}\s*[\.\-:)]?\s*{sub_clean}(?!\w)',
+                rf'(?:(?<=\n)|(?<=\r)|^)\s*\(\s*{sub_clean}\s*\)',
+                rf'(?:(?<=\n)|(?<=\r)|^)\s*{sub_clean}[\)\.\-:]',
+            ])
+        else:
+            patterns.extend([
+                rf'(?:(?<=\n)|(?<=\r)|^)\s*{re.escape(main_no)}[\)\.\-:\s]',
+                rf'(?<!\d){re.escape(main_no)}\s*\)',
+            ])
+
+    if normalized:
+        patterns.append(re.escape(normalized))
+
+    # Preserve order while removing duplicates.
+    seen = set()
+    unique_patterns = []
+    for pattern in patterns:
+        if pattern not in seen:
+            seen.add(pattern)
+            unique_patterns.append(pattern)
+    return unique_patterns
+
+
+def _extract_main_and_sub_label(label: str) -> tuple[str, str]:
+    # New helper: split a label like `2(අ)` into its main-question number and
+    # sub-question marker so we can validate nearby OCR context more flexibly.
+    raw_label = str(label or "").strip()
+    match = re.match(r'^(\d+)(?:\(([^\)]+)\))?$', raw_label)
+    if not match:
+        return "", ""
+    main_no, sub_label = match.groups()
+    return (main_no or "").strip(), (sub_label or "").strip()
+
+
+def _looks_like_main_number_context(window_text: str, main_no: str) -> bool:
+    # New helper: accept OCR variants of the main question number as long as the
+    # nearby text still looks like a numbered answer block.
+    if not window_text or not main_no:
+        return False
+
+    patterns = [
+        rf'(?:(?<=\n)|(?<=\r)|^)\s*{re.escape(main_no)}[\)\.\-:\s]',
+        rf'(?<!\d){re.escape(main_no)}\s*\)',
+        rf'(?<!\d){re.escape(main_no)}\s*[\.\-:]\s*',
+    ]
+    return any(re.search(pattern, window_text, flags=re.IGNORECASE | re.MULTILINE) for pattern in patterns)
+
+
+def _build_sub_label_variants(sub_label: str) -> list[str]:
+    # New helper: OCR can distort Sinhala sub-labels, so we tolerate the most
+    # common nearby variants when checking whether the student wrote `(අ)/(ආ)/...`.
+    raw = str(sub_label or "").strip()
+    if not raw:
+        return []
+
+    variants = {raw}
+
+    # Keep only Sinhala letters for OCR-tolerant matching.
+    sinhala_only = "".join(ch for ch in raw if '\u0D80' <= ch <= '\u0DFF')
+    if sinhala_only:
+        variants.add(sinhala_only)
+        variants.add(sinhala_only.replace("ැ", "ැ"))
+
+    # Frequent OCR confusion in the current data: `(ඈඇ)` may appear as just
+    # one of the visible glyphs, so keep the individual characters too.
+    if len(sinhala_only) > 1:
+        for ch in sinhala_only:
+            variants.add(ch)
+
+    return [v for v in variants if v]
+
+
+def _has_nearby_subquestion_support(source_text: str, mapped_text: str, label: str) -> bool:
+    """
+    New fallback validator for Paper II sub-questions:
+    if OCR weakens the exact sub-question marker, accept the mapping when the
+    answer snippet appears near the right main-question number and a plausible
+    nearby sub-label variant.
+    """
+    if not source_text or not mapped_text or not label:
+        return False
+
+    main_no, sub_label = _extract_main_and_sub_label(label)
+    if not main_no or not sub_label:
+        return False
+
+    source = str(source_text)
+    mapped_norm = _normalize_marker_text(mapped_text)
+    sub_variants = _build_sub_label_variants(sub_label)
+    if not mapped_norm or not sub_variants:
+        return False
+
+    main_patterns = [
+        rf'(?:(?<=\n)|(?<=\r)|^)\s*{re.escape(main_no)}[\)\.\-:\s]',
+        rf'(?<!\d){re.escape(main_no)}\s*\)',
+    ]
+
+    for pattern in main_patterns:
+        for match in re.finditer(pattern, source, flags=re.IGNORECASE | re.MULTILINE):
+            # New window strategy: look at the answer block immediately after the
+            # main question marker instead of requiring an exact `2(අ)` style hit.
+            window = source[match.start():match.start() + 1400]
+            normalized_window = _normalize_marker_text(window)
+            if mapped_norm not in normalized_window:
+                continue
+
+            if not _looks_like_main_number_context(window, main_no):
+                continue
+
+            if any(variant in normalized_window for variant in [_normalize_marker_text(v) for v in sub_variants]):
+                return True
+
+    return False
+
+
+def _has_direct_marker_supported_mapping(source_text: str, mapped_text: str, label: str) -> bool:
+    """
+    New helper: keep the stricter marker checks separate from the relaxed
+    main-block fallback so Paper II answers can be reassigned more safely later.
+    """
+    if not source_text or not mapped_text or not label:
+        return False
+
+    source = str(source_text)
+    mapped_norm = _normalize_marker_text(mapped_text)
+    if len(mapped_norm) < 4:
+        return False
+
+    marker_patterns = _build_label_marker_patterns(label)
+    if not marker_patterns:
+        return False
+
+    normalized_source = _normalize_marker_text(source)
+
+    for pattern in marker_patterns:
+        if pattern == re.escape(_normalize_marker_text(label)):
+            marker_match = re.search(pattern, normalized_source, flags=re.IGNORECASE)
+            if not marker_match:
+                continue
+            start_idx = marker_match.start()
+            window = normalized_source[start_idx:start_idx + 900]
+            if mapped_norm in window:
+                return True
+            continue
+
+        for match in re.finditer(pattern, source, flags=re.IGNORECASE | re.MULTILINE):
+            window = source[match.start():match.start() + 900]
+            if mapped_norm in _normalize_marker_text(window):
+                return True
+
+    return False
+
+
+def _has_main_question_block_support(source_text: str, mapped_text: str, label: str) -> bool:
+    """
+    New fallback for handwritten Paper II answers: OCR often keeps the main
+    question number but drops the inner `(අ)/(ආ)/(ඇ)` marker. In that case,
+    accept the mapping if the full answer text clearly appears inside the
+    numbered answer block for the correct main question.
+    """
+    if not source_text or not mapped_text or not label:
+        return False
+
+    main_no, sub_label = _extract_main_and_sub_label(label)
+    if not main_no or not sub_label:
+        return False
+
+    mapped_text = str(mapped_text or "").strip()
+    mapped_norm = _normalize_marker_text(mapped_text)
+    if len(mapped_norm) < 20:
+        return False
+
+    # New safety gate: only relax the rule for substantial answer-like text so
+    # we do not reintroduce the old short-snippet false mappings.
+    if not _looks_like_full_main_answer(mapped_text):
+        return False
+
+    source = str(source_text)
+    main_patterns = [
+        rf'(?:(?<=\n)|(?<=\r)|^)\s*{re.escape(main_no)}[\)\.\-:\s]',
+        rf'(?<!\d){re.escape(main_no)}\s*\)',
+        rf'(?<!\d){re.escape(main_no)}\s*[\.\-:]\s*',
+    ]
+
+    numbered_answer_pattern = re.compile(
+        r'(?:(?<=\n)|(?<=\r)|^)\s*\d+\s*[\)\.\-:\s]',
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+
+    seen_starts = set()
+    for pattern in main_patterns:
+        for match in re.finditer(pattern, source, flags=re.IGNORECASE | re.MULTILINE):
+            if match.start() in seen_starts:
+                continue
+            seen_starts.add(match.start())
+
+            block_start = match.start()
+            tail = source[block_start + 1:]
+            next_match = numbered_answer_pattern.search(tail)
+            block_end = len(source)
+            if next_match:
+                block_end = block_start + 1 + next_match.start()
+
+            block = source[block_start:block_end]
+            if mapped_norm in _normalize_marker_text(block):
+                return True
+
+    return False
+
+
+def _extract_main_question_block(source_text: str, main_no: str) -> tuple[str, int]:
+    """
+    New helper: isolate the OCR block that begins at a Paper II main question
+    number so deferred sub-question snippets can be reassigned by position.
+    """
+    if not source_text or not main_no:
+        return "", -1
+
+    source = str(source_text)
+    main_patterns = [
+        rf'(?:(?<=\n)|(?<=\r)|^)\s*{re.escape(main_no)}[\)\.\-:\s]',
+        rf'(?<!\d){re.escape(main_no)}\s*\)',
+        rf'(?<!\d){re.escape(main_no)}\s*[\.\-:]\s*',
+    ]
+    numbered_answer_pattern = re.compile(
+        r'(?:(?<=\n)|(?<=\r)|^)\s*\d+\s*[\)\.\-:\s]',
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+
+    best_match = None
+    for pattern in main_patterns:
+        match = re.search(pattern, source, flags=re.IGNORECASE | re.MULTILINE)
+        if match and (best_match is None or match.start() < best_match.start()):
+            best_match = match
+
+    if not best_match:
+        return "", -1
+
+    block_start = best_match.start()
+    tail = source[block_start + 1:]
+    next_match = numbered_answer_pattern.search(tail)
+    block_end = len(source)
+    if next_match:
+        block_end = block_start + 1 + next_match.start()
+
+    return source[block_start:block_end], block_start
+
+
+def _find_normalized_substring_index(haystack: str, needle: str) -> int:
+    """
+    New helper: find OCR answer snippets after normalization so ordering can be
+    estimated even when spacing and punctuation drift.
+    """
+    haystack_norm = _normalize_marker_text(haystack)
+    needle_norm = _normalize_marker_text(needle)
+    if not haystack_norm or not needle_norm:
+        return -1
+    return haystack_norm.find(needle_norm)
+
+
+def _split_answer_text_by_number_restart(answer_text: str) -> tuple[str, str]:
+    """
+    New helper: answer sheets usually restart numbering from `1` when Paper II
+    begins. Split the OCR text at the last visible restart so Paper I and
+    Paper II validators do not compete over the same repeated numbers.
+    """
+    text = str(answer_text or "")
+    restart_pattern = re.compile(
+        r'(?:(?<=\n)|(?<=\r)|^)\s*1[\)\.\-:\s]',
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    matches = list(restart_pattern.finditer(text))
+    if len(matches) < 2:
+        return text, text
+
+    restart_at = matches[-1].start()
+    return text[:restart_at], text[restart_at:]
+
+
+def _get_part_specific_answer_text(answer_text: str, part_name: str) -> str:
+    """
+    New helper: isolate repeated numbering scopes so Paper II matching uses the
+    OCR tail where long answers restart from `1`.
+    """
+    paper_i_text, paper_ii_text = _split_answer_text_by_number_restart(answer_text)
+    normalized_part = str(part_name or "").strip().lower()
+
+    if "paper_ii" in normalized_part or "part ii" in normalized_part:
+        return paper_ii_text or str(answer_text or "")
+    if "paper_i" in normalized_part or "part i" in normalized_part:
+        return paper_i_text or str(answer_text or "")
+    return str(answer_text or "")
+
+
+def _has_marker_supported_mapping(source_text: str, mapped_text: str, label: str) -> bool:
+    """
+    New validation layer: keep Gemini in an extraction role by requiring
+    source-text marker support for the returned answer snippet.
+    """
+    if not source_text or not mapped_text or not label:
+        return False
+
+    # New early decision: keep direct marker checks separate from relaxed
+    # main-block support so Paper II reassignment can decide how to use each.
+    if _has_direct_marker_supported_mapping(source_text, mapped_text, label):
+        return True
+
+    if _has_main_question_block_support(source_text, mapped_text, label):
+        return True
+
+    return False
+
+    source = str(source_text)
+    mapped_norm = _normalize_marker_text(mapped_text)
+    if len(mapped_norm) < 4:
+        return False
+
+    marker_patterns = _build_label_marker_patterns(label)
+    if not marker_patterns:
+        return False
+
+    normalized_source = _normalize_marker_text(source)
+
+    for pattern in marker_patterns:
+        if pattern == re.escape(_normalize_marker_text(label)):
+            marker_match = re.search(pattern, normalized_source, flags=re.IGNORECASE)
+            if not marker_match:
+                continue
+            start_idx = marker_match.start()
+            window = normalized_source[start_idx:start_idx + 900]
+            if mapped_norm in window:
+                return True
+            continue
+
+        for match in re.finditer(pattern, source, flags=re.IGNORECASE | re.MULTILINE):
+            window = source[match.start():match.start() + 900]
+            if mapped_norm in _normalize_marker_text(window):
+                return True
+
+    # New fallback for Paper II style sub-questions where OCR often weakens the
+    # exact `(අ)/(ආ)/(ඈඇ)` marker but still preserves nearby main-question context.
+    if _has_nearby_subquestion_support(source_text, mapped_text, label):
+        return True
+
+    # New final fallback: some answer sheets preserve only the main question
+    # number, so let full-length Paper II sub-answers pass when they clearly
+    # belong to the correct numbered answer block.
+    if _has_main_question_block_support(source_text, mapped_text, label):
+        return True
+
+    return False
+
+
+def _looks_like_full_main_answer(mapped_text: str) -> bool:
+    # New heuristic: main-question answers should look materially longer than
+    # the short snippets that often belong to Paper I objective answers.
+    text = str(mapped_text or "").strip()
+    normalized = _normalize_marker_text(text)
+    if len(normalized) >= 80:
+        return True
+    if len(re.findall(r'\S+', text)) >= 12:
+        return True
+    if len(re.findall(r'[.!?]|[।]|[\n\r]', text)) >= 2:
+        return True
+    if re.search(r'[\(\[]\s*[අආඇඈඉEeAaBbCcIiVv]+\s*[\)\]]', text):
+        return True
+    return False
+
+
+def _suppress_cross_part_duplicate_mappings(all_mappings: dict, flat_structure: list) -> dict:
+    """
+    New safeguard: prevent the same short snippet from counting as both a
+    Paper I answer and a Paper II main-question answer.
+    """
+    if not all_mappings:
+        return all_mappings
+
+    item_by_id = {str(item.get("id")): item for item in flat_structure}
+    grouped: dict[str, list[tuple[str, str, dict]]] = {}
+
+    for key, value in all_mappings.items():
+        norm_text = _normalize_marker_text(value)
+        if len(norm_text) < 4:
+            continue
+        grouped.setdefault(norm_text, []).append((key, value, item_by_id.get(str(key), {})))
+
+    filtered = dict(all_mappings)
+    for _, entries in grouped.items():
+        if len(entries) < 2:
+            continue
+
+        keepers = []
+        for key, value, item in entries:
+            is_main_with_children = bool(item.get("has_sub_questions"))
+            if is_main_with_children and not _looks_like_full_main_answer(value):
+                logger.warning(
+                    "Discarding duplicate short mapping for ID %s - looks like a short-answer snippet, not a full main-question answer.",
+                    key,
+                )
+                filtered.pop(key, None)
+                continue
+            keepers.append((key, value, item))
+
+        if keepers:
+            continue
+
+    return filtered
+
+
+def _is_paper_ii_part(part_name: str) -> bool:
+    # New helper: keep Paper II-specific recovery logic scoped to the long-answer
+    # section where numbering restarts and sub-question markers are less reliable.
+    normalized = str(part_name or "").strip().lower().replace(" ", "_")
+    return normalized in {"paper_ii", "part_ii"} or "paper_ii" in normalized or "part_ii" in normalized
+
+
+def _map_paper_ii_main_block_subparts(block_text: str, main_no: str, subparts: list[dict]) -> dict:
+    # New helper: after isolating one numbered Paper II answer block, ask Gemini
+    # to split only that block into the relevant sub-parts instead of guessing
+    # sub-question labels from the whole answer script at once.
+    if not block_text or not main_no or not subparts:
+        return {}
+
+    try:
+        response_text = gemini_generate(
+            PAPER_II_MAIN_BLOCK_PROMPT.format(
+                main_no=main_no,
+                structure=json.dumps(subparts, ensure_ascii=False, indent=2),
+                answer_text=str(block_text)[:12000],
+            ),
+            json_mode=True,
+        )
+        parsed = _safe_json_loads(response_text) if response_text else {}
+        if not isinstance(parsed, dict):
+            return {}
+        return parsed
+    except Exception as e:
+        logger.warning("Paper II main-block mapping failed for main %s: %s", main_no, e)
+        return {}
+
+
+def _reassign_paper_ii_main_block_candidates(
+    answer_text: str,
+    deferred_candidates: list[dict],
+    chunk: list[dict],
+    filtered_result: dict,
+) -> None:
+    """
+    New post-pass for Paper II: when OCR only proves the main-question block,
+    reassign the returned snippets to that main question's sub-parts in block
+    order instead of trusting Gemini's guessed sub-label directly.
+    """
+    if not deferred_candidates:
+        return
+
+    deferred_by_main: dict[str, list[dict]] = {}
+    for candidate in deferred_candidates:
+        deferred_by_main.setdefault(candidate["main_no"], []).append(candidate)
+
+    chunk_by_main: dict[str, list[dict]] = {}
+    for item in chunk:
+        if not item.get("is_sub_question"):
+            continue
+        main_no = str(item.get("parent_main_label") or "")
+        chunk_by_main.setdefault(main_no, []).append(item)
+
+    for main_no, candidates in deferred_by_main.items():
+        block_text, _ = _extract_main_question_block(answer_text, main_no)
+        if not block_text:
+            continue
+
+        ordered_subparts = chunk_by_main.get(main_no, [])
+        if not ordered_subparts:
+            continue
+
+        accepted_ids = set(filtered_result.keys())
+        remaining_subparts = [item for item in ordered_subparts if item["id"] not in accepted_ids]
+        if not remaining_subparts:
+            continue
+
+        unique_candidates = {}
+        for candidate in candidates:
+            unique_candidates.setdefault(_normalize_marker_text(candidate["text"]), candidate)
+
+        sorted_candidates = sorted(
+            unique_candidates.values(),
+            key=lambda candidate: (
+                _find_normalized_substring_index(block_text, candidate["text"])
+                if _find_normalized_substring_index(block_text, candidate["text"]) >= 0
+                else 10**9
+            ),
+        )
+
+        for sub_item, candidate in zip(remaining_subparts, sorted_candidates):
+            filtered_result[sub_item["id"]] = candidate["text"]
+            logger.info(
+                "Reassigned deferred Paper II main-block answer from label %s to %s.",
+                candidate.get("original_label"),
+                sub_item.get("label"),
+            )
+
+
+def _fill_paper_ii_subparts_from_main_blocks(
+    answer_text: str,
+    chunk: list[dict],
+    filtered_result: dict,
+    allowed_main_nos: set[str] | None = None,
+) -> None:
+    """
+    New recovery pass for Paper II:
+    once a main-question block is isolated by number, map only that block to the
+    remaining sub-parts so we do not depend on whole-paper leaf-label guesses.
+    """
+    subparts_by_main: dict[str, list[dict]] = {}
+    for item in chunk:
+        if not item.get("is_sub_question"):
+            continue
+        main_no = str(item.get("parent_main_label") or "")
+        if not main_no:
+            continue
+        subparts_by_main.setdefault(main_no, []).append(item)
+
+    for main_no, subparts in subparts_by_main.items():
+        # New safety gate: only expand mains that already showed evidence in the
+        # first whole-paper pass, so recovery does not invent extra attempted
+        # mains like 3/6/7 just because a numbered block exists somewhere.
+        if allowed_main_nos is not None and main_no not in allowed_main_nos:
+            continue
+
+        remaining_subparts = [item for item in subparts if item["id"] not in filtered_result]
+        if not remaining_subparts:
+            continue
+
+        block_text, _ = _extract_main_question_block(answer_text, main_no)
+        if not block_text or len(_normalize_marker_text(block_text)) < 20:
+            continue
+
+        block_result = _map_paper_ii_main_block_subparts(block_text, main_no, remaining_subparts)
+        if not isinstance(block_result, dict):
+            continue
+
+        normalized_block = _normalize_marker_text(block_text)
+        remaining_ids = {item["id"] for item in remaining_subparts}
+        for key, value in block_result.items():
+            if key not in remaining_ids or not value:
+                continue
+
+            value_norm = _normalize_marker_text(value)
+            if len(value_norm) < 6 or value_norm not in normalized_block:
+                continue
+
+            filtered_result[key] = value
+            target = next((item for item in remaining_subparts if item["id"] == key), None)
+            logger.info(
+                "Recovered Paper II sub-part %s from isolated main-question block %s.",
+                target.get("label") if target else key,
+                main_no,
+            )
+
+
+def _fill_missing_paper_ii_subparts_from_surfaced_candidates(
+    answer_text: str,
+    chunk: list[dict],
+    filtered_result: dict,
+    surfaced_candidates_by_main: dict[str, list[dict]],
+    allowed_main_nos: set[str] | None = None,
+) -> None:
+    """
+    New final fallback for Paper II:
+    if Gemini already surfaced plausible sub-part answers for a real attempted
+    main question, reuse those raw candidates to fill any still-missing sub-part
+    slots inside that same main block.
+    """
+    subparts_by_main: dict[str, list[dict]] = {}
+    for item in chunk:
+        if not item.get("is_sub_question"):
+            continue
+        main_no = str(item.get("parent_main_label") or "")
+        if not main_no:
+            continue
+        subparts_by_main.setdefault(main_no, []).append(item)
+
+    for main_no, subparts in subparts_by_main.items():
+        if allowed_main_nos is not None and main_no not in allowed_main_nos:
+            continue
+
+        remaining_subparts = [item for item in subparts if item["id"] not in filtered_result]
+        if not remaining_subparts:
+            continue
+
+        raw_candidates = surfaced_candidates_by_main.get(main_no, [])
+        if not raw_candidates:
+            continue
+
+        block_text, _ = _extract_main_question_block(answer_text, main_no)
+        if not block_text:
+            continue
+
+        existing_norms = {
+            _normalize_marker_text(filtered_result[item["id"]])
+            for item in subparts
+            if item["id"] in filtered_result and filtered_result.get(item["id"])
+        }
+
+        unique_candidates = {}
+        normalized_block = _normalize_marker_text(block_text)
+        for candidate in raw_candidates:
+            value = str(candidate.get("text") or "").strip()
+            value_norm = _normalize_marker_text(value)
+            if (
+                len(value_norm) < 6
+                or value_norm in existing_norms
+                or value_norm not in normalized_block
+            ):
+                continue
+            unique_candidates.setdefault(value_norm, candidate)
+
+        if not unique_candidates:
+            continue
+
+        sorted_candidates = sorted(
+            unique_candidates.values(),
+            key=lambda candidate: (
+                _find_normalized_substring_index(block_text, candidate["text"])
+                if _find_normalized_substring_index(block_text, candidate["text"]) >= 0
+                else 10**9
+            ),
+        )
+
+        for sub_item, candidate in zip(remaining_subparts, sorted_candidates):
+            filtered_result[sub_item["id"]] = candidate["text"]
+            logger.info(
+                "Filled missing Paper II sub-part %s from surfaced main-block candidate for main %s.",
+                sub_item.get("label"),
+                main_no,
+            )
+
+
+def _run_paper_ii_recovery_passes(
+    answer_text: str,
+    chunk: list[dict],
+    filtered_result: dict,
+    deferred_main_block_candidates: list[dict],
+    evidenced_main_nos: set[str],
+    surfaced_candidates_by_main: dict[str, list[dict]],
+) -> None:
+    """
+    Keep the newer Paper II recovery flow together so cleanup stays scoped to the
+    evaluation mapping path without touching older learning-mode helpers.
+    """
+    allowed_main_nos = {main_no for main_no in evidenced_main_nos if main_no}
+    if not allowed_main_nos:
+        return
+
+    _reassign_paper_ii_main_block_candidates(
+        answer_text,
+        deferred_main_block_candidates,
+        chunk,
+        filtered_result,
+    )
+    _fill_paper_ii_subparts_from_main_blocks(
+        answer_text,
+        chunk,
+        filtered_result,
+        allowed_main_nos=allowed_main_nos,
+    )
+    _fill_missing_paper_ii_subparts_from_surfaced_candidates(
+        answer_text,
+        chunk,
+        filtered_result,
+        surfaced_candidates_by_main,
+        allowed_main_nos=allowed_main_nos,
+    )
+
 def map_student_answers(answer_text: str, question_structure: list) -> dict:
     """
     Maps student answer text to question IDs using Gemini.
@@ -534,6 +1266,9 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
         
         for part_name, part_items in parts_map.items():
             logger.info("Mapping part: %s (%d items)", part_name, len(part_items))
+            # New part isolation: repeated numbering restarts between Paper I and
+            # Paper II, so validate each part against its own OCR region.
+            part_answer_text = _get_part_specific_answer_text(answer_text, part_name)
             for i in range(0, len(part_items), batch_size):
                 chunk = part_items[i : i + batch_size]
                 logger.info("Processing batch %d for %s", (i // batch_size) + 1, part_name)
@@ -543,7 +1278,7 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
                     return gemini_generate(
                         ANSWER_MAPPING_PROMPT.format(
                             structure=json.dumps(c, ensure_ascii=False, indent=2),
-                            answer_text=answer_text[:35000],
+                            answer_text=part_answer_text[:35000],
                         ),
                         json_mode=True,
                     )
@@ -565,25 +1300,99 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
                 if isinstance(batch_result, dict):
                     # We accept any key that the model returned, as long as it's in the original structure chunk
                     filtered_result = {}
+                    deferred_main_block_candidates = []
+                    evidenced_main_nos: set[str] = set()
+                    surfaced_candidates_by_main: dict[str, list[dict]] = {}
                     for k, v in batch_result.items():
                         if k in chunk_ids and v:
                             # Find original question text for hallucination check
                             q_item = next((item for item in chunk if item["id"] == k), None)
                             q_text = q_item.get("text", "") if q_item else ""
-                            
-                            if not _is_hallucinated_question_text(v, q_text):
-                                filtered_result[k] = v
-                            else:
+                            q_label = q_item.get("label", "") if q_item else ""
+
+                            if _is_hallucinated_question_text(v, q_text):
                                 logger.warning(f"Discarding hallucinated answer for ID {k} - matches question text.")
+                                continue
+
+                            # New recovery signal: if Gemini surfaced a non-hallucinated
+                            # Paper II sub-question at all, treat its parent main number as
+                            # worth a block-level retry even if strict marker validation
+                            # fails on this first pass.
+                            if q_item and q_item.get("is_sub_question") and _is_paper_ii_part(part_name):
+                                parent_main = str(q_item.get("parent_main_label") or "")
+                                evidenced_main_nos.add(parent_main)
+                                surfaced_candidates_by_main.setdefault(parent_main, []).append({
+                                    "id": k,
+                                    "text": v,
+                                    "original_label": q_label,
+                                })
+
+                            # New decision split: keep direct marker matches as-is,
+                            # but defer Paper II main-block-only hits so they can be
+                            # reassigned to sub-parts in their actual OCR order.
+                            if _has_direct_marker_supported_mapping(part_answer_text, v, q_label):
+                                filtered_result[k] = v
+                                if q_item and q_item.get("is_sub_question"):
+                                    evidenced_main_nos.add(str(q_item.get("parent_main_label") or ""))
+                                continue
+
+                            if (
+                                q_item
+                                and q_item.get("is_sub_question")
+                                and _has_main_question_block_support(part_answer_text, v, q_label)
+                            ):
+                                evidenced_main_nos.add(str(q_item.get("parent_main_label") or ""))
+                                deferred_main_block_candidates.append({
+                                    "id": k,
+                                    "text": v,
+                                    "main_no": str(q_item.get("parent_main_label") or ""),
+                                    "original_label": q_label,
+                                })
+                                continue
+
+                            # Existing guard: if neither direct marker support nor
+                            # the deferred Paper II main-block path applies, reject it.
+                            if not _has_marker_supported_mapping(part_answer_text, v, q_label):
+                                logger.warning(
+                                    "Discarding unsupported mapping for ID %s - no matching source marker found for label %s.",
+                                    k,
+                                    q_label,
+                                )
+                                continue
+
+                            filtered_result[k] = v
+
+                    if _is_paper_ii_part(part_name):
+                        _run_paper_ii_recovery_passes(
+                            part_answer_text,
+                            chunk,
+                            filtered_result,
+                            deferred_main_block_candidates,
+                            evidenced_main_nos,
+                            surfaced_candidates_by_main,
+                        )
 
                     all_mappings.update(filtered_result)
-                    logger.info("Batch %d for %s: got %d/%d valid mappings (filtered %d hallucinated).",
-                                (i // batch_size) + 1, part_name, len(filtered_result), len(chunk), len(batch_result) - len(filtered_result))
+                    initial_supported_count = sum(1 for result_id in batch_result.keys() if result_id in chunk_ids)
+                    recovered_count = max(0, len(filtered_result) - initial_supported_count)
+                    discarded_count = max(0, initial_supported_count - len(filtered_result) + recovered_count)
+                    logger.info(
+                        "Batch %d for %s: got %d/%d valid mappings (discarded %d initial outputs, recovered %d via Paper II post-pass).",
+                        (i // batch_size) + 1,
+                        part_name,
+                        len(filtered_result),
+                        len(chunk),
+                        discarded_count,
+                        recovered_count,
+                    )
                 else:
                     logger.error("Batch %d for %s: FAILED after retry — skipping batch.",
                                  (i // batch_size) + 1, part_name)
 
 
+        # New post-pass: remove short duplicate snippets that would otherwise
+        # be counted in both Paper I and Paper II.
+        all_mappings = _suppress_cross_part_duplicate_mappings(all_mappings, flat_structure)
         logger.info("Mapped %d answers total across all parts.", len(all_mappings))
         return all_mappings
 
@@ -604,7 +1413,11 @@ def _simplify_structure_for_prompt(questions: list) -> list:
                 "id": str(sq.id),
                 "label": full_label,
                 "part": parent_part,  # inherit parent's part for correct grouping
-                "text": sq.sub_question_text[:200] if sq.sub_question_text else ""
+                "text": sq.sub_question_text[:200] if sq.sub_question_text else "",
+                # New metadata: keep the parent main label so Paper II sub-parts
+                # can be reassigned within the correct numbered answer block.
+                "parent_main_label": parent_label,
+                "is_sub_question": True,
             })
             # Handle recursive children
             children = getattr(sq, "children", [])
@@ -618,7 +1431,12 @@ def _simplify_structure_for_prompt(questions: list) -> list:
             "id": str(q.id),
             "label": q.question_number,
             "part": q_part,
-            "text": q.question_text[:200] if q.question_text else ""
+            "text": q.question_text[:200] if q.question_text else "",
+            # New flag used by duplicate suppression to detect main questions
+            # that should contain a fuller answer block.
+            "has_sub_questions": bool(getattr(q, "sub_questions", [])),
+            "parent_main_label": q.question_number,
+            "is_sub_question": False,
         })
         
         # Add all sub-questions recursively, inheriting parent's part

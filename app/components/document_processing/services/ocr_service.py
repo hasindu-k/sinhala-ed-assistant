@@ -14,12 +14,18 @@ from app.components.document_processing.services.text_extraction import (
 logger = logging.getLogger(__name__)
 
 # Utility function
-def extract_and_clean_text_from_file(file_path: str, force_layout_analysis: bool = True) -> tuple[str, int]:
+def extract_and_clean_text_from_file(
+    file_path: str,
+    force_layout_analysis: bool = True,
+    resource_type: str | None = None,
+) -> tuple[str, int]:
     """
     Extract text from a file (PDF or image) and return cleaned text with page count.
     
     Args:
         file_path: Full path to the file
+        force_layout_analysis: Whether OCR should use layout block detection
+        resource_type: Optional resource hint such as `answer_sheet`
         
     Returns:
         Tuple of (cleaned_text, page_count)
@@ -33,9 +39,14 @@ def extract_and_clean_text_from_file(file_path: str, force_layout_analysis: bool
         
         extracted_text = None
         page_count = 0
+
+        # New safeguard: answer sheets often contain a mix of printed prompts and
+        # handwritten content. Direct PDF extraction can capture only the printed
+        # layer and miss the real student writing, so we prefer OCR-first there.
+        skip_direct_pdf_extraction = resource_type == "answer_sheet"
         
         # Try direct PDF text extraction if applicable
-        if ext == "pdf":
+        if ext == "pdf" and not skip_direct_pdf_extraction:
             try:
                 extracted_text, page_count = extract_text_from_pdf(file_path)
                 logger.info(f"Extracted text directly from PDF: {page_count} pages")
