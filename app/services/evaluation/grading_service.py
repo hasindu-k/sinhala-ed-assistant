@@ -90,6 +90,31 @@ class GradingService:
 
         return 'Unknown'
 
+    def _iter_all_subquestions(self, sub_questions: List[SubQuestion]):
+        for sub_question in sub_questions or []:
+            yield sub_question
+            children = getattr(sub_question, "children", []) or []
+            if children:
+                yield from self._iter_all_subquestions(children)
+
+    def _has_any_mapped_descendant(self, question: Question, mapped_answers: Dict[str, Any]) -> bool:
+        all_subquestions = list(self._iter_all_subquestions(getattr(question, "sub_questions", []) or []))
+        if not all_subquestions:
+            return False
+
+        normalized_keys = {str(k).lower().replace(" ", "").replace(".", "").replace("(", "").replace(")", "") for k in mapped_answers.keys()}
+        question_number = str(question.question_number or "")
+
+        for sub_question in all_subquestions:
+            sq_id = str(sub_question.id)
+            sq_label = str(sub_question.label or "").strip()
+            composite_key = f"{question_number}{sq_label}".lower().replace(" ", "").replace(".", "").replace("(", "").replace(")", "")
+
+            if sq_id in mapped_answers or composite_key in normalized_keys:
+                return True
+
+        return False
+
 
     # ----------------------------------------------------------
     # PUBLIC ENTRY
@@ -180,14 +205,8 @@ class GradingService:
             if not student_text or str(student_text).strip().lower() in ["null", "none", ""]:
                 continue
             # Skip parents when sub-questions are mapped
-            if isinstance(target, Question) and getattr(target, 'sub_questions', []):
-                sub_mapped = any(
-                    str(sq.id) in answer_doc.mapped_answers or
-                    f"{str(target.question_number)}{sq.label}".lower().replace("(", "").replace(")", "") in answer_doc.mapped_answers
-                    for sq in target.sub_questions
-                )
-                if sub_mapped:
-                    continue
+            if isinstance(target, Question) and self._has_any_mapped_descendant(target, answer_doc.mapped_answers):
+                continue
 
             # Use gold-standard correct_answer if available and NOT a placeholder — skip Gemini for those
             correct = getattr(target, "correct_answer", None)
@@ -215,6 +234,7 @@ class GradingService:
         
         gemini_ref_map: Dict[str, str] = {}
 
+        cache_key = str(eval_session_id)
         with GradingService._gemini_ref_cache_lock:
             cached = GradingService._gemini_ref_cache.get(cache_key)
 
@@ -308,16 +328,8 @@ class GradingService:
             if not student_text or str(student_text).strip().lower() in ["null", "none", ""]:
                 continue
 
-            if isinstance(target, Question) and getattr(target, 'sub_questions', []):
-                sub_mapped = False
-                for sq in target.sub_questions:
-                    sq_id_str = str(sq.id)
-                    sq_label_key = f"{str(target.question_number)}{sq.label}".lower().replace("(", "").replace(")", "")
-                    if sq_id_str in answer_doc.mapped_answers or sq_label_key in answer_doc.mapped_answers:
-                        sub_mapped = True
-                        break
-                if sub_mapped:
-                    continue
+            if isinstance(target, Question) and self._has_any_mapped_descendant(target, answer_doc.mapped_answers):
+                continue
 
             max_marks = self._resolve_max_marks(target)
             # PRIMARY: Gemini-extracted reference points
@@ -363,18 +375,9 @@ class GradingService:
                 logger.warning(f"Skipping duplicate mapping for question: {key} (ID: {target_id})")
                 continue
 
-            if isinstance(target, Question) and getattr(target, 'sub_questions', []):
-                sub_mapped = False
-                for sq in target.sub_questions:
-                    sq_id_str = str(sq.id)
-                    sq_label_key = f"{str(target.question_number)}{sq.label}".lower().replace("(", "").replace(")", "")
-                    if sq_id_str in answer_doc.mapped_answers or sq_label_key in answer_doc.mapped_answers:
-                        sub_mapped = True
-                        break
-
-                if sub_mapped:
-                    logger.info(f"Skipping parent question {key} because sub-questions are mapped.")
-                    continue
+            if isinstance(target, Question) and self._has_any_mapped_descendant(target, answer_doc.mapped_answers):
+                logger.info(f"Skipping parent question {key} because descendant sub-questions are mapped.")
+                continue
 
             seen_question_ids.add(target_id)
             seen_keys.add(key)

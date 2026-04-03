@@ -323,7 +323,14 @@ class QuestionScoreResponse(BaseModel):
     evaluation_result_id: UUID
     question_id: Optional[UUID] = None
     sub_question_id: Optional[UUID] = None
+    question_label: Optional[str] = None
+    main_question_key: Optional[str] = None
+    sub_label: Optional[str] = None
+    paper_part: Optional[str] = None
+    paper_part_display: Optional[str] = None
+    is_leaf: Optional[bool] = None
     awarded_marks: Optional[Decimal] = None
+    max_marks: Optional[Decimal] = None
     feedback: Optional[str] = None
 
     class Config:
