@@ -7,7 +7,7 @@
 # create_complete_evaluation	Orchestrates full evaluation
 # get_complete_evaluation_result	Read model for UI
 
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 from uuid import UUID
 from decimal import Decimal
 import re
@@ -17,9 +17,11 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 from app.repositories.evaluation.answer_evaluation_repository import AnswerEvaluationRepository
+from app.repositories.evaluation.marking_schema_repository import MarkingSchemaRepository
 from app.shared.models.session_resources import SessionResource
 from app.shared.models.resource_file import ResourceFile
 from app.shared.models.question_papers import Question
+from app.shared.models.evaluation_session import EvaluationSession, PaperConfig
 
 
 class AnswerEvaluationService:
@@ -27,6 +29,7 @@ class AnswerEvaluationService:
     
     def __init__(self, db: Session):
         self.repository = AnswerEvaluationRepository(db)
+        self.marking_schema_repository = MarkingSchemaRepository(db)
     
     def create_answer_document(
         self,
@@ -229,11 +232,12 @@ class AnswerEvaluationService:
             return None
 
         scores = self.repository.get_question_scores_by_result(evaluation_result_id)
-        # Remove duplicates safely (defensive layer)
+        # Remove duplicates safely. Keep the most meaningful persisted row.
         unique_scores = {}
         for s in scores:
             key = (s.question_id, s.sub_question_id)
-            if key not in unique_scores:
+            existing = unique_scores.get(key)
+            if existing is None or self._score_priority(s) > self._score_priority(existing):
                 unique_scores[key] = s
 
         scores = list(unique_scores.values())
@@ -272,7 +276,6 @@ class AnswerEvaluationService:
                 return "F"
 
         # Fetch selection rules for correct "Total Available" summary
-        from app.shared.models.evaluation_session import PaperConfig, EvaluationSession
         eval_session = self.repository.db.query(EvaluationSession).filter(EvaluationSession.id == result.answer_document.evaluation_session_id).first()
         chat_session_id = eval_session.session_id if eval_session else None
         
@@ -430,28 +433,183 @@ class AnswerEvaluationService:
             "improvement_points": improvement_points
         }
 
+        total_max_allowed = self._resolve_total_max(
+            evaluation_session_id=result.answer_document.evaluation_session_id,
+            chat_session_id=chat_session_id,
+            selection_map=selection_map,
+        )
+        percentage_score = None
+        if total_max_allowed and total_max_allowed > 0:
+            percentage_score = round((float(result.total_score or 0) / float(total_max_allowed)) * 100, 2)
+
         return {
             "id": result.id,
             "answer_document_id": result.answer_document_id,
             "total_score": round(float(result.total_score or 0), 2),
             "total_max": total_max_allowed,
+            "percentage_score": percentage_score,
             "grade": calc_grade(result.total_score),
             "overall_feedback": result.overall_feedback,
             "evaluated_at": result.evaluated_at.isoformat() if result.evaluated_at else None,
             "marks_summary": marks_summary,
             "improvement_points": list(set(improvement_points))[:5],
             "question_feedbacks": [
-                {
-                    "id": score.id,
-                    "evaluation_result_id": score.evaluation_result_id,
-                    "question_id": score.question_id,
-                    "sub_question_id": score.sub_question_id,
-                    "awarded_marks": score.awarded_marks,
-                    "feedback": score.feedback
-                }
+                self._serialize_question_feedback(score)
                 for score in scores
+                if self._is_leaf_score(score)
             ]
         }
+
+    def _score_priority(self, score) -> Tuple[int, float]:
+        has_student_answer = 1 if getattr(score, "student_answer", None) and str(score.student_answer).strip() else 0
+        has_feedback = 1 if getattr(score, "feedback", None) and str(score.feedback).strip() else 0
+        awarded = float(score.awarded_marks or 0)
+        return (has_student_answer, has_feedback, awarded)
+
+    def _serialize_question_feedback(self, score) -> Dict:
+        question = score.question or (score.sub_question.question if score.sub_question else None)
+        question_number = str(question.question_number).strip() if question and question.question_number else None
+        sub_label = str(score.sub_question.label).strip() if score.sub_question and score.sub_question.label else None
+        paper_part = question.part_name if question and question.part_name else None
+        is_leaf = self._is_leaf_score(score)
+        max_marks = question.max_marks if score.question else (score.sub_question.max_marks if score.sub_question else None)
+
+        return {
+            "id": score.id,
+            "evaluation_result_id": score.evaluation_result_id,
+            "question_id": score.question_id,
+            "sub_question_id": score.sub_question_id,
+            "question_label": self._build_question_label(question_number, score.sub_question),
+            "main_question_key": question_number,
+            "sub_label": sub_label.lower() if sub_label else None,
+            "paper_part": paper_part,
+            "paper_part_display": self._format_paper_part(paper_part),
+            "is_leaf": is_leaf,
+            "awarded_marks": score.awarded_marks,
+            "max_marks": Decimal(str(max_marks)) if max_marks is not None else None,
+            "feedback": score.feedback,
+        }
+
+    def _build_question_label(self, question_number: Optional[str], sub_question) -> str:
+        if sub_question and question_number:
+            return f"{question_number}({sub_question.label})"
+        if sub_question and sub_question.label:
+            return str(sub_question.label)
+        return question_number or "Unknown"
+
+    def _format_paper_part(self, part_name: Optional[str]) -> Optional[str]:
+        if not part_name:
+            return None
+        return str(part_name).replace("_", " ").strip()
+
+    def _is_leaf_score(self, score) -> bool:
+        if score.question:
+            return not bool(score.question.sub_questions)
+        if score.sub_question:
+            return not bool(score.sub_question.children)
+        return True
+
+    def _resolve_total_max(
+        self,
+        evaluation_session_id: UUID,
+        chat_session_id: Optional[UUID],
+        selection_map: Dict[str, Dict],
+    ) -> float:
+        configured_total = self._resolve_total_max_from_paper_config(evaluation_session_id, chat_session_id)
+        if configured_total is not None and configured_total > 0:
+            return configured_total
+
+        schema_total = self._resolve_total_max_from_marking_schema(evaluation_session_id, selection_map)
+        if schema_total is not None and schema_total > 0:
+            return schema_total
+
+        return 0.0
+
+    def _resolve_total_max_from_paper_config(
+        self,
+        evaluation_session_id: UUID,
+        chat_session_id: Optional[UUID],
+    ) -> Optional[float]:
+        configs = self.repository.db.query(PaperConfig).filter(
+            (PaperConfig.evaluation_session_id == evaluation_session_id) |
+            (PaperConfig.chat_session_id == chat_session_id)
+        ).all()
+
+        by_part: Dict[str, float] = {}
+        for cfg in configs:
+            if cfg.total_marks is None:
+                continue
+            part_key = self._normalize_part_key(cfg.paper_part)
+            current = by_part.get(part_key)
+            cfg_total = float(cfg.total_marks)
+
+            # Prefer evaluation-session specific totals over inherited chat-session values.
+            if current is None or cfg.evaluation_session_id == evaluation_session_id:
+                by_part[part_key] = cfg_total
+
+        if not by_part:
+            return None
+        return round(sum(by_part.values()), 2)
+
+    def _resolve_total_max_from_marking_schema(
+        self,
+        evaluation_session_id: UUID,
+        selection_map: Dict[str, Dict],
+    ) -> Optional[float]:
+        schema = self.marking_schema_repository.get_marking_schema_by_session(evaluation_session_id)
+        if not schema:
+            return None
+
+        items = self.marking_schema_repository.get_marking_schema_items(schema.id)
+        if not items:
+            return None
+
+        part_totals: Dict[str, Dict[str, float]] = {}
+        for item in items:
+            part_name = self._normalize_part_key(item.part_name)
+            main_key = self._extract_main_question_key(item.question_number)
+            max_marks = float(item.max_marks or 0)
+
+            if part_name not in part_totals:
+                part_totals[part_name] = {}
+            if main_key not in part_totals[part_name]:
+                part_totals[part_name][main_key] = 0.0
+
+            part_totals[part_name][main_key] += max_marks
+
+        total_max = 0.0
+        for part_name, main_questions in part_totals.items():
+            part_rules = selection_map.get(part_name) or {}
+            mode = str(part_rules.get("mode", "all")).lower()
+            is_selection_mode = mode in ["any", "choose_any", "choose"]
+            count = part_rules.get("count") or part_rules.get("total") or part_rules.get("choose_any")
+
+            main_values = sorted(main_questions.values(), reverse=True)
+            if is_selection_mode and count and len(main_values) > int(count):
+                total_max += sum(main_values[:int(count)])
+            else:
+                total_max += sum(main_values)
+
+        return round(total_max, 2)
+
+    def _normalize_part_key(self, part_name: Optional[str]) -> str:
+        part = (part_name or "other").lower().replace(" ", "_")
+        if re.search(r"(_iv|iv)$", part):
+            return "paper_iv"
+        if re.search(r"(_iii|iii)$", part):
+            return "paper_iii"
+        if re.search(r"(_ii|ii)$", part):
+            return "paper_ii"
+        if re.search(r"(_i|i)$", part):
+            return "paper_i"
+        return part
+
+    def _extract_main_question_key(self, question_number: Optional[str]) -> str:
+        text = str(question_number or "").strip()
+        match = re.match(r"^(\d+)", text)
+        if match:
+            return match.group(1)
+        return text or "unknown"
 
     def _load_rubric_text(self, eval_session):
         res = (
