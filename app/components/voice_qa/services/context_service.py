@@ -2,6 +2,8 @@ import uuid
 from sqlalchemy.orm import Session
 from uuid import UUID
 
+import logging
+
 from app.shared.models.message_relations import MessageAttachment
 from app.shared.models.session_resources import SessionResource
 
@@ -24,6 +26,7 @@ def get_allowed_resource_ids(
         .filter(MessageAttachment.message_id == message_id)
         .all()
     )
+    print(f"Message-level attachment rows: {rows}")
 
     if rows:
         return [r.resource_id for r in rows]
@@ -34,6 +37,7 @@ def get_allowed_resource_ids(
         .filter(SessionResource.session_id == session_id)
         .all()
     )
+    print(f"Session-level resource rows: {rows}")
 
     return [r.resource_id for r in rows]
 

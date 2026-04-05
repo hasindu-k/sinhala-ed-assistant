@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     # Gemini
     GOOGLE_API_KEY: Optional[str] = None
+    GOOGLE_API_KEY_V2: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
     GEMINI_LIGHT_API_KEY: Optional[str] = None
 
@@ -25,6 +26,9 @@ class Settings(BaseSettings):
     # Embedding model for RAG
     MODEL_EMBEDDING_NAME: str = "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
 
+    # HuggingFace Hub token (optional, suppresses rate-limit warnings)
+    HF_TOKEN: Optional[str] = None
+
     # Email (SMTP)
     MAIL_MAILER: str = "smtp"
     MAIL_HOST: str = "smtp.gmail.com"
@@ -35,6 +39,13 @@ class Settings(BaseSettings):
     MAIL_FROM_ADDRESS: str = "admin@sinhalalearn.online"
     MAIL_FROM_NAME: str = "Sinhala Educational Assistant"
     FRONTEND_URL: str = "http://localhost:3000"  # for reset link
+
+    # Evaluation Limits
+    EVALUATION_LIMIT_NORMAL: int = 100  # 5 evaluations as normal, set to 1 for force subscription testing
+    EVALUATION_LIMIT_BASIC: int = 20
+    EVALUATION_LIMIT_CLASSROOM: int = 60
+    EVALUATION_LIMIT_INSTITUTION: int = -1  # Unlimited
+    EVALUATION_LIMIT_DURATION_HOURS: int = 12
 
     class Config:
         env_file = ".env"

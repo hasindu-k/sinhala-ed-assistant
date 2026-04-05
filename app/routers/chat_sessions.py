@@ -11,6 +11,7 @@ from app.services.session_resource_service import SessionResourceService
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
+from app.repositories.processing_log_repository import ProcessingLogRepository
 from typing import List
 
 logger = logging.getLogger(__name__)
@@ -326,7 +327,19 @@ def get_session_resources(
 
         service = SessionResourceService(db)
         resources = service.get_resources_by_session_id(session_id)
-        return resources
+
+        resource_ids = [r["id"] for r in resources]
+        log_repo = ProcessingLogRepository(db)
+        ids_with_logs = log_repo.get_resource_ids_with_logs(resource_ids)
+        resource_message_ids = log_repo.get_resource_message_ids(resource_ids)
+
+        result = []
+        for r in resources:
+            data = ResourceFileResponse(**r)
+            data.has_processing_log = r["id"] in ids_with_logs
+            data.message_id = resource_message_ids.get(r["id"])
+            result.append(data)
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -370,6 +383,12 @@ def detach_resource_from_session(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No '{role}' resource is attached to session '{session_id}'"
             )
+
+        # Also clear from Global Context for EVALUATION sessions
+        if session.mode == "evaluation":
+            from app.services.evaluation.user_context_service import UserContextService
+            context_svc = UserContextService(db)
+            context_svc.clear_context_resource(current_user.id, role)
 
         logger.info(f"All '{role}' resources detached from session {session_id} by user {current_user.id}")
 

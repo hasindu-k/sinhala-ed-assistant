@@ -59,6 +59,23 @@ class UserContextService:
         self.db.refresh(context)
         return context
 
+    def clear_context_resource(self, user_id: UUID, role: str) -> Optional[UserEvaluationContext]:
+        context = self.get_or_create_context(user_id)
+        if role == "syllabus":
+            context.active_syllabus_id = None
+        elif role == "question_paper":
+            context.active_question_paper_id = None
+            context.active_paper_config = None
+        elif role == "rubric":
+            context.active_rubric_id = None
+            context.active_rubric_resource_id = None
+        else:
+            return context
+            
+        self.db.commit()
+        self.db.refresh(context)
+        return context
+
     def get_context_details(self, user_id: UUID):
         context = self.get_or_create_context(user_id)
         

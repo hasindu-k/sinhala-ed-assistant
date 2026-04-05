@@ -1,6 +1,6 @@
 # app/repositories/session_resource_repository.py
 
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
 
@@ -14,12 +14,32 @@ class SessionResourceRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def attach_resource_to_session(self, session_id: UUID, resource_id: UUID) -> SessionResource:
-        link = SessionResource(session_id=session_id, resource_id=resource_id)
+    def attach_resource_to_session(self, session_id: UUID, resource_id: UUID, label: Optional[str] = None) -> SessionResource:
+        link = SessionResource(session_id=session_id, resource_id=resource_id, label=label)
         self.db.add(link)
         self.db.commit()
         self.db.refresh(link)
         return link
+
+    def get_session_resource_by_label(self, session_id: UUID, label: str) -> Optional[SessionResource]:
+        return (
+            self.db.query(SessionResource)
+            .filter(
+                SessionResource.session_id == session_id,
+                SessionResource.label == label,
+            )
+            .first()
+        )
+
+    def upsert_session_resource(self, session_id: UUID, resource_id: UUID, label: str) -> SessionResource:
+        existing = self.get_session_resource_by_label(session_id, label)
+        if existing:
+            existing.resource_id = resource_id
+            self.db.commit()
+            self.db.refresh(existing)
+            return existing
+
+        return self.attach_resource_to_session(session_id, resource_id, label=label)
 
     def get_session_resources(self, session_id: UUID) -> List[SessionResource]:
         return (
@@ -28,13 +48,21 @@ class SessionResourceRepository:
             .all()
         )
 
-    def get_resources_by_session_id(self, session_id: UUID) -> List[ResourceFile]:
-        return (
-            self.db.query(ResourceFile)
+    def get_resources_by_session_id(self, session_id: UUID) -> List[dict]:
+        results = (
+            self.db.query(ResourceFile, SessionResource.label)
             .join(SessionResource, SessionResource.resource_id == ResourceFile.id)
             .filter(SessionResource.session_id == session_id)
             .all()
         )
+        
+        resources = []
+        for resource_file, label in results:
+            res_dict = {c.name: getattr(resource_file, c.name) for c in resource_file.__table__.columns}
+            res_dict["resource_type"] = label
+            resources.append(res_dict)
+            
+        return resources
 
     def delete_resources_for_session(self, session_id: UUID) -> int:
         rows = (

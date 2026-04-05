@@ -27,6 +27,8 @@ from app.schemas.evaluation import (
     ProcessDocumentsRequest,
     ProcessDocumentsResponse,
     EvaluationResultResponse,
+    MarkingSchemaResponse,
+    MarkingSchemaUpdateRequest,
 )
 
 from app.services.evaluation.evaluation_workflow_service import EvaluationWorkflowService
@@ -110,13 +112,10 @@ def list_evaluation_results(
             }
             if result:
                 total_score = result.get("total_score") or 0
-                max_marks = 0
-                percent = None
-                # Try to get max marks from question scores if available
-                if "question_scores" in result and result["question_scores"]:
-                    max_marks = sum([qs.get("max_marks", 0) for qs in result["question_scores"]])
-                    if max_marks:
-                        percent = float(total_score) / float(max_marks) * 100 if max_marks else None
+                max_marks = result.get("total_max") or 0
+                percent = result.get("percentage_score")
+                if percent is None and max_marks:
+                    percent = float(total_score) / float(max_marks) * 100
                 entry.update({
                     "total_score": float(total_score),
                     "percentage_score": round(percent, 2) if percent is not None else None,
@@ -126,6 +125,8 @@ def list_evaluation_results(
             results.append(entry)
         logger.debug(f"Returning results for session {evaluation_id}: {results}")
         return results
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except Exception as exc:
@@ -224,14 +225,14 @@ def start_evaluation(
             user_id=current_user.id
         )
         
-        # Offload processing to background
-        background_tasks.add_task(
-            run_evaluation_background_task,
-# --- New endpoints for score and feedback only ---
-            session.id,
-            payload.answer_resource_ids,
-            current_user.id
-        )
+        # Offload processing to background only if requested
+        if payload.run_grading:
+            background_tasks.add_task(
+                run_evaluation_background_task,
+                session.id,
+                payload.answer_resource_ids,
+                current_user.id
+            )
         
         return session
     except ValueError as exc:
@@ -259,6 +260,14 @@ def start_evaluation_stream(
             user_id=current_user.id
         )
         
+        # Check if we should actually run the evaluation or just initialize/return session
+        if not payload.run_grading:
+             import json
+             # If we only wanted initialization, we just return the session details in a single generator event
+             def init_only_generator():
+                 yield f"data: {json.dumps({'step': 'completed', 'progress': 100, 'session': str(session.id)})}\n\n"
+             return StreamingResponse(init_only_generator(), media_type="text/event-stream")
+
         return StreamingResponse(
             service.execute_evaluation_process_generator(
                 session_id=session.id,
@@ -302,7 +311,9 @@ def create_evaluation_session(
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        error_text = str(exc)
+        status_code = status.HTTP_400_BAD_REQUEST if "Marking schema must be confirmed before grading" in error_text else status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status_code, detail=error_text)
     except Exception as exc:
         logger.error(f"Failed to create evaluation session for chat {payload.session_id}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create evaluation session")
@@ -385,7 +396,9 @@ def get_syllabus_content(
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        error_text = str(exc)
+        status_code = status.HTTP_400_BAD_REQUEST if "Marking schema must be confirmed before grading" in error_text else status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status_code, detail=error_text)
     except Exception as exc:
         logger.error(f"Failed to get syllabus content: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get syllabus content")
@@ -451,6 +464,81 @@ def get_parsed_questions(
     except Exception as exc:
         logger.error(f"Failed to fetch parsed questions for session {session_id}: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch parsed questions")
+
+
+@router.get("/sessions/{session_id}/marking-schema", response_model=MarkingSchemaResponse)
+def get_marking_schema(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    service = EvaluationWorkflowService(db)
+    try:
+        return service.get_marking_schema(session_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to get marking schema for session {session_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get marking schema")
+
+
+@router.put("/sessions/{session_id}/marking-schema", response_model=MarkingSchemaResponse)
+def update_marking_schema(
+    session_id: UUID,
+    payload: MarkingSchemaUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    service = EvaluationWorkflowService(db)
+    try:
+        return service.save_marking_schema(session_id, payload, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to save marking schema for session {session_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to save marking schema")
+
+
+@router.post("/sessions/{session_id}/marking-schema/confirm", response_model=MarkingSchemaResponse)
+def confirm_marking_schema(
+    session_id: UUID,
+    payload: MarkingSchemaUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    service = EvaluationWorkflowService(db)
+    try:
+        return service.confirm_marking_schema(session_id, payload, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to confirm marking schema for session {session_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to confirm marking schema")
+
+
+@router.delete("/sessions/{session_id}/marking-schema", response_model=Dict[str, bool])
+def delete_marking_schema(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    service = EvaluationWorkflowService(db)
+    try:
+        deleted = service.delete_marking_schema(session_id, current_user.id)
+        return {"deleted": deleted}
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to delete marking schema for session {session_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to delete marking schema")
 
 
 @router.post("/sessions/{session_id}/paper-config", response_model=List[PaperConfigResponse])

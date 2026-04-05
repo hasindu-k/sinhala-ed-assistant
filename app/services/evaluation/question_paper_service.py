@@ -53,6 +53,7 @@ class QuestionPaperService:
         part_name: Optional[str] = None,
         shared_stem: Optional[str] = None,
         inherits_shared_stem_from: Optional[str] = None,
+        correct_answer: Optional[str] = None,
     ):
         """Create a main question."""
         return self.repository.create_question(
@@ -63,6 +64,7 @@ class QuestionPaperService:
             part_name=part_name,
             shared_stem=shared_stem,
             inherits_shared_stem_from=inherits_shared_stem_from,
+            correct_answer=correct_answer,
         )
     
     def get_questions_by_paper(self, question_paper_id: UUID) -> List:
@@ -76,6 +78,7 @@ class QuestionPaperService:
         sub_question_text: str,
         max_marks: Optional[int] = None,
         parent_sub_question_id: Optional[UUID] = None,
+        correct_answer: Optional[str] = None,
     ):
         """Create a sub-question."""
         return self.repository.create_sub_question(
@@ -83,7 +86,8 @@ class QuestionPaperService:
             label=label,
             sub_question_text=sub_question_text,
             max_marks=max_marks,
-            parent_sub_question_id=parent_sub_question_id
+            parent_sub_question_id=parent_sub_question_id,
+            correct_answer=correct_answer,
         )
     
     def get_sub_questions_by_question(self, question_id: UUID) -> List:
@@ -93,26 +97,14 @@ class QuestionPaperService:
     def create_structured_questions(
         self,
         question_paper_id: UUID,
-        structured_data: Dict
+        structured_data: Dict,
+        part_name: Optional[str] = None
     ) -> List:
-        """
-        Create questions and sub-questions from structured data.
-        
-        structured_data format:
-        {
-            "Q01": {
-                "question_text": "Main question text",
-                "max_marks": 20,
-                "sub_questions": {
-                    "a": {"text": "Sub question a", "marks": 5},
-                    "b": {"text": "Sub question b", "marks": 5}
-                }
-            }
-        }
-        """
+        """Create questions and sub-questions from structured data."""
         return self.repository.create_structured_questions(
             question_paper_id=question_paper_id,
-            structured_data=structured_data
+            structured_data=structured_data,
+            part_name=part_name
         )
     
     def get_question_paper_with_questions(self, question_paper_id: UUID) -> Optional[Dict]:

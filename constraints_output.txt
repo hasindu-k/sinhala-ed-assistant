@@ -1,8 +1,0 @@
-Table                     | Column               | Delete Rule     | Constraint Name
---------------------------------------------------------------------------------
-resource_chunks           | resource_id          | CASCADE         | resource_chunks_resource_id_fkey
-session_resources         | resource_id          | CASCADE         | session_resources_resource_id_fkey
-evaluation_resources      | resource_id          | CASCADE         | evaluation_resources_resource_id_fkey
-answer_documents          | resource_id          | CASCADE         | answer_documents_resource_id_fkey
-evaluation_results        | answer_document_id   | CASCADE         | evaluation_results_answer_document_id_fkey
-question_scores           | evaluation_result_id | CASCADE         | question_scores_evaluation_result_id_fkey

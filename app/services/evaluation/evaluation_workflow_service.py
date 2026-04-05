@@ -1,7 +1,9 @@
 # app/services/evaluation/evaluation_workflow_service.py
 
 import re
-from typing import Optional, List, Union, Tuple, Dict
+import threading
+import time
+from typing import Optional, List, Union, Tuple, Dict, Any
 from uuid import UUID
 from sqlalchemy.orm import Session
 
@@ -12,19 +14,22 @@ from app.schemas.evaluation import (
     PaperConfigCreate,
     PaperConfigUpdate,
     AnswerDocumentCreate,
+    MarkingSchemaUpdateRequest,
 )
 from app.services.evaluation.evaluation_session_service import EvaluationSessionService
 from app.services.evaluation.evaluation_resource_service import EvaluationResourceService
 from app.services.evaluation.question_paper_service import QuestionPaperService
 from app.services.evaluation.paper_config_service import PaperConfigService
 from app.services.evaluation.answer_evaluation_service import AnswerEvaluationService
+from app.services.evaluation.marking_schema_service import MarkingSchemaService
 from app.shared.models.question_papers import Question, SubQuestion
 from app.shared.models.evaluation_session import EvaluationSession
 from app.services.chat_session_service import ChatSessionService
 from app.services.resource_service import ResourceService
-from app.components.document_processing.services.classifier_service import extract_complete_exam_data, fix_sinhala_ocr, map_student_answers
+from app.components.document_processing.services.classifier_service import extract_complete_exam_data, fix_sinhala_ocr, map_student_answers, extract_rubric_answers
 from app.components.document_processing.services.ocr_service import extract_and_clean_text_from_file
 from app.shared.models.answer_evaluation import QuestionScore
+from app.services.usage_service import UsageService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -33,6 +38,11 @@ logger = logging.getLogger(__name__)
 class EvaluationWorkflowService:
     """Orchestrates evaluation-related operations while keeping routers thin."""
 
+    # New in-memory coordination guard: ensures one answer document is graded
+    # by only one request path at a time.
+    _active_answer_evaluations: Dict[str, threading.Event] = {}
+    _active_answer_evaluations_lock = threading.Lock()
+
     def __init__(self, db: Session):
         self.db = db
         self.sessions = EvaluationSessionService(db)
@@ -40,8 +50,31 @@ class EvaluationWorkflowService:
         self.question_papers = QuestionPaperService(db)
         self.paper_configs = PaperConfigService(db)
         self.answers = AnswerEvaluationService(db)
+        self.marking_schemas = MarkingSchemaService(db)
         self.chat_sessions = ChatSessionService(db)
         self.resource_files = ResourceService(db)
+        self.usage = UsageService(db)
+
+    def _acquire_answer_evaluation_slot(self, answer_id: UUID) -> Tuple[bool, threading.Event]:
+        # New helper for stream/background coordination.
+        key = str(answer_id)
+        with self._active_answer_evaluations_lock:
+            existing = self._active_answer_evaluations.get(key)
+            if existing is not None:
+                return False, existing
+
+            event = threading.Event()
+            self._active_answer_evaluations[key] = event
+            return True, event
+
+    def _release_answer_evaluation_slot(self, answer_id: UUID, event: threading.Event) -> None:
+        # Release the shared evaluation slot once grading is fully finished.
+        key = str(answer_id)
+        with self._active_answer_evaluations_lock:
+            current = self._active_answer_evaluations.get(key)
+            if current is event:
+                event.set()
+                del self._active_answer_evaluations[key]
 
     def _normalize_question_number(self, q_num: str) -> str:
         """Normalize question number (e.g. '1.', 'Q1' -> '1')"""
@@ -58,8 +91,14 @@ class EvaluationWorkflowService:
         if not label:
             return label
         # Remove parens, dots and convert to lowercase
+        # FIX: Keep 'ඈ' as distinct from 'අ' if applicable, but standard stripping is fine
         clean = re.sub(r'[().]', '', str(label)).strip().lower()
         return clean
+
+    def _find_matching_question(self, key: str, q_map: Dict[str, Any]):
+        """Helper to find question/sub-question in map by key or normalized key."""
+        norm = key.lower().replace(" ", "").replace(".", "").replace("(", "").replace(")", "")
+        return q_map.get(key) or q_map.get(norm)
 
     def _resolve_session_id(self, session_id: UUID) -> UUID:
         """Resolves Evaluation Session ID to Chat Session ID if applicable."""
@@ -75,12 +114,32 @@ class EvaluationWorkflowService:
         if not self.chat_sessions.validate_ownership(session_id, user_id):
             raise PermissionError("You don't have permission to access this session")
 
-    def _get_eval_session_with_owner_check(self, evaluation_id: UUID, user_id: UUID):
+    def _get_eval_session_with_owner_check(self, evaluation_id: UUID, user_id: UUID) -> EvaluationSession:
         eval_session = self.sessions.get_evaluation_session(evaluation_id)
         if not eval_session:
             raise ValueError("Evaluation session not found")
         self._ensure_chat_session_owner(eval_session.session_id, user_id)
         return eval_session
+
+    def _resolve_to_eval_session(self, session_id: UUID, user_id: UUID) -> EvaluationSession:
+        """
+        Smart resolver: Tries to find an EvaluationSession first, 
+        then a ChatSession's most recent EvaluationSession.
+        """
+        # 1. Try as Evaluation ID
+        eval_session = self.sessions.get_evaluation_session(session_id)
+        if eval_session:
+            self._ensure_chat_session_owner(eval_session.session_id, user_id)
+            return eval_session
+        
+        # 2. Try as Chat ID
+        if self.chat_sessions.validate_ownership(session_id, user_id):
+            recent_evals = self.sessions.get_evaluation_sessions_by_chat_session(session_id)
+            if recent_evals:
+                # Get the most recent one
+                return sorted(recent_evals, key=lambda x: x.created_at, reverse=True)[0]
+        
+        raise ValueError(f"No evaluation session found for ID {session_id}")
 
     def _ensure_resource_owner(self, resource_id: UUID, user_id: UUID):
         # Will raise PermissionError / ValueError if unauthorized or missing
@@ -92,6 +151,9 @@ class EvaluationWorkflowService:
             raise ValueError("Answer document not found")
         self._get_eval_session_with_owner_check(answer_doc.evaluation_session_id, user_id)
         return answer_doc
+
+    def _ensure_marking_schema_confirmed_for_session(self, session_id: UUID, user_id: UUID):
+        return self.marking_schemas.ensure_schema_confirmed(session_id, user_id)
 
     def create_session(self, payload: EvaluationSessionCreate, user_id: UUID):
         self._ensure_chat_session_owner(payload.session_id, user_id)
@@ -117,6 +179,9 @@ class EvaluationWorkflowService:
         Creates a session, attaches active context + answers, and sets status to processing.
         Returns the session immediately.
         """
+        # 0. Check Evaluation Limit
+        self.usage.check_evaluation_limit(user_id)
+
         # 1. Create Session (reuses logic to attach Rubric, Syllabus, QP)
         # Check if session already exists for this chat_session (created by process_documents)
         sessions = self.sessions.get_evaluation_sessions_by_chat_session(chat_session_id)
@@ -140,7 +205,9 @@ class EvaluationWorkflowService:
                     resource_id=resource_id,
                     student_identifier=f"Student-{resource_id}" # Placeholder
                 )
-            
+
+        self._ensure_marking_schema_confirmed_for_session(session.id, user_id)
+
         # 3. Update Status to Processing
         self.sessions.update_evaluation_session(session.id, status="processing")
         
@@ -159,6 +226,7 @@ class EvaluationWorkflowService:
 
         logger.info(f"Starting parallel background evaluation for session {session_id} "
                     f"({len(answer_resource_ids)} sheets)")
+        self._ensure_marking_schema_confirmed_for_session(session_id, user_id)
 
         import time as _time
         _start = _time.time()
@@ -286,6 +354,7 @@ class EvaluationWorkflowService:
         logger.info(f"Stream: Starting evaluation for session {session_id}")
 
         try:
+            self._ensure_marking_schema_confirmed_for_session(session_id, user_id)
             for resource_id in answer_resource_ids:
                 
                 # Find the answer document
@@ -331,133 +400,55 @@ class EvaluationWorkflowService:
         Generator version of evaluate_answer.
         Yields (stage, message, percent) tuples.
         """
-        # This duplicates logic from evaluate_answer but yields updates.
-        # Ideally we refactor evaluate_answer to use this, but for safety I'll keep them separate or make evaluate_answer consume this.
-        
-        answer_doc = self._ensure_answer_owner(answer_id, user_id)
-        
-        yield ("processing_documents", "Checking answer resource...", 5)
-
-        # Get the answer document with OCR text
-        answer_resource = self.resource_files.get_resource(answer_doc.resource_id)
-        if not answer_resource:
-            raise ValueError("Answer resource not found")
-
-        # OCR
-        if not answer_resource.extracted_text:
-            yield ("processing_documents", "Extracting text from answer script (OCR)...", 10)
-            ocr_text, _ = extract_and_clean_text_from_file(answer_resource.storage_path)
-            self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
-        else:
-            ocr_text = answer_resource.extracted_text
-        
-        yield ("processing_documents", "Loading evaluation context...", 20)
-        
-        # Context loading
-        eval_session = self.sessions.get_evaluation_session(answer_doc.evaluation_session_id)
-        if not eval_session: raise ValueError("Evaluation session not found")
-
-        syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
-        question_map = self._build_question_map_helper(questions)
-
-        # Fix OCR / Map
-        if answer_doc.mapped_answers:
-            yield ("processing_documents", "Using existing answer mapping...", 30)
-            answer_mapping = answer_doc.mapped_answers
-            if not answer_resource.extracted_text:
-                 cleaned_answer_text = fix_sinhala_ocr(ocr_text)
-            else:
-                 cleaned_answer_text = answer_resource.extracted_text
-        else:
-            yield ("processing_documents", "Correcting OCR errors...", 30)
-            cleaned_answer_text = fix_sinhala_ocr(ocr_text)
-            
-            yield ("processing_documents", "Mapping answers to questions...", 40)
-            answer_mapping = map_student_answers(cleaned_answer_text, questions)
-            self.answers.update_mapped_answers(answer_id, answer_mapping)
-        
-        # Grading
-        yield ("evaluating_answers", "Starting grading process...", 50)
-        
-        from app.services.evaluation.grading_service import GradingService
-        grader = GradingService(self.db)
-        
-        # We need to hook into grading service too. 
-        # Since I added progress_callback to grade_answer_document, I can use it!
-        
-        def internal_callback(stage, msg, percent=None):
-            # Map internal grading stages to our generator yields
-            # Base progress for grading is 50% to 100%
-            base = 50
-            if percent:
-                adjusted = base + (percent / 2) # Scale 0-100 to 50-100 range roughly
-            else:
-                adjusted = base
-            
-            # We can't yield from here directly (callback).
-            # So we need a way to pass this out.
-            # Since we are inside a generator `evaluate_answer_generator`, we can't yield from a callback.
-            # This is the same problem.
-            pass
-
-        # Actually, I can't easily stream from `grader.grade_answer_document` unless I change IT to a generator too.
-        # Or I use a queue.
-        # Given the complexity, I will just yield major steps here and NOT use the callback for now, 
-        # OR I will just accept that `grade_answer_document` is a black box that takes time.
-        
-        # BUT the user specifically asked for "steps on the backend terminal... to frontend".
-        # The logs show "Grading question X...".
-        
-        # I will make `grade_answer_document` a generator? No, it returns a value.
-        # I will use a queue to communicate from the callback to this generator.
         import queue
-        q = queue.Queue()
-        
-        def queue_callback(stage, msg, percent=None):
-            q.put((stage, msg, percent))
-            
         import threading
-        
-        # Run grading in a separate thread so we can consume the queue in this generator
-        result_container = {}
-        error_container = {}
-        
-        def run_grading():
+
+        q = queue.Queue()
+
+        def queue_callback(stage, msg, percent=None):
+            # New bridge: route progress callbacks from the synchronous
+            # evaluation path back into the streaming generator.
+            q.put((stage, msg, percent))
+
+        result_container: Dict[str, Any] = {}
+        error_container: Dict[str, Exception] = {}
+
+        def run_evaluation():
             try:
-                result_container['result'] = grader.grade_answer_document(
-                    answer_doc_id=answer_id,
+                # Reuse the main evaluation path so stream requests and background
+                # requests follow the same logic and locking behavior.
+                result_container["result"] = self.evaluate_answer(
+                    answer_id=answer_id,
                     user_id=user_id,
-                    eval_session_id=eval_session.id,
-                    syllabus_text=syllabus_text,
-                    rubric_text=rubric_text,
-                    question_map=question_map,
                     progress_callback=queue_callback,
-                    include_feedback=include_feedback
+                    include_feedback=include_feedback,
                 )
-            except Exception as e:
-                error_container['error'] = e
+            except Exception as exc:
+                error_container["error"] = exc
             finally:
-                q.put(None) # Sentinel
-        
-        t = threading.Thread(target=run_grading)
-        t.start()
-        
+                q.put(None)
+
+        worker = threading.Thread(
+            target=run_evaluation,
+            name=f"evaluate_answer_stream_{answer_id}",
+            daemon=True,
+        )
+        worker.start()
+
         while True:
             item = q.get()
             if item is None:
                 break
             stage, msg, percent = item
-            # Scale progress: 50 + (percent/2)
-            p = 50 + (percent / 2) if percent is not None else None
-            yield (stage, msg, p)
-            
-        t.join()
-        
-        if 'error' in error_container:
-            raise error_container['error']
-            
+            yield (stage, msg, percent)
+
+        worker.join()
+
+        if "error" in error_container:
+            raise error_container["error"]
+
         yield ("completed", "Evaluation completed.", 100)
-        return result_container.get('result')
+        return result_container.get("result")
 
     def list_sessions(self, user_id: UUID, session_id: Optional[UUID] = None) -> List:
         if session_id:
@@ -666,7 +657,8 @@ class EvaluationWorkflowService:
                         resource_id=res_id,
                         role="answer_script",
                         status="already_processed",
-                        message="Answer script already processed."
+                        message="Answer script already processed.",
+                        answer_document_id=existing_ad.id
                     ))
                 else:
                     # Process it
@@ -684,7 +676,8 @@ class EvaluationWorkflowService:
                         resource_id=res_id,
                         role="answer_script",
                         status="processed",
-                        message="Answer script processed successfully."
+                        message="Answer script processed successfully.",
+                        answer_document_id=existing_ad.id
                     ))
 
             except Exception as e:
@@ -912,7 +905,8 @@ class EvaluationWorkflowService:
                         resource_id=res_id,
                         role="answer_script",
                         status="already_processed",
-                        message="Answer script already processed."
+                        message="Answer script already processed.",
+                        answer_document_id=existing_ad.id
                     )
                 else:
                     if not existing_ad:
@@ -929,7 +923,8 @@ class EvaluationWorkflowService:
                         resource_id=res_id,
                         role="answer_script",
                         status="processed",
-                        message="Answer script processed successfully."
+                        message="Answer script processed successfully.",
+                        answer_document_id=existing_ad.id
                     )
                 
                 current_step += 1
@@ -962,15 +957,20 @@ class EvaluationWorkflowService:
 
         logger.info(f"Parsing syllabus: {resource_id}")
 
-        # OCR
+        # 1. Extraction Persistence Check
+        if resource.extracted_text:
+            logger.info(f"Syllabus already has extracted text. Skipping OCR and Fix.")
+            return
+
+        # 2. OCR (Local)
         cleaned_text, _ = extract_and_clean_text_from_file(resource.storage_path)
         logger.info(f"OCR complete for syllabus. Length: {len(cleaned_text)}")
         
-        # AI Fix
+        # 3. AI Fix (Helper)
         cleaned_text = fix_sinhala_ocr(cleaned_text)
         logger.info(f"AI correction complete for syllabus. Length: {len(cleaned_text)}")
         
-        # Save
+        # 4. Save
         resource.extracted_text = cleaned_text
         self.resource_files.db.commit()
 
@@ -986,15 +986,20 @@ class EvaluationWorkflowService:
 
         logger.info(f"Parsing rubric: {resource_id}")
 
-        # OCR
+        # 1. Extraction Persistence Check
+        if resource.extracted_text:
+            logger.info(f"Rubric already has extracted text. Skipping OCR and Fix.")
+            return
+
+        # 2. OCR (Local)
         cleaned_text, _ = extract_and_clean_text_from_file(resource.storage_path)
         logger.info(f"OCR complete for rubric. Length: {len(cleaned_text)}")
         
-        # AI Fix
+        # 3. AI Fix (Helper)
         cleaned_text = fix_sinhala_ocr(cleaned_text)
         logger.info(f"AI correction complete for rubric. Length: {len(cleaned_text)}")
         
-        # Save
+        # 4. Save
         resource.extracted_text = cleaned_text
         self.resource_files.db.commit()
 
@@ -1036,23 +1041,28 @@ class EvaluationWorkflowService:
         if not resource.storage_path:
             raise ValueError("Resource file not found on disk")
 
-        # Extract and clean text from file
-        try:
-            cleaned_text, page_count = extract_and_clean_text_from_file(resource.storage_path)
-            logger.info("Extracted %s characters from %d pages in question paper", len(cleaned_text), page_count)
+        # 1. Extract and clean text from file (Only if not already done)
+        if resource.extracted_text:
+            logger.info("Question paper already has extracted text. Skipping OCR and Fix.")
+            cleaned_text = resource.extracted_text
+        else:
+            try:
+                # Local Extraction (Core process)
+                cleaned_text, page_count = extract_and_clean_text_from_file(resource.storage_path)
+                logger.info("Extracted %s characters from %d pages in question paper", len(cleaned_text), page_count)
 
-            # Fix Sinhala OCR errors using AI
-            logger.info("Running AI correction on extracted text...")
-            cleaned_text = fix_sinhala_ocr(cleaned_text)
-            logger.info("AI correction complete. Final text length: %s", len(cleaned_text))
+                # AI Correction (Helper process - persisted to avoid repetition)
+                logger.info("Running AI correction on extracted text...")
+                cleaned_text = fix_sinhala_ocr(cleaned_text)
+                logger.info("AI correction complete. Final text length: %s", len(cleaned_text))
 
-        # Persist OCR text back to ResourceFile (CRITICAL)
-            resource.extracted_text = cleaned_text
-            self.resource_files.db.commit()
+                # Persist result immediately
+                resource.extracted_text = cleaned_text
+                self.resource_files.db.commit()
 
-        except Exception as e:
-            logger.error(f"Failed to extract text from resource {resource.id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to extract text from question paper: {e}")
+            except Exception as e:
+                logger.error(f"Failed to extract text from resource {resource.id}: {e}", exc_info=True)
+                raise ValueError(f"Failed to extract text from question paper: {e}")
 
         # Parse and structure content using AI
         try:
@@ -1117,7 +1127,8 @@ class EvaluationWorkflowService:
                         max_marks=q_data.get("marks"),
                         part_name=paper_key,
                         shared_stem=q_data.get("shared_stem"),
-                        inherits_shared_stem_from=q_data.get("inherits_shared_stem_from")
+                        inherits_shared_stem_from=q_data.get("inherits_shared_stem_from"),
+                        correct_answer=q_data.get("correct_answer")
                     )
 
                     # 3️⃣ Create SubQuestions (Recursive)
@@ -1131,7 +1142,8 @@ class EvaluationWorkflowService:
                                 label=normalized_label,
                                 sub_question_text=data.get("text"),
                                 max_marks=data.get("marks"),
-                                parent_sub_question_id=parent_sq_id
+                                parent_sub_question_id=parent_sq_id,
+                                correct_answer=data.get("correct_answer")
                             )
                             # Recurse for children
                             if "sub_questions" in data:
@@ -1250,9 +1262,9 @@ class EvaluationWorkflowService:
             student_identifier=payload.student_identifier,
         )
 
-    def list_answer_documents(self, evaluation_id: UUID, user_id: UUID):
-        self._get_eval_session_with_owner_check(evaluation_id, user_id)
-        return self.answers.get_answer_documents_by_evaluation_session(evaluation_id)
+    def list_answer_documents(self, session_id: UUID, user_id: UUID):
+        eval_session = self._resolve_to_eval_session(session_id, user_id)
+        return self.answers.get_answer_documents_by_evaluation_session(eval_session.id)
 
     def parse_answer_document(self, answer_id: UUID, user_id: UUID):
         """
@@ -1277,7 +1289,13 @@ class EvaluationWorkflowService:
 
         # OCR the answer script if not already done
         if not answer_resource.extracted_text:
-            ocr_text, _ = extract_and_clean_text_from_file(answer_resource.storage_path)
+            # New answer-sheet extraction path: skip layout-block OCR so we favor
+            # full-page capture of the student's written answers.
+            ocr_text, _ = extract_and_clean_text_from_file(
+                answer_resource.storage_path,
+                force_layout_analysis=False,
+                resource_type="answer_sheet",
+            )
             # Update the resource with extracted text
             self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
         else:
@@ -1298,8 +1316,9 @@ class EvaluationWorkflowService:
         question_paper = question_papers[0]
         questions = self.question_papers.get_questions_by_paper(question_paper.id)
 
-        # 1. Fix OCR errors
-        cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+        # OCR text is already extracted above.
+        # We now skip the separate fix_sinhala_ocr call as cleaning is handled in map_student_answers.
+        cleaned_answer_text = ocr_text
         
         # 2. Map answers
         answer_mapping = map_student_answers(cleaned_answer_text, questions)
@@ -1374,6 +1393,19 @@ class EvaluationWorkflowService:
 
     def evaluate_answer(self, answer_id: UUID, user_id: UUID, progress_callback=None, include_feedback: bool = False):
         """Evaluate answer with recursive sub-question support."""
+        # New lock: if the frontend triggers both `/start` and `/evaluate/stream`,
+        # the second caller waits instead of starting a conflicting grading run.
+        acquired, active_event = self._acquire_answer_evaluation_slot(answer_id)
+        if not acquired:
+            logger.info("Evaluation already in progress for answer document %s. Waiting for the active run.", answer_id)
+            active_event.wait(timeout=180)
+            existing = self.answers.get_evaluation_result_by_answer_document(answer_id)
+            if existing:
+                return existing
+            acquired, active_event = self._acquire_answer_evaluation_slot(answer_id)
+            if not acquired:
+                raise RuntimeError(f"Evaluation is still in progress for answer document {answer_id}.")
+
         answer_doc = self._ensure_answer_owner(answer_id, user_id)
 
         # Check if already evaluated - FORCE RE-EVALUATION if requested or just proceed
@@ -1398,7 +1430,13 @@ class EvaluationWorkflowService:
         if not answer_resource.extracted_text:
             if progress_callback:
                 progress_callback("processing_documents", "Extracting text from answer script (OCR)...")
-            ocr_text, _ = extract_and_clean_text_from_file(answer_resource.storage_path)
+            # New answer-sheet extraction path: skip layout-block OCR so we favor
+            # full-page capture of the student's written answers.
+            ocr_text, _ = extract_and_clean_text_from_file(
+                answer_resource.storage_path,
+                force_layout_analysis=False,
+                resource_type="answer_sheet",
+            )
             # Update the resource with extracted text
             self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
         else:
@@ -1409,9 +1447,11 @@ class EvaluationWorkflowService:
         if not eval_session:
             raise ValueError("Evaluation session not found")
 
-        # Get Evaluation Context (Syllabus, Rubric, Questions)
+        self._ensure_marking_schema_confirmed_for_session(eval_session.id, user_id)
+
         syllabus_text, rubric_text, questions = self._get_evaluation_context(eval_session.id)
         question_map = self._build_question_map_helper(questions)
+        reference_map = self.marking_schemas.get_confirmed_reference_map(eval_session.id, user_id)
 
         # 1. Fix OCR errors in student answer
         if answer_doc.mapped_answers:
@@ -1428,7 +1468,13 @@ class EvaluationWorkflowService:
             if progress_callback:
                 progress_callback("processing_documents", "Correcting OCR errors...")
             logger.info("Running AI correction on student answer script...")
-            cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+            
+            # PERSISTENCE: Save fixed text to avoid repeating expensive AI calls
+            if not answer_resource.extracted_text or len(answer_resource.extracted_text) < 10:
+                cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+                self.resource_files.update_resource_extracted_text(answer_resource.id, cleaned_answer_text)
+            else:
+                cleaned_answer_text = answer_resource.extracted_text
             
             # 2. Map answers to questions using AI
             if progress_callback:
@@ -1436,12 +1482,31 @@ class EvaluationWorkflowService:
             logger.info("Mapping student answers to questions...")
             answer_mapping = map_student_answers(cleaned_answer_text, questions)
             
+            if not answer_mapping:
+                logger.error("Mapping failed: Gemini returned an empty response.")
+                raise ValueError("නිරවද්‍ය ලෙස පිළිතුරු හඳුනා ගැනීමට නොහැකි විය. කරුණාකර නැවත උත්සාහ කරන්න. (AI Rate Limited)")
+
             # Save mapping for future use
             self.answers.update_mapped_answers(answer_id, answer_mapping)
+
+        # Previous rebuild behavior is intentionally disabled for now.
+        # Keeping the older block below makes it easier to revisit, but the
+        # second Gemini mapping pass was causing drift and worse Paper II
+        # accuracy than the mapping already saved during document processing.
+        if False and answer_doc.mapped_answers:
+            if progress_callback:
+                progress_callback("processing_documents", "Refreshing answer mapping with current rules...")
+            logger.info("Rebuilding existing answer mapping with current extraction rules...")
+            answer_mapping = map_student_answers(cleaned_answer_text, questions)
+
+            if not answer_mapping:
+                logger.error("Mapping refresh failed: Gemini returned an empty response.")
+                raise ValueError("à¶±à·’à¶»à·€à¶¯à·Šâ€à¶º à¶½à·™à·ƒ à¶´à·’à·…à·’à¶­à·”à¶»à·” à·„à¶³à·”à¶±à· à¶œà·à¶±à·“à¶¸à¶§ à¶±à·œà·„à·à¶šà·’ à·€à·’à¶º. à¶šà¶»à·”à¶«à·à¶šà¶» à¶±à·à·€à¶­ à¶‹à¶­à·Šà·ƒà·à·„ à¶šà¶»à¶±à·Šà¶±. (AI Rate Limited)")
+
+            self.answers.update_mapped_answers(answer_id, answer_mapping)
         
-        # Log the mapping for debugging
-        logger.info(f"Mapped {len(answer_mapping)} answers.")
-        logger.debug(f"Answer Mapping: {answer_mapping}")
+        # New debug aid: log the accepted mapping in a readable way before grading.
+        self._log_answer_mapping_preview(answer_id, answer_mapping, questions)
 
         # 3. Perform Grading
         if progress_callback:
@@ -1449,18 +1514,63 @@ class EvaluationWorkflowService:
         logger.info("Starting grading process...")
         from app.services.evaluation.grading_service import GradingService
         grader = GradingService(self.db)
-        result = grader.grade_answer_document(
-            answer_doc_id=answer_id,
-            user_id=user_id,
-            eval_session_id=eval_session.id,
-            syllabus_text=syllabus_text,
-            rubric_text=rubric_text,
-            question_map=question_map,
-            progress_callback=progress_callback,
-            include_feedback=include_feedback
-        )
-        logger.info(f"Grading completed for answer document {answer_id}.")
-        return result
+        try:
+            result = grader.grade_answer_document(
+                answer_doc_id=answer_id,
+                user_id=user_id,
+                eval_session_id=eval_session.id,
+                syllabus_text=syllabus_text,
+                rubric_text=rubric_text,
+                question_map=question_map,
+                reference_map=reference_map,
+                progress_callback=progress_callback,
+                include_feedback=include_feedback
+            )
+            logger.info(f"Grading completed for answer document {answer_id}.")
+            return result
+        finally:
+            if acquired:
+                self._release_answer_evaluation_slot(answer_id, active_event)
+
+    def _log_answer_mapping_preview(self, answer_doc_id: UUID, answer_mapping: Dict[str, Any], questions: List[Question]) -> None:
+        """New debug helper: emit a compact preview of accepted mappings before grading starts."""
+        try:
+            question_map = self._build_question_map_helper(questions)
+            logger.info(
+                "[MAPPING_PREVIEW] Answer document %s has %d accepted mapped answers.",
+                answer_doc_id,
+                len(answer_mapping or {}),
+            )
+
+            for key, value in (answer_mapping or {}).items():
+                if not value or str(value).strip().lower() in ["null", "none", ""]:
+                    continue
+
+                target = self._find_matching_question(str(key), question_map)
+                if isinstance(target, SubQuestion) and getattr(target, "question", None):
+                    label = f"{target.question.question_number}({target.label})"
+                    part_name = getattr(target.question, "part_name", "Unknown")
+                elif isinstance(target, Question):
+                    label = str(target.question_number)
+                    part_name = getattr(target, "part_name", "Unknown")
+                else:
+                    label = str(key)
+                    part_name = "Unknown"
+
+                preview = str(value).replace("\r", " ").replace("\n", " ").strip()
+                logger.info(
+                    "[MAPPING_PREVIEW] key=%s | part=%s | label=%s | text=%s",
+                    key,
+                    part_name,
+                    label,
+                    preview[:120],
+                )
+        except Exception as exc:
+            logger.warning(
+                "[MAPPING_PREVIEW] Failed to log mapping preview for %s: %s",
+                answer_doc_id,
+                exc,
+            )
 
     def _get_evaluation_context(self, eval_session_id: UUID) -> Tuple[str, str, List[Question]]:
         """Helper to load all context required for evaluation."""
@@ -1471,31 +1581,74 @@ class EvaluationWorkflowService:
         rubric_text = self.answers._load_rubric_text(eval_session)
         syllabus_text = self.answers._load_syllabus_text(eval_session)
 
-        question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
+        # Try evaluation-specific papers first
+        question_papers = self.question_papers.get_question_papers_by_evaluation_session(eval_session_id)
+        
+        # Fallback to chat-session papers if none found (backwards compatibility)
+        if not question_papers:
+            question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
+        
         if not question_papers:
             raise ValueError("Question paper not found")
         
-        questions = []
+        # Deduplicate papers by resource_id to prevent duplicates from multiple uploads
+        unique_papers = {}
         for qp in question_papers:
+            if qp.resource_id not in unique_papers:
+                unique_papers[qp.resource_id] = qp
+        
+        questions = []
+        for qp in unique_papers.values():
             questions.extend(self.question_papers.get_questions_by_paper(qp.id))
         
-        return syllabus_text, rubric_text, questions
+        # Final unique check on question IDs
+        seen_qids = set()
+        unique_questions = []
+        for q in questions:
+            if q.id not in seen_qids:
+                unique_questions.append(q)
+                seen_qids.add(q.id)
+
+        return syllabus_text, rubric_text, unique_questions
 
     def _build_question_map_helper(self, questions: List[Question]) -> Dict:
-        """Helper to build a map for quick question lookup."""
-        q_map = {}
+        """Helper to build a part-aware map for quick question lookup."""
+        q_map: Dict[str, Any] = {}
+
+        def normalize(value: str) -> str:
+            return re.sub(r"[\s().]", "", str(value or "").lower())
+
+        def process_sub_questions(sub_questions: List[SubQuestion], parent_number: str, part_name: str):
+            # New part-aware indexing keeps repeated labels like `1` in different
+            # paper parts from colliding during answer lookup.
+            for sq in sub_questions or []:
+                sq_id = str(sq.id)
+                sq_label = normalize(sq.label)
+                composite_key = f"{parent_number}{sq_label}"
+
+                q_map[sq_id] = sq
+                if part_name:
+                    q_map[f"{part_name}_{composite_key}"] = sq
+                if composite_key not in q_map:
+                    q_map[composite_key] = sq
+
+                children = getattr(sq, "children", []) or []
+                if children:
+                    process_sub_questions(children, composite_key, part_name)
+
         for q in questions:
-            # Index by question number
-            q_map[str(q.question_number)] = q
-            # Index by ID
-            q_map[str(q.id)] = q
-            
-            for sq in getattr(q, "sub_questions", []) or []:
-                # Index by combination
-                key = f"{q.question_number}{sq.label}"
-                q_map[key] = sq
-                # Index by ID
-                q_map[str(sq.id)] = sq
+            q_id = str(q.id)
+            q_num = normalize(str(q.question_number).lstrip('0') or str(q.question_number))
+            part_name = normalize(getattr(q, "part_name", "")).replace("paperii", "paper_ii").replace("paperi", "paper_i")
+
+            q_map[q_id] = q
+            if part_name:
+                q_map[f"{part_name}_{q_num}"] = q
+            if q_num not in q_map:
+                q_map[q_num] = q
+
+            process_sub_questions(getattr(q, "sub_questions", []) or [], q_num, part_name)
+
         return q_map
 
     def generate_feedback(self, answer_id: UUID, user_id: UUID):
@@ -1503,6 +1656,18 @@ class EvaluationWorkflowService:
         from app.services.evaluation.grading_service import GradingService
         grader = GradingService(self.db)
         return grader.generate_feedback_for_result(answer_id, user_id)
+
+    def get_marking_schema(self, session_id: UUID, user_id: UUID):
+        return self.marking_schemas.get_or_create_schema(session_id, user_id)
+
+    def save_marking_schema(self, session_id: UUID, payload: MarkingSchemaUpdateRequest, user_id: UUID):
+        return self.marking_schemas.save_schema(session_id=session_id, payload=payload, user_id=user_id, confirmed=False)
+
+    def confirm_marking_schema(self, session_id: UUID, payload: MarkingSchemaUpdateRequest, user_id: UUID):
+        return self.marking_schemas.confirm_schema(session_id=session_id, payload=payload, user_id=user_id)
+
+    def delete_marking_schema(self, session_id: UUID, user_id: UUID) -> bool:
+        return self.marking_schemas.delete_schema(session_id, user_id)
 
 
     def get_evaluation_result(self, answer_id: UUID, user_id: UUID):

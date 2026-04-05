@@ -45,6 +45,12 @@ LOGGING_CONFIG = {
         "level": LOG_LEVEL,
         "handlers": ["console", "file"],
     },
+
+    "loggers": {
+        "huggingface_hub": {"level": "ERROR", "propagate": False},
+        "huggingface_hub._login": {"level": "ERROR", "propagate": False},
+        "sentence_transformers": {"level": "WARNING", "propagate": False},  # Only show warnings, not info
+    },
 }
 
 def setup_logging():
