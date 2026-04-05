@@ -3,6 +3,10 @@ import re
 from typing import List, Dict, Any
 from rank_bm25 import BM25Okapi
 import numpy as np
+import logging
+logger = logging.getLogger(__name__)
+
+from app.utils.sinhala_nlp import split_sentences_sinhala, tokenize_sinhala_words
 
 # Sinhala stopwords
 SINHALA_STOPWORDS = {
@@ -18,19 +22,21 @@ def tokenize_sinhala(text: str) -> List[str]:
     Tokenize Sinhala text into words
     """
     # Remove punctuation and numbers
-    text = re.sub(r'[^\u0D80-\u0DFF\s]', ' ', text)
+    text_clean = re.sub(r'[^\u0D80-\u0DFF\s]', ' ', text)
     
-    # Split by whitespace
-    tokens = text.split()
+    # Use centralized tokenizer
+    tokens = tokenize_sinhala_words(text_clean)
+
+    logging.info("Tokenized text into %d tokens", len(tokens))
+    logging.info("Sample tokens: %s", tokens)
     
     # Filter stopwords and short tokens
-    tokens = [
+    return [
         token.strip() 
         for token in tokens 
         if len(token) >= 2 and token not in SINHALA_STOPWORDS
     ]
     
-    return tokens
 
 
 def extract_lesson_numbers(text: str) -> List[str]:
@@ -60,7 +66,11 @@ def extract_key_phrases(text: str, max_phrases: int = 10) -> List[str]:
     Extract key phrases from Sinhala text
     """
     # Split into sentences
-    sentences = re.split(r'[.!?]+', text)
+    sentences = split_sentences_sinhala(text)
+
+    logger.info("Extracting key phrases from text with %d sentences", len(sentences))
+
+    logger.info("Sample sentences: %s", sentences[:5])
     
     key_phrases = []
     for sentence in sentences:

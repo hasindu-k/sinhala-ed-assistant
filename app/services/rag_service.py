@@ -261,7 +261,13 @@ class RAGService:
         # -----------------------------
         # 9. Generate response with Gemini
         # -----------------------------
-        generated_result = GeminiClient.generate_content(prompt)
+        # generated_result = GeminiClient.generate_content(prompt)
+        generated_result = {
+            "text": "1505 වසරේදී පෘතුගීසින් දිවයිනට පැමිණෙන විට කෝට්ටේ, සීතාවක සහ උඩරට යන ප්‍රධාන රාජධානි මෙරට පැවතුණි. එම රාජධානි අතර තිබූ අභ්‍යන්තර ආරවුල් පෘතුගීසින් තමන්ගේ වාසියට යොදා ගත්හ. පෘතුගීසින් පලවා හැරීම සඳහා ලන්දේසීන්ගේ උපකාරය ලබා ගැනීමට අවශ්‍ය විය. ඒ වෙනුවෙන් ලන්දේසීන්ට කුරුඳු සහ බලකොටු ලබා දීමට සිදු විය.",
+            "prompt_tokens": 1200,
+            "completion_tokens": 300,
+            "total_tokens": 1500
+        }
         generated = generated_result["text"]
         prompt_tokens = generated_result["prompt_tokens"]
         completion_tokens = generated_result["completion_tokens"]

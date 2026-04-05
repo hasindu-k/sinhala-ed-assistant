@@ -3,24 +3,17 @@
 import re
 from typing import List, Dict
 from app.components.document_processing.utils.numbering import extract_numbering
+from app.utils.sinhala_nlp import split_sentences_sinhala, tokenize_sinhala_words
 
 
 def split_into_sentences(text: str) -> List[str]:
-    # Normalize Sinhala danda
-    x = text.replace("।", ".")
-
-    # insert a delimiter after punctuation
-    x = re.sub(r"([.!?]+)", r"\1<SPLIT>", x)
-
-    # split on the delimiter
-    parts = x.split("<SPLIT>")
-
-    return [p.strip() for p in parts if p.strip()]
+    return split_sentences_sinhala(text)
 
 
 def approximate_token_count(text: str) -> int:
-    """Approximate tokens using ~4 characters per token."""
-    return max(1, len(text) // 4)
+    """Approximate tokens. Sinhala uses ~2.5 chars per token for LLMs."""
+    # Heuristic: 1 token ~= 2.5 chars for Sinhala (vs 4 for English)
+    return max(1, int(len(text) / 2.5))
 
 
 def chunk_text(
