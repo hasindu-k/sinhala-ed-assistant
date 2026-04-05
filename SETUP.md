@@ -6,7 +6,7 @@ Follow these steps to set up and run the Sinhala ED API locally.
 
 ## 1. Prerequisites
 
-- Python 3.8+
+- Python 3.9+
 - pip
 
 Example (Debian/Ubuntu):
@@ -45,17 +45,7 @@ Install the project (reads pyproject.toml):
 ```bash
 python -m pip install .
 # for editable install during development:
-python -m pip install -e .
-```
-
-If you need to install dependencies manually:
-
-```bash
-python -m pip install \
-  "fastapi" "uvicorn[standard]" "pydantic" "python-multipart" \
-  "torch" "transformers" "sentence-transformers" "onnxruntime" \
-  "faiss-cpu" "qdrant-client" "opencv-python" "pytesseract" \
-  "scikit-learn" "pandas" "indic-nlp-library" "python-dotenv" "psycopg[binary]"
+python -m pip install -e ".[dev]"
 ```
 
 ## 5. Set Up PostgreSQL Database with pgvector
@@ -118,4 +108,10 @@ Each time you open a new shell, activate the venv:
 
 ```bash
 source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# Windows cmd
+.venv\Scripts\activate
 ```
