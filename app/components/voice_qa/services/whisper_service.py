@@ -88,27 +88,28 @@ class VoiceService:
         text = processor.batch_decode(ids, skip_special_tokens=True)[0]
         return text
 
+
     @staticmethod
-    def standardize_southern_sinhala(text: str):
+    def standardize_southern_sinhala(text: str, context_hints: str = ""):
         normalized = normalize_sinhala(text)
 
+        # We add a section specifically for the "Vocabulary" found in the documents
         prompt = f"""
-        You are a Sinhala transcription corrector. Your goal is to fix phonetic errors and dialectal variations while PRESERVING the original meaning.
+        You are a Sinhala transcription corrector. Your goal is to fix phonetic errors while PRESERVING the original meaning.
+
+        CONTEXT VOCABULARY (Prioritize these terms if the transcription sounds similar):
+        {context_hints}
 
         Constraints:
-        1. DO NOT change the subject or the topic of the sentence (e.g., if the user asks about an 'ඉබ්බා' (tortoise), do not change it to 'cooking').
-        2. Fix transcription stutters (e.g., if 'මකේ' is used instead of 'මගේ', correct it).
-        3. Convert Southern-accented verb endings to Standard Literary Sinhala (ලිඛිත සිංහල).
-        4. If the input is already correct, return it exactly as it is.
+        1. If a word sounds like a name or term from the CONTEXT VOCABULARY above, use the context term (e.g., if you hear 'මා නැමැති රජු' but the context is about 'මානවම්ම රජු', use 'මානවම්ම රජු').
+        2. Convert Southern-accented verb endings to Standard Literary Sinhala.
+        3. Return ONLY the corrected Sinhala text.
 
         Input: {normalized}
-
-        Return ONLY the corrected Sinhala text:
         """
 
         gemini = GeminiClient()
         response = gemini.generate_content(prompt)
-
         result = (response.get("text") or "").strip()
 
         return normalized, result

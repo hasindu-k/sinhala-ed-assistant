@@ -52,14 +52,31 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/transcribe")
-async def transcribe(audio: UploadFile = File(...)):
-
+async def transcribe(
+    audio: UploadFile = File(...),
+    resource_ids: Optional[str] = Form(None), # Added this
+    db: Session = Depends(get_db)
+):
     temp_path = "temp.wav"
     with open(temp_path, "wb") as f:
         f.write(await audio.read())
 
+    # 1. Get raw transcription from Whisper
     raw_text = VoiceService.transcribe_audio(temp_path)
-    normalized, standard = VoiceService.standardize_southern_sinhala(raw_text)
+    
+    # 2. Fetch context hints from documents if resources exist
+    context_hints = ""
+    if resource_ids:
+        try:
+            ids = [UUID(rid.strip()) for rid in resource_ids.split(",") if rid.strip()]
+            # Retrieve top 3-5 chunks that look like the raw text
+            top_chunks = retrieve_top_k(query=raw_text, resource_ids=ids, k=3)
+            context_hints = "\n".join([c.content for c in top_chunks])
+        except Exception as e:
+            logger.error(f"Context retrieval failed: {e}")
+
+    # 3. Pass hints to the standardization service
+    normalized, standard = VoiceService.standardize_southern_sinhala(raw_text, context_hints)
 
     return {
         "raw": raw_text,
@@ -131,7 +148,14 @@ async def qa_from_voice(
     # 4️⃣ TRANSCRIBE + NORMALIZE
     # ----------------------------------------------------
     raw_text = VoiceService.transcribe_audio(temp_path)
-    _, standard = VoiceService.standardize_southern_sinhala(raw_text)
+    ids = [UUID(rid) for rid in resource_ids.split(",")] if resource_ids else []
+    
+    context_hints = ""
+    if ids:
+        top_chunks = retrieve_top_k(query=raw_text, resource_ids=ids, k=3)
+        context_hints = "\n".join([c.content for c in top_chunks])
+
+    _, standard = VoiceService.standardize_southern_sinhala(raw_text, context_hints=context_hints)
     question_text = standard
 
     # ----------------------------------------------------
