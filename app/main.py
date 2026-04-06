@@ -5,9 +5,12 @@ from app.logging_config import setup_logging
 setup_logging()
 
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from app.routers import (
+    websockets,
+)
 from app.core.whisper_loader import WhisperLoader
 from app.api.v1.router import api_router
 from app.core.database import Base, engine
@@ -32,7 +35,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+app.include_router(websockets.router)
+app.include_router(api_router, prefix="/api/v1")
 
 @app.on_event("startup")
 def on_startup():
@@ -53,8 +57,6 @@ def on_startup():
         logger.info("Whisper model loaded successfully.")
     except Exception as e:
         logger.error("Whisper model failed to load: %s", str(e))
-
-
 
 def custom_openapi():
     """Add Bearer auth security scheme to OpenAPI and apply to protected endpoints."""
@@ -103,8 +105,6 @@ def custom_openapi():
 
 
 app.openapi = custom_openapi
-
-app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/")
 def root():

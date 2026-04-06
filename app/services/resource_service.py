@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Optional, List, Iterable, Set
+from typing import Optional, List, Iterable, Set, Callable, Dict, Any
 from uuid import UUID
 from sqlalchemy.orm import Session
 
@@ -248,7 +248,13 @@ class ResourceService:
         else:
             self.db.flush()
     
-    def process_resource(self, resource_id: UUID, user_id: UUID, resource_type: Optional[str] = None):
+    def process_resource(
+        self, 
+        resource_id: UUID, 
+        user_id: UUID, 
+        resource_type: Optional[str] = None,
+        progress_callback: Optional[Callable[[str, float, Optional[Dict[str, Any]]], None]] = None
+    ):
         """Process resource (OCR, chunk, embed) after validation."""
         resource = self.get_resource_with_ownership_check(resource_id, user_id)
         
@@ -256,7 +262,7 @@ class ResourceService:
         from app.components.document_processing.services.resource_processor_service import ResourceProcessorService
         
         processor = ResourceProcessorService(self.db)
-        result = processor.process_resource(resource, resource_type=resource_type)
+        result = processor.process_resource(resource, resource_type=resource_type, progress_callback=progress_callback)
         
         return result
 
@@ -287,3 +293,16 @@ class ResourceService:
     def list_resources_by_ids(self, resource_ids: List[UUID]) -> List:
         """List resources by their IDs."""
         return self.repository.list_resources_by_ids(resource_ids)
+
+    def update_resource_extracted_text(
+        self,
+        resource_id: UUID,
+        extracted_text: Optional[str],
+        *,
+        commit: bool = True,
+    ):
+        return self.repository.update_resource_extracted_text(
+            resource_id=resource_id,
+            extracted_text=extracted_text,
+            commit=commit,
+        )

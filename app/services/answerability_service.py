@@ -21,7 +21,10 @@ class AnswerabilityService:
         "ලෙස", "වන", "වූ", "බව", "සිට", "දක්වා",
         "පමණ", "හැකි", "විය", "ය", "මගින්", "සමග",
         "වැනි", "පිළිබඳව", "ගැන", "අතර", "සඳහන්",
-        "දෙන්න", "ගන්න", "වෙන්න",
+        "දෙන්න", "ගන්න", "වෙන්න", "විසින්", "ලියන", 
+        "ලද්දේ", "ලද්දේද", "කවුරුන්", "කුමන", "මොනවා",
+        "ඇයි", "කොහේද", "කවදාද", "කොහොමද", "කියන්න",
+        "ලැබුණේද", "ලැබුනේද", "ලැබුනාද", "ලැබුණාද", "ලැබුණේ", "කවුද", "කොහොම", "කොහොමත්", "කොහොමහරි",
         # English stopwords
         "what", "is", "are", "the", "of", "in", "on", "at",
         "to", "for", "with", "by", "about", "as", "an",
@@ -149,20 +152,31 @@ class AnswerabilityService:
             avg_chunk_similarity = np.mean(chunk_similarities) if chunk_similarities else 0
             return avg_chunk_similarity
         
-        # Method 1: Key term overlap
+        # Method 1: Key term overlap (with boundary awareness)
         term_matches = 0
         matched_terms = []
         for term in question_terms:
-            if term in context_lower:
+            # Use regex for word boundaries to avoid partial matches
+            if re.search(fr"(^|\s|[.,!?;]){re.escape(term)}(\s|[.,!?;]|$)", context_lower):
                 term_matches += 1
                 matched_terms.append(term)
         
-        # If no terms match at all, score should be very low
+        # If no terms match as whole words, score should be 0
         if term_matches == 0:
-            logger.debug(f"No question terms found in context: {question_terms}")
+            logger.debug(f"No whole-word matches for terms: {question_terms}")
             return 0.0
         
         term_overlap_ratio = term_matches / len(question_terms)
+        
+        # Stricter overlap for very short queries (less than 4 meaningful terms)
+        if len(question_terms) <= 3:
+            if term_matches < 2:
+                # If query has 1-3 terms, require at least 2 whole-word matches
+                # If only 1 matches, it's likely a common word coincidence (e.g. "National")
+                term_overlap_ratio *= 0.2  # Drastic penalty for single match in short queries
+            elif term_matches == 2 and len(question_terms) == 3:
+                # 2/3 is okay, but we still apply a small penalty for short queries
+                term_overlap_ratio *= 0.8
         
         # Method 2: Use chunk similarity scores
         chunk_similarities = []

@@ -3,7 +3,8 @@ import pytesseract
 import cv2
 import numpy as np
 import os
-from typing import Literal
+from typing import Literal, Optional, Callable, Dict, Any
+
 from app.components.document_processing.services.table_detection import detect_tables_with_yolo
 from app.components.document_processing.ocr_config import OCR_LANG, OCR_CONFIG_EXTRA
 
@@ -135,7 +136,11 @@ def extract_text_from_pdf(file_path: str) -> tuple:
             text += f"\n\n--- PAGE {page_num} ---\n{page_text}"
     return text, len(pdf.pages)
 
-def process_ocr_for_images_with_tables(images, force_layout_analysis: bool = False) -> tuple:
+def process_ocr_for_images_with_tables(
+    images, 
+    force_layout_analysis: bool = False,
+    progress_callback: Optional[Callable[[str, float, Optional[Dict[str, Any]]], None]] = None
+) -> tuple:
     """
     OCR pipeline with:
     - Table detection
@@ -147,9 +152,37 @@ def process_ocr_for_images_with_tables(images, force_layout_analysis: bool = Fal
 
     extracted_text = ""
     page_count = 0
+    total_images = len(images) if images else 1
+
+     # Fixed progress ranges
+    START_PERCENT = 12.0  # Start of OCR phase
+    END_PERCENT = 40.0     # End of OCR phase (before "Completed OCR Extraction")
+    RANGE = END_PERCENT - START_PERCENT
+
+    PROGRESS_PER_PAGE = RANGE / total_images
 
     for idx, pil_img in enumerate(images):
         page_count += 1
+        
+        # Calculate base progress for this page
+        page_base = START_PERCENT + (idx * PROGRESS_PER_PAGE)
+        
+        # Layout analysis gets 40% of this page's allocation
+        # OCR extraction gets 60% of this page's allocation
+        layout_share = PROGRESS_PER_PAGE * 0.4
+        ocr_share = PROGRESS_PER_PAGE * 0.6
+
+        layout_progress = page_base + (layout_share * 0.5)  # Mid-point of layout share
+        ocr_progress = page_base + layout_share + (ocr_share * 0.5)  # After layout
+
+        if progress_callback:
+            details = {
+                "current_page": page_count,
+                "total_pages": total_images,
+                "current_action": f"Layout analysis page {page_count} of {total_images}"
+            }
+
+            progress_callback("Layout Analysis", layout_progress, details)
 
         img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -198,6 +231,16 @@ def process_ocr_for_images_with_tables(images, force_layout_analysis: bool = Fal
         # -------------------------------------
         # 5️⃣ OCR TEXT BLOCKS IN ORDER
         # -------------------------------------
+        if progress_callback:
+            details = {
+                "current_page": page_count,
+                "total_pages": total_images,
+                "current_action": f"OCR extraction page {page_count} of {total_images}",
+                "tables_detected": num_tables,
+            }
+
+            progress_callback("OCR Extraction", ocr_progress, details)
+
         page_text = ""
 
         if reading_order:
@@ -238,7 +281,7 @@ def process_ocr_for_images_with_tables(images, force_layout_analysis: bool = Fal
             table_crop = gray[y1:y2, x1:x2]
 
             logger.debug("TESSDATA_PREFIX: %s", os.environ.get("TESSDATA_PREFIX"))
-            
+
             table_config = (
                 "--oem 1 "
                 "--psm 6 "

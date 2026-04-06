@@ -1,7 +1,9 @@
 # SinhalaLearn - Sinhala Ed Assistant 📚🇱🇰
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.123.x-green)](https://fastapi.tiangolo.com/) [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/) [![Docker](https://img.shields.io/badge/Docker-Compose-informational)](https://docs.docker.com/compose/) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.x-blue)](https://www.postgresql.org/) [![Qdrant](https://img.shields.io/badge/Qdrant-1.12.x-orange)](https://qdrant.tech/)
+
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.123.x-green)](https://fastapi.tiangolo.com/) [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/) [![Docker](https://img.shields.io/badge/Docker-Compose-informational)](https://docs.docker.com/compose/) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.x-blue)](https://www.postgresql.org/)
 
 ## Table of Contents
+
 - [Project Structure](#project-structure)
 - [Team Responsibilities](#team-responsibilities)
 - [Component Workflows](#component-workflows-detailed-descriptions)
@@ -20,7 +22,7 @@ This project combines **mobile learning apps**, **AI services (OCR, STT, RAG, gr
 
 ---
 
-##  Project Structure
+## Project Structure
 
 ```sinhala-ed-assistant/
 ├─ mobile/ # Flutter mobile app for students and teachers
@@ -153,7 +155,6 @@ This module retrieves relevant passages from teacher materials and produces sour
 
 4. **Hybrid Retrieval**
    The system performs:
-
    - **BM25 retrieval** for keyword-exact passages
    - **Dense retrieval** for semantic matching
    - **Re-ranking** using pseudo-questions (via QuIM-style method)
@@ -163,7 +164,6 @@ This module retrieves relevant passages from teacher materials and produces sour
 
 6. **Answer / Summary Generation**
    The model generates:
-
    - **Source-bound answer**, or
    - **Condensed summary**, depending on user intent.
 
@@ -186,7 +186,6 @@ This module handles Sinhala voice questions with accent-aware processing.
 
 3. **Intent Classification**
    The system identifies whether the user requests:
-
    - a direct answer
    - or a summary.
 
@@ -218,14 +217,12 @@ This module grades student answers based on semantic similarity to teacher-provi
 
 4. **Embedding Generation**
    Embeddings are produced for:
-
    - the student answer
    - the expected answer
    - the key points from teacher notes
 
 5. **Semantic Comparison**
    The system checks:
-
    - matched concepts
    - partially correct ideas
    - missing points
@@ -233,7 +230,6 @@ This module grades student answers based on semantic similarity to teacher-provi
 
 6. **Rubric-Based Evaluation**
    Scores are calculated based on:
-
    - coverage
    - accuracy
    - clarity
@@ -241,7 +237,6 @@ This module grades student answers based on semantic similarity to teacher-provi
 
 7. **Feedback Generation**
    The system produces:
-
    - question-level breakdown
    - suggestions for improvement
    - overall score
@@ -510,29 +505,30 @@ Features include:
 
 ---
 
-# *⚙️ Technologies Used*
+# _⚙️ Technologies Used_
 
-### *Mobile*
+### _Mobile_
 
 - Flutter
 - Provider / Riverpod
 - Firebase (future enhancement)
 
-### *Backend*
+### _Backend_
 
 - FastAPI
 - Python
 - Tesseract OCR
 - Whisper ASR
 - SinBERT / XLM-R embeddings
-- Qdrant / FAISS (vector search)
+- PostgreSQL pgvector / FAISS (vector search)
 
-### *Infrastructure*
+### _Infrastructure_
 
 - Docker
 - Docker Compose
 
 ### **Other Libraries**
+
 - pdf2image, pdfplumber, pytesseract, torch, numpy, rank-bm25, passlib, python-jose, alembic, dotenv, pydantic_settings, psycopg2, librosa
 
 ---
@@ -573,19 +569,21 @@ Changes are merged into `main` through reviewed Pull Requests.
 # ** Running the Backend**
 
 ```
-cd api
-pip install -r requirements.txt
+python -m pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
 ## Configuration
+
 Create a `.env` file in the project root with your secrets and environment variables. Example:
+
 ```
 DATABASE_URL=postgresql://user:password@localhost:5432/sinlearn
 GOOGLE_API_KEY=your-google-api-key
 FIREBASE_SERVICE_ACCOUNT=config/firebase_service_account.json
 FIREBASE_BUCKET_NAME=your-bucket-name
 ```
+
 See `app/core/config.py` for all supported environment variables.
 
 ---
@@ -599,7 +597,9 @@ flutter run
 ```
 
 ## API Endpoints
+
 The backend exposes REST endpoints for all major features. Key endpoints include:
+
 - `POST /api/v1/auth/signup` — Register new user
 - `POST /api/v1/auth/signin` — Login
 - `POST /api/v1/auth/signout` — Logout
@@ -620,7 +620,7 @@ The backend exposes REST endpoints for all major features. Key endpoints include
 - `POST /api/v1/evaluation/start` — Start evaluation
 - `POST /api/v1/evaluation/start/stream` — Start evaluation (streamed)
 - `GET /api/v1/evaluation/answers/:answerDocumentId/result` — Get evaluation result
-See `app/api/v1/router.py` for the full list of endpoints and their tags.
+  See `app/api/v1/router.py` for the full list of endpoints and their tags.
 
 ---
 
@@ -628,27 +628,29 @@ See `app/api/v1/router.py` for the full list of endpoints and their tags.
 
 All PP1 materials including:
 
-  are submitted separately following academic guidelines.
+are submitted separately following academic guidelines.
 
 They are **not** stored inside this repository to keep the codebase light and organized.
 
 ## Troubleshooting
+
 - **Blank UI / stuck loading**: Confirm backend is running and reachable at configured URL.
 - **CORS errors**: Ensure CORS is enabled for your frontend origin in FastAPI settings.
-- **Database errors**: Check PostgreSQL and Qdrant containers are running and accessible.
+- **Database errors**: Check PostgreSQL container is running and accessible.
 - **Uploads failing**: Backend must support `multipart/form-data` for uploads.
 - **Auth issues**: Verify token refresh endpoint and JWT secret configuration.
 
 ---
 
-# *👤 Authors*
+# _👤 Authors_
 
-- Sinhala Document Processing: *Ranaweera P.H.K (IT22233452)*
-- RAG Q&A Module: *Jayananda L.V.O.R (IT22161406)*
-- Voice Q&A Module: *Sathsara T.T.D (IT22362476)*
-- Automatic Answer Evaluation: *Lokuhewage M .M (IT22003478)*
+- Sinhala Document Processing: _Ranaweera P.H.K (IT22233452)_
+- RAG Q&A Module: _Jayananda L.V.O.R (IT22161406)_
+- Voice Q&A Module: _Sathsara T.T.D (IT22362476)_
+- Automatic Answer Evaluation: _Lokuhewage M .M (IT22003478)_
 
 ---
+
 For questions or contributions, please open an issue or contact the authors.
 
 ---

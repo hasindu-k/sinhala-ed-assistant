@@ -5,7 +5,7 @@ from uuid import UUID
 from decimal import Decimal
 from sqlalchemy.orm import Session, joinedload
 
-from app.shared.models.answer_evaluation import AnswerDocument, EvaluationResult, QuestionScore
+from app.shared.models.answer_evaluation import AnswerDocument, EvaluationResult, QuestionScore, StudentAnswer
 from app.shared.models.question_papers import SubQuestion
 
 
@@ -105,7 +105,8 @@ class AnswerEvaluationRepository:
         awarded_marks: Decimal,
         sub_question_id: Optional[UUID] = None,
         question_id: Optional[UUID] = None,
-        feedback: Optional[str] = None
+        feedback: Optional[str] = None,
+        student_answer: Optional[str] = None
     ) -> QuestionScore:
         """Create a score for a question or sub-question."""
         question_score = QuestionScore(
@@ -113,12 +114,32 @@ class AnswerEvaluationRepository:
             sub_question_id=sub_question_id,
             question_id=question_id,
             awarded_marks=awarded_marks,
-            feedback=feedback
+            feedback=feedback,
+            student_answer=student_answer
         )
         self.db.add(question_score)
         self.db.commit()
         self.db.refresh(question_score)
         return question_score
+
+    def create_student_answer(
+        self,
+        answer_document_id: UUID,
+        answer_text: str,
+        question_id: Optional[UUID] = None,
+        sub_question_id: Optional[UUID] = None
+    ) -> StudentAnswer:
+        """Create a student answer record."""
+        sa = StudentAnswer(
+            answer_document_id=answer_document_id,
+            question_id=question_id,
+            sub_question_id=sub_question_id,
+            answer_text=answer_text
+        )
+        self.db.add(sa)
+        self.db.commit()
+        self.db.refresh(sa)
+        return sa
     
     def get_question_scores_by_result(
         self,

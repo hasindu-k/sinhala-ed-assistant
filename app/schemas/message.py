@@ -77,7 +77,7 @@ class MessageResponse(BaseModel):
     resource_ids: list[UUID] = []
     parent_msg_id: Optional[UUID] = None
     safety_summary: Optional[MessageSafetySummary] = None
-    
+    has_processing_log: bool = False
 
     class Config:
         from_attributes = True
@@ -220,6 +220,22 @@ class MessageDetail(BaseModel):
     attachments: list[MessageAttachmentResponse] = []
     context_chunks: list[MessageContextChunkResponse] = []
     safety_report: Optional[MessageSafetyReportResponse] = None
+
+    class Config:
+        from_attributes = True
+
+
+# Processing Log Schema
+class ProcessingLogResponse(BaseModel):
+    id: UUID
+    resource_id: UUID
+    user_id: Optional[UUID] = None
+    session_id: Optional[UUID] = None
+    message_id: Optional[UUID] = None
+    stage: str
+    progress: float
+    details: Optional[Any] = None
+    timestamp: datetime
 
     class Config:
         from_attributes = True

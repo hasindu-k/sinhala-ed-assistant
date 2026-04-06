@@ -18,7 +18,8 @@ from app.schemas.message import (
     MessageContextChunkResponse,
     MessageSafetyReportResponse,
     XAIExplanationResponse,
-    GenerateResponseRequest
+    GenerateResponseRequest,
+    ProcessingLogResponse,
 )
 from app.schemas.resource import ResourceProcessResponse
 from app.services.message_service import MessageService
@@ -33,10 +34,13 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
 from app.shared.models.message import Message
-from typing import List
+from app.routers.websockets import manager
+import asyncio
+from typing import List, Optional, Dict, Any
 from app.services.safety_summary_service import SafetySummaryService
 from fastapi import status
 from app.schemas.safety_summary import SafetySummaryResponse
+from app.repositories.processing_log_repository import ProcessingLogRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -419,7 +423,7 @@ def detach_files_from_message(
 
 
 @router.post("/{message_id}/attachments/process", response_model=List[ResourceProcessResponse])
-def process_message_attachments(
+async def process_message_attachments(
     message_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -459,9 +463,88 @@ def process_message_attachments(
             raise ValueError("No attachments found for this message or session")
 
         resource_service = ResourceService(db)
+        processing_log_repo = ProcessingLogRepository(db)
         results = []
-        for resource_id in resource_ids:
-            result = resource_service.process_resource(resource_id, current_user.id)
+        loop = asyncio.get_running_loop()
+
+        total_resources = len(resource_ids)
+
+        progress_log = []
+
+        for idx, resource_id in enumerate(resource_ids):
+            # Capture loop variables for the callback closure
+            current_res_id = resource_id
+            current_index = idx + 1
+            progress_log.clear()
+
+            def progress_callback(
+                stage: str,
+                progress: float,
+                details: Optional[Dict[str, Any]] = None,
+                _res_id=current_res_id,
+                _index=current_index,
+            ):
+                event = {
+                    "stage": stage,
+                    "progress": progress,
+                    "details": details,
+                }
+                progress_log.append(event)
+
+                # Persist to database
+                try:
+                    processing_log_repo.create(
+                        resource_id=_res_id,
+                        stage=stage,
+                        progress=progress,
+                        details=details,
+                        user_id=current_user.id,
+                        session_id=message.session_id,
+                        message_id=message_id,
+                    )
+                    db.commit()
+                except Exception as log_err:
+                    logger.warning(
+                        "Failed to persist processing log | resource=%s stage=%s: %s",
+                        _res_id, stage, log_err,
+                    )
+                    db.rollback()
+
+                logger.info(
+                    "Progress update | user=%s resource=%s stage=%s progress=%s",
+                    current_user.id,
+                    _res_id,
+                    stage,
+                    progress,
+                )
+
+                asyncio.run_coroutine_threadsafe(
+                    manager.send_personal_message(
+                        {
+                            "type": "processing_progress",
+                            "resource_id": str(_res_id),
+                            "message_id": str(message_id),
+                            "stage": stage,
+                            "progress": round(progress, 1),
+                            "document_index": _index,
+                            "total_documents": total_resources,
+                            "details": details,
+                        },
+                        str(current_user.id),
+                    ),
+                    loop,
+                )
+
+            # Run synchronous processing in a thread pool to allow async WebSocket messages
+            result = await asyncio.to_thread(
+                resource_service.process_resource,
+                resource_id=resource_id,
+                user_id=current_user.id,
+                progress_callback=progress_callback,
+            )
+
+            result["processing_steps"] = progress_log.copy()
+
             results.append(result)
 
         logger.info(
@@ -605,6 +688,8 @@ def get_message_history(
 
         # Build response including resource_ids and safety summary per message
         summary_service = SafetySummaryService(db)
+        log_repo = ProcessingLogRepository(db)
+        message_ids_with_logs = log_repo.get_message_ids_with_logs([m.id for m in messages])
         response_messages = []
         for message in messages:
             resource_ids = [att.resource_id for att in getattr(message, "attachments", [])]
@@ -636,6 +721,7 @@ def get_message_history(
                 "resource_ids": resource_ids,
                 "parent_msg_id": message.parent_msg_id,
                 "safety_summary": safety_summary,
+                "has_processing_log": message.id in message_ids_with_logs,
             })
         
         logger.debug(f"Retrieved {len(messages)} messages with attachments for session {session_id} by user {current_user.id}")
@@ -957,4 +1043,47 @@ def get_message_safety_summary(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve safety summary",
+        )
+
+
+@router.get(
+    "/{message_id}/processing-logs",
+    response_model=List[ProcessingLogResponse],
+)
+def get_message_processing_logs(
+    message_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all processing logs for a specific message.
+    """
+    try:
+        message_service = MessageService(db)
+        message_service.get_message_with_ownership_check(message_id, current_user.id)
+
+        repo = ProcessingLogRepository(db)
+        logs = repo.get_logs_for_message(message_id)
+        return logs
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error retrieving processing logs for message {message_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve processing logs",
         )

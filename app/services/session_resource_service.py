@@ -13,14 +13,20 @@ class SessionResourceService:
     def __init__(self, db: Session):
         self.repository = SessionResourceRepository(db)
 
-    def attach_resource_to_session(self, session_id: UUID, resource_id: UUID):
-        return self.repository.attach_resource_to_session(session_id, resource_id)
+    def attach_resource_to_session(self, session_id: UUID, resource_id: UUID, label: str = None):
+        return self.repository.attach_resource_to_session(session_id, resource_id, label=label)
 
     def get_session_resources(self, session_id: UUID) -> List:
         return self.repository.get_session_resources(session_id)
 
     def get_resources_by_session_id(self, session_id: UUID) -> List:
         return self.repository.get_resources_by_session_id(session_id)
+
+    def get_session_resource_by_label(self, session_id: UUID, label: str):
+        return self.repository.get_session_resource_by_label(session_id, label)
+
+    def upsert_session_resource(self, session_id: UUID, resource_id: UUID, label: str):
+        return self.repository.upsert_session_resource(session_id, resource_id, label)
 
     def detach_all_resources(self, session_id: UUID) -> int:
         return self.repository.delete_resources_for_session(session_id)
