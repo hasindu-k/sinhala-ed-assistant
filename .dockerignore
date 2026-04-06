@@ -1,27 +1,157 @@
+# Git
 .git
 .gitignore
-__pycache__
-**/__pycache__
+.gitattributes
+
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
 *.pyc
 *.pyo
 *.pyd
-.pytest_cache
-.mypy_cache
+*.so
+*.dylib
+*.dll
+.Python
+*.egg-info/
+*.egg
+dist/
+build/
+develop-eggs/
+downloads/
+eggs/
+parts/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
 
+# Virtual environments
 .venv
 venv
 env
+ENV
+env.bak
+venv.bak
 
+# Environment files
 .env
 .env.*
 !.env.example
+.env.production
+.env.local
 
-logs
-uploads
+# Testing
+.pytest_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+.htmlcov/
+.tox/
+.hypothesis/
+.benchmarks/
+coverage.xml
+*.cover
+*.log
 
-tests
-*.ipynb
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-*
+.project
+.pydevproject
 
+# Docker
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+*.dockerignore
+
+# Application specific
+logs/
+log/
+uploads/
+temp/
+tmp/
+downloads/
+models/
+*.db
+*.sqlite
+*.sqlite3
+
+# ML/AI models (especially large files)
 *.pt
+*.pth
+*.bin
+*.onnx
+*.h5
+*.keras
+*.pb
+*.tflite
+*.joblib
+*.pickle
+*.pkl
+
+# Specific model files you mentioned
 utils/table_model.pt
 utils/yolov8m-doclaynet.pt
+models/*.pt
+models/*.pth
+**/*.pt
+**/*.pth
+
+# Document files
+*.pdf
+*.docx
+*.doc
+*.xlsx
+*.pptx
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.mp3
+*.wav
+*.mp4
+*.avi
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data files
+data/
+datasets/
+*.csv
+*.json
+*.xml
+*.yaml
+!.pre-commit-config.yaml
+!.github/workflows/*.yaml
+
+# Frontend/static assets (if you have them)
+static/
+assets/
+*.css
+*.js
+*.map
+
+# Backup files
+*.bak
+*.backup
+*.tmp
+*.temp
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Secrets and keys
+*.key
+*.pem
