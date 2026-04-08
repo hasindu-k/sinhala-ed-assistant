@@ -4,10 +4,11 @@ import logging
 import re
 import json
 import time
+import math
 from math import floor
 from uuid import UUID
 from typing import Dict, Any, List, Tuple, Optional, Callable
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -89,6 +90,18 @@ class GradingService:
                     return part
 
         return 'Unknown'
+
+    def _resolve_question_type_for_target(self, target, part_name: Optional[str] = None, max_marks: Optional[int] = None) -> Optional[str]:
+        qtype = getattr(target, "question_type", None)
+        if qtype:
+            return qtype
+
+        normalized_part = str(part_name or self._resolve_part_name(target) or "").lower().replace(" ", "_")
+        if normalized_part == "paper_ii":
+            return "structured" if (max_marks or 0) <= 6 else "essay"
+        if normalized_part == "paper_i":
+            return "short"
+        return None
 
     def _iter_all_subquestions(self, sub_questions: List[SubQuestion]):
         for sub_question in sub_questions or []:
@@ -368,8 +381,13 @@ class GradingService:
             target_id = getattr(target, 'id', None)
             display_number = self._resolve_display_number(target, key)
             part_name = self._resolve_part_name(target)
+            max_marks = self._resolve_max_marks(target)
+            question_type = self._resolve_question_type_for_target(target, part_name=part_name, max_marks=max_marks)
 
-            logger.info(f"Processing question {key} -> ID: {target_id} (Part: {part_name}, Label: {display_number})")
+            logger.info(
+                f"Processing question {key} -> ID: {target_id} "
+                f"(Part: {part_name}, Label: {display_number}, QType: {question_type})"
+            )
 
             if target_id in seen_question_ids or key in seen_keys:
                 logger.warning(f"Skipping duplicate mapping for question: {key} (ID: {target_id})")
@@ -382,7 +400,6 @@ class GradingService:
             seen_question_ids.add(target_id)
             seen_keys.add(key)
 
-            max_marks = self._resolve_max_marks(target)
             # Use Gemini-extracted ref (primary) with BM25 fallback
             reference_text = gemini_ref_map.get(key) or self._get_reference_context(target, syllabus_text, rubric_text)
 
@@ -403,6 +420,7 @@ class GradingService:
                 reference_text=reference_text,
                 weights=rubric_weights,
                 max_marks=max_marks,
+                question_type=question_type,
                 student_emb=s_emb,
                 reference_emb=r_emb
             )
@@ -540,7 +558,16 @@ class GradingService:
                 # Gemini output is NOT read here for marks under any circumstance.
                 # -------------------------------------------------------
                 system_ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
-                final_snapped_ratio = self._apply_discrete_bands(system_ratio, item["max_marks"])
+                resolved_question_type = self._resolve_question_type_for_target(
+                    target,
+                    part_name=raw_part,
+                    max_marks=item["max_marks"],
+                )
+                final_snapped_ratio = self._apply_discrete_bands(
+                    system_ratio,
+                    item["max_marks"],
+                    resolved_question_type,
+                )
                 final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
                 # Feedback text from Gemini (text only, never marks)
                 meaning_data = eval_data_map.get(item["key"], {})
@@ -976,6 +1003,53 @@ class GradingService:
         return self._sinhala_sigmoid_boost(combined_sim, max_marks)
 
 
+    def _normalize_question_type(self, question_type: Optional[str], max_marks: int) -> str:
+        qtype = str(question_type or "").strip().lower()
+        if qtype in {"mcq", "multiple_choice"}:
+            return "mcq"
+        if qtype in {"short", "short_answer"}:
+            return "short"
+        if qtype in {"essay", "long", "long_answer"}:
+            return "essay"
+        if qtype in {"structured", "structured_answer"}:
+            return "structured"
+        return "essay" if max_marks > 2 else "short"
+
+
+    def _resolve_scoring_mode(self, question_type: Optional[str], max_marks: int) -> str:
+        normalized = self._normalize_question_type(question_type, max_marks)
+        if normalized in {"mcq", "short"}:
+            return "short"
+        if normalized == "structured" and max_marks <= 2:
+            return "short"
+        if normalized == "structured":
+            return "structured"
+        return "essay"
+
+
+    def _normalize_active_weights(self, weights: Dict[str, float], scoring_mode: str) -> Dict[str, float]:
+        default_by_mode = {
+            "short": {"semantic": 0.80, "relevance": 0.20},
+            "structured": {"semantic": 0.35, "coverage": 0.45, "relevance": 0.20},
+            "essay": {"semantic": 0.40, "coverage": 0.40, "relevance": 0.20},
+        }
+        defaults = default_by_mode[scoring_mode]
+        rubric_base = {k: float(weights.get(k, v)) for k, v in defaults.items()}
+        total = sum(v for v in rubric_base.values() if v > 0)
+        if total <= 0:
+            return defaults
+
+        rubric_norm = {k: v / total for k, v in rubric_base.items()}
+        # Blend rubric guidance with mode defaults so a generic rubric does not
+        # overpower the scoring characteristics of short vs structured answers.
+        blended = {
+            key: (defaults[key] * 0.5) + (rubric_norm[key] * 0.5)
+            for key in defaults
+        }
+        blend_total = sum(blended.values())
+        return {k: v / blend_total for k, v in blended.items()}
+
+
     def _sinhala_sigmoid_boost(self, sim: float, max_marks: int = 2) -> float:
         """
         Maps XLM-R cosine similarity → [0, 1] score.
@@ -1000,7 +1074,7 @@ class GradingService:
     # ----------------------------------------------------------
     # MARKING BANDS
     # ----------------------------------------------------------
-    def _apply_discrete_bands(self, ratio: float, max_marks: int) -> float:
+    def _apply_discrete_bands(self, ratio: float, max_marks: int, question_type: Optional[str] = None) -> float:
         """
         Snaps the continuous system_score_ratio to clean 0.5 mark steps.
 
@@ -1011,8 +1085,9 @@ class GradingService:
         # New essay calibration: do not auto-promote essays to full marks from
         # merely "good" similarity. Paper II should keep separation between
         # partial, good, and excellent answers.
-        high_threshold = 0.78 if max_marks <= 2 else 0.97
-        low_threshold = 0.20 if max_marks <= 2 else 0.15
+        scoring_mode = self._resolve_scoring_mode(question_type, max_marks)
+        high_threshold = 0.78 if scoring_mode == "short" else 0.995
+        low_threshold = 0.20 if scoring_mode == "short" else 0.15
 
         if ratio >= high_threshold: return 1.0
         if ratio < low_threshold: return 0.0
@@ -1021,8 +1096,9 @@ class GradingService:
 
         # Always use 0.5 mark steps to avoid inflation from rounding
         step = Decimal("0.5")
+        rounding_mode = ROUND_HALF_UP if scoring_mode == "short" else ROUND_DOWN
         snapped_marks = (Decimal(str(actual_marks)) / step).quantize(
-            Decimal("1"), rounding=ROUND_HALF_UP
+            Decimal("1"), rounding=rounding_mode
         ) * step
 
         final_ratio = float(snapped_marks / Decimal(str(max_marks)))
@@ -1406,7 +1482,14 @@ Return ONLY a valid JSON object mirroring the keys provided.
             logger.error(f"[OCR_CLEAN] Failed to batch clean OCR: {e}")
             return mapped_answers
 
-    def _calculate_coverage_score(self, student_text: str, reference_text: str, max_marks: int, student_emb=None):
+    def _calculate_coverage_score(
+        self,
+        student_text: str,
+        reference_text: str,
+        max_marks: int,
+        student_emb=None,
+        scoring_mode: str = "essay",
+    ):
         """
         Measures how many key concepts from the reference the student covered.
 
@@ -1443,16 +1526,19 @@ Return ONLY a valid JSON object mirroring the keys provided.
 
         # Threshold: how similar must a sentence be to count as "covered"
         # Relaxed from 0.32 to 0.28 to reward pooled concise bullet items without dilution.
-        threshold = 0.28 if max_marks <= 2 else 0.28
+        threshold = 0.34 if scoring_mode == "structured" else 0.28
         hits = int((sims >= threshold).sum().item())
 
-        # KEY FIX: Cap denominator to expected concept count for this question.
-        # Ensure deep essays (e.g. 18 marks) don't unreasonably penalize excellent answers
-        # by expecting 36 discrete points to score a 1.0 coverage. Cap to max_marks * 0.6.
-        expected_concepts = min(len(sentences), max_marks * 0.60)
+        # Use an adaptive concept target rather than raw sentence count.
+        # This keeps concise marking-schema references from over-rewarding one-sentence
+        # matches, while avoiding impossible coverage expectations for long references.
+        if scoring_mode == "structured":
+            expected_concepts = min(len(sentences), max(1, max_marks))
+        else:
+            expected_concepts = min(len(sentences), max(1, math.ceil(max_marks / 2)))
         ratio = hits / max(1, expected_concepts)
 
-        return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
+        return min(1.0, ratio), f"{hits}/{expected_concepts} expected concepts covered ({len(sentences)} ref sentences)"
 
 
     # ----------------------------------------------------------
@@ -1583,14 +1669,7 @@ Return ONLY a valid JSON object mirroring the keys provided.
                 
         ratio = spoken_count / len(words)
 
-        # Moderated punishing modifiers for informal essays to prevent catastrophic score drops
-        if ratio > 0.15:
-            return 0.80
-        elif ratio > 0.08:
-            return 0.90
-        elif ratio > 0.04:
-            return 0.95
-
+        logger.info(f"[STYLE_SIGNAL] spoken_ratio={ratio:.3f} max_marks={max_marks}")
         return 1.0
 
 
@@ -1600,6 +1679,7 @@ Return ONLY a valid JSON object mirroring the keys provided.
         reference_text: str,
         weights: Dict[str, float],
         max_marks: int = 1,
+        question_type: Optional[str] = None,
         student_emb=None,
         reference_emb=None
     ) -> float:
@@ -1615,15 +1695,19 @@ Return ONLY a valid JSON object mirroring the keys provided.
         if not reference_text or not student_text:
             return 0.0
 
+        scoring_mode = self._resolve_scoring_mode(question_type, max_marks)
+        normalized_qtype = self._normalize_question_type(question_type, max_marks)
+        active_weights = self._normalize_active_weights(weights, scoring_mode)
+
         semantic = self._semantic_similarity(student_text, reference_text, student_emb, reference_emb, max_marks)
         
         # KEY FIX: Exact Match Boost for Short Answers (MCQs)
         # If student answer matches reference exactly (ignoring dots/spaces), give full marks.
-        if max_marks <= 2:
+        if scoring_mode == "short":
             s_clean = str(student_text).strip().replace(".", "").replace(" ", "").lower()
             r_clean = str(reference_text).strip().replace(".", "").replace(" ", "").lower()
             if s_clean == r_clean and len(s_clean) > 0:
-                logger.info(f"[EXACT_MATCH_BOOST] Q{max_marks} marks. Match: {s_clean} == {r_clean}")
+                logger.info(f"[EXACT_MATCH_BOOST] mode={scoring_mode} qtype={normalized_qtype} max_marks={max_marks} match={s_clean}")
                 return 1.0
 
         # KEY FIX: If semantic score is 0, the answer is completely off-topic.
@@ -1638,16 +1722,20 @@ Return ONLY a valid JSON object mirroring the keys provided.
             f"[SCORE_COMPONENTS] semantic={semantic:.3f} relevance={relevance:.3f} "
             f"max_marks={max_marks} | answer='{student_text[:60]}'"
         )
+        logger.info(
+            f"[SCORING_MODE] qtype={normalized_qtype} mode={scoring_mode} max_marks={max_marks} "
+            f"weights={active_weights}"
+        )
 
         # ------------------------------------------------------------------
         # ------------------------------------------------------------------
         # Paper I — Short Factual Answers (max_marks <= 2)
         # ------------------------------------------------------------------
-        if max_marks <= 2:
-            # Consistent blend for ALL short answers — no gold-standard shortcut.
-            # Semantic (80%): dominates because XLM-R structural matching is robust
-            # Relevance (20%): tied to keyword matching which is noisy in Sinhala
-            combined = (0.80 * semantic) + (0.20 * relevance)
+        if scoring_mode == "short":
+            combined = (
+                active_weights["semantic"] * semantic
+                + active_weights["relevance"] * relevance
+            )
             return float(combined)
 
         # ------------------------------------------------------------------
@@ -1657,20 +1745,16 @@ Return ONLY a valid JSON object mirroring the keys provided.
         # Relevance measures keyword overlap: does the answer use correct terms?
         # ------------------------------------------------------------------
         coverage, coverage_debug = self._calculate_coverage_score(
-            student_text, reference_text, max_marks, student_emb
+            student_text, reference_text, max_marks, student_emb, scoring_mode
         )
 
         logger.info(f"[COVERAGE] {coverage_debug} -> coverage_ratio={coverage:.3f}")
 
-        # Recalibrated blend for Paper II (Fairness Update March 2026)
-        if coverage > 0.60:
-            # High quality answer: value concepts (coverage) and keywords (relevance) more
-            e_s_w, e_c_w, e_r_w = 0.40, 0.45, 0.15
-        else:
-            # Lower quality or vague: semantic topicality is the safeguard
-            e_s_w, e_c_w, e_r_w = 0.60, 0.30, 0.10
-
-        score = (e_s_w * semantic) + (e_c_w * coverage) + (e_r_w * relevance)
+        score = (
+            active_weights["semantic"] * semantic
+            + active_weights["coverage"] * coverage
+            + active_weights["relevance"] * relevance
+        )
 
         # Apply depth penalty for very short essays
         depth_mult = self._calculate_depth_penalty(student_text, reference_text, max_marks, coverage)
@@ -1682,7 +1766,8 @@ Return ONLY a valid JSON object mirroring the keys provided.
 
         logger.info(
             f"[ESSAY_SCORE] semantic={semantic:.3f} coverage={coverage:.3f} "
-            f"relevance={relevance:.3f} depth_mult={depth_mult:.2f} style_mult={style_mult:.2f} -> score={score:.3f}"
+            f"relevance={relevance:.3f} depth_mult={depth_mult:.2f} style_mult={style_mult:.2f} "
+            f"qtype={normalized_qtype} weights={active_weights} -> score={score:.3f}"
         )
 
         return float(score)

@@ -402,14 +402,17 @@ def extract_complete_exam_data(text: str):
         logger.info("Combined exam extraction completed successfully.")
         
         # 🔒 Generic Normalization: Accept any "Paper_*" keys
-        cleaned_result = {k: v for k, v in result.items() if k.startswith("Paper_") and v is not None}
-        
-        # Log basics for debugging
-        if cleaned_result["Paper_I"]:
-            logger.info(f"Paper I Detected: {len(cleaned_result['Paper_I'].get('questions', {}))} questions")
-        if cleaned_result["Paper_II"]:
-            logger.info(f"Paper II Detected: {len(cleaned_result['Paper_II'].get('questions', {}))} questions")
-
+        cleaned_result = {
+            k: v
+            for k, v in result.items()
+            if (
+                isinstance(k, str)
+                and (k.startswith("Paper_") or k.startswith("Part_") or k.startswith("Section_"))
+                and v is not None
+            )
+        }
+        cleaned_result = _annotate_exam_structure_metadata(cleaned_result)
+        _log_detected_exam_structure(cleaned_result)
         return cleaned_result
 
     except json.JSONDecodeError:
@@ -419,6 +422,162 @@ def extract_complete_exam_data(text: str):
     except Exception as e:
         logger.error(f"❌ Error in combined extraction: {e}")
         return {}
+
+def _normalize_section_key(value: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '_', str(value or "").strip().lower()).strip('_')
+
+
+def _looks_like_mcq_question(question_data: dict) -> bool:
+    if not isinstance(question_data, dict):
+        return False
+
+    options = question_data.get("options")
+    if isinstance(options, list) and len(options) >= 2:
+        return True
+
+    q_type = str(question_data.get("type") or "").strip().lower()
+    if q_type == "mcq":
+        return True
+
+    text = str(question_data.get("text") or "")
+    option_markers = re.findall(r'[\(\[](?:[1-4]|[A-Da-d]|[අආඇඈඉ])[\)\]]', text)
+    return len(option_markers) >= 2
+
+
+def _infer_question_type_from_parsed_data(question_data: dict) -> str:
+    if not isinstance(question_data, dict):
+        return "unknown"
+
+    declared_type = str(question_data.get("type") or "").strip().lower()
+    if declared_type in {"mcq", "essay", "structured", "short"}:
+        return declared_type
+
+    if _looks_like_mcq_question(question_data):
+        return "mcq"
+
+    sub_questions = question_data.get("sub_questions")
+    if isinstance(sub_questions, dict) and sub_questions:
+        return "structured"
+
+    marks = question_data.get("marks")
+    try:
+        marks_value = int(marks) if marks is not None else None
+    except Exception:
+        marks_value = None
+
+    text = str(question_data.get("text") or "").strip()
+    word_count = len(re.findall(r'\w+', text))
+
+    if marks_value is not None:
+        if marks_value <= 2:
+            return "short"
+        if marks_value >= 8:
+            return "essay"
+        return "structured"
+
+    if word_count >= 18:
+        return "essay"
+    if word_count <= 8:
+        return "short"
+    return "structured"
+
+
+def _infer_section_type(section_key: str, paper_data: dict) -> tuple[str, dict]:
+    questions = (paper_data or {}).get("questions", {}) or {}
+    counts = {}
+
+    for q_data in questions.values():
+        q_type = _infer_question_type_from_parsed_data(q_data)
+        counts[q_type] = counts.get(q_type, 0) + 1
+
+    if not counts:
+        fallback = str(((paper_data or {}).get("config", {}) or {}).get("question_type") or "").strip().lower()
+        if fallback:
+            return fallback, {fallback: 0}
+        return "unknown", {}
+
+    non_zero_types = [q_type for q_type, count in counts.items() if count > 0]
+    if len(non_zero_types) == 1:
+        return non_zero_types[0], counts
+    return "mixed", counts
+
+
+def _infer_numbering_scope(section_index: int, questions_dict: dict) -> str:
+    question_numbers = [str(key).strip() for key in (questions_dict or {}).keys()]
+    normalized_numbers = {
+        re.sub(r'[^0-9]+', '', value)
+        for value in question_numbers
+        if re.sub(r'[^0-9]+', '', value)
+    }
+
+    if "1" in normalized_numbers:
+        return "restarts_at_1" if section_index > 0 else "starts_at_1"
+    return "custom_or_continuous"
+
+
+def _annotate_exam_structure_metadata(parsed_result: dict) -> dict:
+    annotated = {}
+
+    for section_index, (section_key, section_data) in enumerate(parsed_result.items()):
+        if not isinstance(section_data, dict):
+            annotated[section_key] = section_data
+            continue
+
+        section_copy = dict(section_data)
+        config = dict(section_copy.get("config", {}) or {})
+        questions = dict(section_copy.get("questions", {}) or {})
+
+        detected_section_type, question_type_counts = _infer_section_type(section_key, section_copy)
+        numbering_scope = _infer_numbering_scope(section_index, questions)
+
+        config["detected_section_type"] = detected_section_type
+        config["question_type_counts"] = question_type_counts
+        config["numbering_scope"] = numbering_scope
+        config["section_key_normalized"] = _normalize_section_key(section_key)
+        section_copy["config"] = config
+
+        for q_num, q_data in questions.items():
+            if not isinstance(q_data, dict):
+                continue
+            q_copy = dict(q_data)
+            q_copy["detected_question_type"] = _infer_question_type_from_parsed_data(q_copy)
+            q_copy["section_key"] = section_key
+            q_copy["numbering_scope"] = numbering_scope
+            questions[q_num] = q_copy
+
+        section_copy["questions"] = questions
+        annotated[section_key] = section_copy
+
+    return annotated
+
+
+def _log_detected_exam_structure(parsed_result: dict) -> None:
+    for section_key, section_data in (parsed_result or {}).items():
+        if not isinstance(section_data, dict):
+            continue
+
+        config = section_data.get("config", {}) or {}
+        questions = section_data.get("questions", {}) or {}
+        logger.info(
+            "[SECTION_DETECT] section=%s | type=%s | numbering_scope=%s | questions=%d | qtypes=%s",
+            section_key,
+            config.get("detected_section_type", "unknown"),
+            config.get("numbering_scope", "unknown"),
+            len(questions),
+            config.get("question_type_counts", {}),
+        )
+
+        for q_num, q_data in questions.items():
+            if not isinstance(q_data, dict):
+                continue
+            logger.info(
+                "[QUESTION_TYPE] section=%s | q=%s | detected_type=%s | marks=%s | has_subquestions=%s",
+                section_key,
+                q_num,
+                q_data.get("detected_question_type", "unknown"),
+                q_data.get("marks"),
+                bool(q_data.get("sub_questions")),
+            )
 
 ANSWER_MAPPING_PROMPT = """
 You are a STRICT answer extraction AI for Sri Lankan exam papers.
@@ -441,6 +600,8 @@ CRITICAL RULES — READ CAREFULLY
 5. **NULL if no marker found**: If you cannot find a question number marker that clearly matches a given question ID, return `null` for that ID.
 
 6. **OCR CLEANING ONLY**: Fix obvious Sinhala OCR errors. Do NOT correct the student's actual content.
+6a. **NO PARAPHRASING / NO REWRITING**: Return only text that is visibly present in the OCR. Do NOT rewrite, summarize, improve grammar, or add missing words.
+6b. **EXTRACTIVE OUTPUT ONLY**: Prefer copying the shortest exact span that still represents the student's answer.
 
 7. **NEVER INFER FROM CONTENT SIMILARITY**: If a student answer discusses the right topic but there is no visible marker for that exact question label, DO NOT map it.
 
@@ -473,6 +634,7 @@ Return a raw JSON object: {{"id": "cleaned student text", ...}}
 CRITICAL: The keys MUST BE the exact `id` string (UUID) from the structure.
 ONLY include keys for questions that the student actually ATTEMPTED.
 CRITICAL AVOID MAPPING QUESTION TEXT: If a section only contains the phrasing of the question itself, do NOT map it.
+CRITICAL: Every value must be extractive. If you cannot point to visible OCR text for it, omit it.
 
 ========================
 QUESTION STRUCTURE
@@ -493,6 +655,7 @@ Your job:
 - map the student's writing inside this one block to the given sub-question IDs only
 - return ONLY text that visibly appears in this block
 - do NOT use topic matching from outside this block
+- do NOT paraphrase or rewrite the student's answer
 
 Rules:
 1. The OCR block already belongs to main question {main_no}. Do NOT map outside this main question.
@@ -500,7 +663,9 @@ Rules:
 3. If inner sub-question markers are weak or missing, but the student clearly wrote multiple answers in sequence inside this same main-question block, split them in the same order as the provided structure.
 4. If the block only supports one sub-question answer confidently, return only that one.
 5. Copy the student's wording from the block. Only do light OCR cleanup.
-6. Do NOT invent missing answers.
+6. Return the shortest exact OCR-supported span for each sub-question, not a rewritten explanation.
+7. If a candidate requires paraphrasing or reconstruction, do NOT return it.
+8. Do NOT invent missing answers.
 
 Return raw JSON only:
 {{"uuid": "student answer text"}}
@@ -559,22 +724,24 @@ def _build_label_marker_patterns(label: str) -> list[str]:
 
     patterns = []
     normalized = _normalize_marker_text(raw_label)
-    match = re.match(r'^(\d+)(?:\(([^\)]+)\))?$', raw_label)
+    match = re.match(r'^([^\(\)\s]+)(?:\(([^\)]+)\))?$', raw_label)
 
     if match:
         main_no, sub_label = match.groups()
+        main_token = re.escape(main_no.strip())
         if sub_label:
             sub_clean = re.escape(sub_label.strip())
             patterns.extend([
-                rf'(?<!\d){re.escape(main_no)}\s*[\.\-:)]?\s*\(\s*{sub_clean}\s*\)',
-                rf'(?<!\d){re.escape(main_no)}\s*[\.\-:)]?\s*{sub_clean}(?!\w)',
+                rf'(?<!\w){main_token}\s*[\.\-:)]?\s*\(\s*{sub_clean}\s*\)',
+                rf'(?<!\w){main_token}\s*[\.\-:)]?\s*{sub_clean}(?!\w)',
                 rf'(?:(?<=\n)|(?<=\r)|^)\s*\(\s*{sub_clean}\s*\)',
                 rf'(?:(?<=\n)|(?<=\r)|^)\s*{sub_clean}[\)\.\-:]',
             ])
         else:
             patterns.extend([
-                rf'(?:(?<=\n)|(?<=\r)|^)\s*{re.escape(main_no)}[\)\.\-:\s]',
-                rf'(?<!\d){re.escape(main_no)}\s*\)',
+                rf'(?:(?<=\n)|(?<=\r)|^)\s*{main_token}[\)\.\-:\s]',
+                rf'(?<!\w){main_token}\s*\)',
+                rf'(?<!\w){main_token}\s*[\.\-:]\s*',
             ])
 
     if normalized:
@@ -594,11 +761,18 @@ def _extract_main_and_sub_label(label: str) -> tuple[str, str]:
     # New helper: split a label like `2(අ)` into its main-question number and
     # sub-question marker so we can validate nearby OCR context more flexibly.
     raw_label = str(label or "").strip()
-    match = re.match(r'^(\d+)(?:\(([^\)]+)\))?$', raw_label)
+    match = re.match(r'^([^\(\)\s]+)(?:\(([^\)]+)\))?$', raw_label)
     if not match:
         return "", ""
     main_no, sub_label = match.groups()
     return (main_no or "").strip(), (sub_label or "").strip()
+
+
+def _extract_plain_main_label_value(label: str) -> str:
+    main_label, sub_label = _extract_main_and_sub_label(label)
+    if sub_label:
+        return ""
+    return str(main_label or "").strip()
 
 
 def _looks_like_main_number_context(window_text: str, main_no: str) -> bool:
@@ -609,8 +783,8 @@ def _looks_like_main_number_context(window_text: str, main_no: str) -> bool:
 
     patterns = [
         rf'(?:(?<=\n)|(?<=\r)|^)\s*{re.escape(main_no)}[\)\.\-:\s]',
-        rf'(?<!\d){re.escape(main_no)}\s*\)',
-        rf'(?<!\d){re.escape(main_no)}\s*[\.\-:]\s*',
+        rf'(?<!\w){re.escape(main_no)}\s*\)',
+        rf'(?<!\w){re.escape(main_no)}\s*[\.\-:]\s*',
     ]
     return any(re.search(pattern, window_text, flags=re.IGNORECASE | re.MULTILINE) for pattern in patterns)
 
@@ -622,7 +796,7 @@ def _build_sub_label_variants(sub_label: str) -> list[str]:
     if not raw:
         return []
 
-    variants = {raw}
+    variants = {raw, raw.lower(), raw.upper()}
 
     # Keep only Sinhala letters for OCR-tolerant matching.
     sinhala_only = "".join(ch for ch in raw if '\u0D80' <= ch <= '\u0DFF')
@@ -777,6 +951,462 @@ def _has_main_question_block_support(source_text: str, mapped_text: str, label: 
     return False
 
 
+def _looks_like_structured_short_answer(mapped_text: str) -> bool:
+    # New heuristic for Paper I style numbered answers: these are shorter than
+    # full essay blocks, but still substantial enough that we can anchor them to
+    # a numbered OCR block safely.
+    text = str(mapped_text or "").strip()
+    normalized = _normalize_marker_text(text)
+    if len(normalized) >= 18:
+        return True
+    if len(re.findall(r'\S+', text)) >= 5:
+        return True
+    return False
+
+
+def _extract_numeric_label_value(label: str) -> int | None:
+    raw_label = str(label or "").strip()
+    match = re.match(r'^(\d+)', raw_label)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _extract_numbered_answer_blocks(
+    source_text: str,
+    expected_numbers: set[str] | None = None,
+) -> list[dict]:
+    """
+    Build a reusable OCR block index for evaluation answer sheets.
+    We prefer visible numbered starts, but allow slightly looser separators than
+    strict line starts because OCR often collapses newlines between answers.
+    """
+    text = str(source_text or "")
+    if not text.strip():
+        return []
+
+    candidate_pattern = re.compile(
+        r'(^|[\r\n]|[ \t]{2,})\s*([A-Za-z]+|\d{1,2})\s*[\)\.\-:]?(?=\s)',
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    matches = []
+    seen_starts: set[int] = set()
+
+    for match in candidate_pattern.finditer(text):
+        number = str(match.group(2) or "").strip()
+        if not number:
+            continue
+        normalized_number = number.upper() if re.fullmatch(r'[A-Za-z]+', number) else number
+        if expected_numbers and normalized_number not in expected_numbers and number not in expected_numbers:
+            continue
+
+        start = match.start(2)
+        if start in seen_starts:
+            continue
+        seen_starts.add(start)
+        matches.append((start, normalized_number))
+
+    blocks: list[dict] = []
+    for idx, (start, number) in enumerate(matches):
+        end = matches[idx + 1][0] if idx + 1 < len(matches) else len(text)
+        block_text = text[start:end].strip()
+        if not block_text:
+            continue
+        blocks.append({
+            "number": number,
+            "start": start,
+            "text": block_text,
+        })
+
+    return blocks
+
+
+def _extract_plain_numbered_blocks(source_text: str) -> list[dict]:
+    """
+    New helper for Paper I style sheets: split OCR into numbered answer blocks
+    like `1. ...`, `2) ...`, etc., so validation can anchor to the student's
+    numbering flow before looking at semantics.
+    """
+    return _extract_numbered_answer_blocks(source_text)
+
+
+def _char_ngram_overlap_ratio(text_a: str, text_b: str, n: int = 3) -> float:
+    norm_a = _normalize_marker_text(text_a)
+    norm_b = _normalize_marker_text(text_b)
+    if len(norm_a) < n or len(norm_b) < n:
+        return 0.0
+
+    ngrams_a = {norm_a[i:i + n] for i in range(len(norm_a) - n + 1)}
+    ngrams_b = {norm_b[i:i + n] for i in range(len(norm_b) - n + 1)}
+    if not ngrams_a or not ngrams_b:
+        return 0.0
+
+    return len(ngrams_a & ngrams_b) / max(1, min(len(ngrams_a), len(ngrams_b)))
+
+
+def _token_overlap_ratio(text_a: str, text_b: str) -> float:
+    tokens_a = {
+        token for token in re.findall(r'\w+', str(text_a or "").lower(), flags=re.UNICODE)
+        if len(token) >= 2
+    }
+    tokens_b = {
+        token for token in re.findall(r'\w+', str(text_b or "").lower(), flags=re.UNICODE)
+        if len(token) >= 2
+    }
+    if not tokens_a or not tokens_b:
+        return 0.0
+    return len(tokens_a & tokens_b) / max(1, min(len(tokens_a), len(tokens_b)))
+
+
+def _is_supported_by_block(block_text: str, candidate_text: str) -> bool:
+    """
+    Evaluation-only block support check for long OCR answers.
+    Exact normalized containment is ideal, but long Sinhala OCR answers often
+    drift enough that we need overlap-based acceptance inside the same detected
+    main-question block.
+    """
+    block_norm = _normalize_marker_text(block_text)
+    value_norm = _normalize_marker_text(candidate_text)
+    if len(value_norm) < 6 or not block_norm:
+        return False
+
+    if value_norm in block_norm:
+        return True
+
+    char_overlap = _char_ngram_overlap_ratio(candidate_text, block_text)
+    token_overlap = _token_overlap_ratio(candidate_text, block_text)
+
+    if len(value_norm) >= 80:
+        return char_overlap >= 0.18 or token_overlap >= 0.40
+    return char_overlap >= 0.24 or token_overlap >= 0.48
+
+
+def _extractive_units_from_block(block_text: str) -> list[str]:
+    text = str(block_text or "").strip()
+    if not text:
+        return []
+
+    normalized_lines = []
+    for line in re.split(r'[\r\n]+', text):
+        line = line.strip()
+        if not line:
+            continue
+        parts = re.split(r'\s*[ං•●▪]\s*', line)
+        for part in parts:
+            part = part.strip(" -:\t")
+            if part:
+                normalized_lines.append(part)
+    return normalized_lines or [text]
+
+
+def _extract_supported_span_from_block(block_text: str, candidate_text: str) -> str:
+    """
+    Prefer the student's OCR span over Gemini's cleaned wording.
+    When exact containment is unavailable, choose the closest OCR segment from
+    the same detected block so grading remains extractive.
+    """
+    text = str(block_text or "").strip()
+    candidate = str(candidate_text or "").strip()
+    if not text or not candidate:
+        return candidate
+
+    block_norm = _normalize_marker_text(text)
+    candidate_norm = _normalize_marker_text(candidate)
+    if candidate_norm and candidate_norm in block_norm:
+        return candidate
+
+    units = _extractive_units_from_block(text)
+    best_span = ""
+    best_score = 0.0
+
+    for start in range(len(units)):
+        combined = ""
+        for end in range(start, min(len(units), start + 3)):
+            combined = f"{combined} {units[end]}".strip()
+            char_overlap = _char_ngram_overlap_ratio(candidate, combined)
+            token_overlap = _token_overlap_ratio(candidate, combined)
+            score = max(char_overlap, token_overlap)
+            if score > best_score:
+                best_score = score
+                best_span = combined
+
+    if best_span:
+        return best_span
+    return candidate
+
+
+def _extract_supported_span_for_label(source_text: str, candidate_text: str, label: str) -> str:
+    """
+    Normalize accepted mappings back to OCR-supported spans for the specific
+    labeled answer block whenever possible.
+    """
+    source = str(source_text or "")
+    candidate = str(candidate_text or "").strip()
+    if not source or not candidate:
+        return candidate
+
+    main_label, _ = _extract_main_and_sub_label(label)
+    if main_label:
+        block_text, _ = _extract_main_question_block(source, main_label)
+        if block_text and _is_supported_by_block(block_text, candidate):
+            return _extract_supported_span_from_block(block_text, candidate)
+
+    if _is_supported_by_block(source, candidate):
+        return _extract_supported_span_from_block(source, candidate)
+
+    return candidate
+
+
+def _looks_like_subanswer_unit(unit_text: str) -> bool:
+    text = str(unit_text or "").strip()
+    if not text:
+        return False
+    norm = _normalize_marker_text(text)
+    if len(norm) < 18:
+        return False
+    if len(re.findall(r'\S+', text)) < 4:
+        return False
+    return True
+
+
+def _fill_paper_ii_subparts_from_ordered_ocr_units(
+    answer_text: str,
+    chunk: list[dict],
+    filtered_result: dict,
+    allowed_main_nos: set[str] | None = None,
+) -> None:
+    """
+    Final fast extractive fallback for Paper II:
+    if a main-answer block visibly contains multiple OCR-separated units, assign
+    those units to the remaining subparts in order without asking Gemini again.
+    """
+    subparts_by_main: dict[str, list[dict]] = {}
+    for item in chunk:
+        if not item.get("is_sub_question"):
+            continue
+        main_no = str(item.get("parent_main_label") or "")
+        if not main_no:
+            continue
+        subparts_by_main.setdefault(main_no, []).append(item)
+
+    for main_no, subparts in subparts_by_main.items():
+        if allowed_main_nos is not None and main_no not in allowed_main_nos:
+            continue
+
+        remaining_subparts = [item for item in subparts if item["id"] not in filtered_result]
+        if not remaining_subparts:
+            continue
+
+        block_text, _ = _extract_main_question_block(answer_text, main_no)
+        if not block_text:
+            continue
+
+        bullet_count = len(re.findall(r'[ං•●▪]', block_text))
+        if bullet_count < max(1, len(remaining_subparts) - 1):
+            continue
+
+        existing_norms = {
+            _normalize_marker_text(filtered_result[item["id"]])
+            for item in subparts
+            if item["id"] in filtered_result and filtered_result.get(item["id"])
+        }
+
+        candidate_units = []
+        for unit in _extractive_units_from_block(block_text):
+            unit = str(unit or "").strip()
+            unit_norm = _normalize_marker_text(unit)
+            if (
+                not _looks_like_subanswer_unit(unit)
+                or unit_norm in existing_norms
+            ):
+                continue
+            candidate_units.append(unit)
+
+        if len(candidate_units) < len(remaining_subparts):
+            continue
+
+        candidate_units = candidate_units[:len(remaining_subparts)]
+        for sub_item, unit in zip(remaining_subparts, candidate_units):
+            filtered_result[sub_item["id"]] = unit
+            logger.info(
+                "Filled missing Paper II sub-part %s from ordered OCR unit in main %s.",
+                sub_item.get("label"),
+                main_no,
+            )
+
+
+def _has_plain_number_block_support(source_text: str, mapped_text: str, label: str) -> bool:
+    """
+    New fallback for non-subquestion numbered answers such as Paper I short
+    structured responses: accept the mapping when the answer text clearly
+    appears inside the correct numbered OCR block even if the exact marker is
+    too noisy for the stricter label validator.
+    """
+    if not source_text or not mapped_text or not label:
+        return False
+
+    main_no, sub_label = _extract_main_and_sub_label(label)
+    if not main_no or sub_label:
+        return False
+
+    mapped_norm = _normalize_marker_text(mapped_text)
+    if len(mapped_norm) < 8:
+        return False
+
+    if not _looks_like_structured_short_answer(mapped_text):
+        return False
+
+    block_text, _ = _extract_main_question_block(source_text, main_no)
+    if not block_text:
+        return False
+
+    block_body = re.sub(
+        rf'^\s*{re.escape(main_no)}\s*[\)\.\-:\s]*',
+        '',
+        str(block_text),
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not block_body:
+        return False
+
+    block_norm = _normalize_marker_text(block_body)
+    overlap_ratio = _char_ngram_overlap_ratio(mapped_text, block_body)
+    token_ratio = _token_overlap_ratio(mapped_text, block_body)
+    return (
+        mapped_norm in block_norm
+        or overlap_ratio >= 0.20
+        or token_ratio >= 0.45
+    )
+
+
+def _recover_plain_number_candidates_from_blocks(
+    answer_text: str,
+    chunk: list[dict],
+    filtered_result: dict,
+    deferred_candidates: list[dict],
+) -> None:
+    """
+    Prefer anchored Paper I recovery from detected numbered OCR blocks before
+    falling back to loose document-order matching.
+    """
+    if not answer_text or not deferred_candidates:
+        return
+
+    blocks = _extract_plain_numbered_blocks(answer_text)
+    if not blocks:
+        return
+
+    blocks_by_no = {str(block.get("number")): block for block in blocks if block.get("number")}
+    chunk_by_id = {str(item.get("id")): item for item in chunk}
+
+    for candidate in deferred_candidates:
+        candidate_id = str(candidate.get("id"))
+        if candidate_id in filtered_result:
+            continue
+
+        item = chunk_by_id.get(candidate_id)
+        label_no = _extract_plain_main_label_value((item or {}).get("label"))
+        if not label_no:
+            continue
+        normalized_label_no = label_no.upper() if re.fullmatch(r'[A-Za-z]+', label_no) else label_no
+
+        block = blocks_by_no.get(str(normalized_label_no))
+        if not block:
+            continue
+
+        block_body = re.sub(
+            rf'^\s*{re.escape(str(normalized_label_no))}\s*[\)\.\-:\s]*',
+            '',
+            str(block.get("text") or ''),
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip()
+        candidate_text = str(candidate.get("text") or "").strip()
+        if not _looks_like_structured_short_answer(candidate_text):
+            continue
+
+        candidate_norm = _normalize_marker_text(candidate_text)
+        block_norm = _normalize_marker_text(block_body)
+        if len(candidate_norm) < 4 or len(block_norm) < 4:
+            continue
+
+        overlap_ratio = _char_ngram_overlap_ratio(candidate_text, block_body)
+        token_ratio = _token_overlap_ratio(candidate_text, block_body)
+        if (
+            candidate_norm in block_norm
+            or overlap_ratio >= 0.20
+            or token_ratio >= 0.45
+        ):
+            filtered_result[candidate_id] = candidate_text
+            logger.info(
+                "Recovered plain numbered answer %s from numbered OCR block %s (char_overlap=%.2f, token_overlap=%.2f).",
+                (item or {}).get("label") or candidate_id,
+                normalized_label_no,
+                overlap_ratio,
+                token_ratio,
+            )
+
+
+def _recover_plain_number_candidates_by_order(
+    answer_text: str,
+    chunk: list[dict],
+    filtered_result: dict,
+    deferred_candidates: list[dict],
+) -> None:
+    """
+    New Paper I fallback: when OCR weakens explicit number markers, recover
+    short structured answers by preserving their visible order in the answer
+    script. This only applies to plain numbered questions without sub-parts.
+    """
+    if not answer_text or not deferred_candidates:
+        return
+
+    normalized_answer = _normalize_marker_text(answer_text)
+    if not normalized_answer:
+        return
+
+    item_by_id = {str(item.get("id")): item for item in chunk}
+    candidate_by_id = {str(candidate.get("id")): candidate for candidate in deferred_candidates}
+
+    ordered_items = sorted(
+        [
+            item
+            for item in chunk
+            if not item.get("is_sub_question")
+            and _extract_numeric_label_value(item.get("label")) is not None
+        ],
+        key=lambda item: _extract_numeric_label_value(item.get("label")) or 10**9,
+    )
+    if not ordered_items:
+        return
+
+    cursor = 0
+    for item in ordered_items:
+        item_id = str(item.get("id"))
+        existing_text = filtered_result.get(item_id)
+        candidate_text = existing_text or (candidate_by_id.get(item_id) or {}).get("text")
+        candidate_norm = _normalize_marker_text(candidate_text)
+        if len(candidate_norm) < 4:
+            continue
+
+        position = normalized_answer.find(candidate_norm, cursor)
+        if position < 0:
+            continue
+
+        if item_id in candidate_by_id and item_id not in filtered_result:
+            filtered_result[item_id] = candidate_text
+            logger.info(
+                "Recovered plain numbered answer %s by ordered OCR flow fallback.",
+                item.get("label") or item_id,
+            )
+
+        cursor = position + len(candidate_norm)
+
+
 def _extract_main_question_block(source_text: str, main_no: str) -> tuple[str, int]:
     """
     New helper: isolate the OCR block that begins at a Paper II main question
@@ -785,17 +1415,17 @@ def _extract_main_question_block(source_text: str, main_no: str) -> tuple[str, i
     if not source_text or not main_no:
         return "", -1
 
+    blocks = _extract_numbered_answer_blocks(source_text)
+    for block in blocks:
+        if str(block.get("number") or "") == str(main_no):
+            return str(block.get("text") or ""), int(block.get("start", -1))
+
     source = str(source_text)
     main_patterns = [
         rf'(?:(?<=\n)|(?<=\r)|^)\s*{re.escape(main_no)}[\)\.\-:\s]',
         rf'(?<!\d){re.escape(main_no)}\s*\)',
         rf'(?<!\d){re.escape(main_no)}\s*[\.\-:]\s*',
     ]
-    numbered_answer_pattern = re.compile(
-        r'(?:(?<=\n)|(?<=\r)|^)\s*\d+\s*[\)\.\-:\s]',
-        flags=re.IGNORECASE | re.MULTILINE,
-    )
-
     best_match = None
     for pattern in main_patterns:
         match = re.search(pattern, source, flags=re.IGNORECASE | re.MULTILINE)
@@ -806,13 +1436,7 @@ def _extract_main_question_block(source_text: str, main_no: str) -> tuple[str, i
         return "", -1
 
     block_start = best_match.start()
-    tail = source[block_start + 1:]
-    next_match = numbered_answer_pattern.search(tail)
-    block_end = len(source)
-    if next_match:
-        block_end = block_start + 1 + next_match.start()
-
-    return source[block_start:block_end], block_start
+    return source[block_start:block_start + 1800], block_start
 
 
 def _find_normalized_substring_index(haystack: str, needle: str) -> int:
@@ -874,7 +1498,13 @@ def _has_marker_supported_mapping(source_text: str, mapped_text: str, label: str
     if _has_direct_marker_supported_mapping(source_text, mapped_text, label):
         return True
 
+    if _has_plain_number_block_support(source_text, mapped_text, label):
+        return True
+
     if _has_main_question_block_support(source_text, mapped_text, label):
+        return True
+
+    if _has_nearby_subquestion_support(source_text, mapped_text, label):
         return True
 
     return False
@@ -1108,17 +1738,15 @@ def _fill_paper_ii_subparts_from_main_blocks(
         if not isinstance(block_result, dict):
             continue
 
-        normalized_block = _normalize_marker_text(block_text)
         remaining_ids = {item["id"] for item in remaining_subparts}
         for key, value in block_result.items():
             if key not in remaining_ids or not value:
                 continue
 
-            value_norm = _normalize_marker_text(value)
-            if len(value_norm) < 6 or value_norm not in normalized_block:
+            if not _is_supported_by_block(block_text, value):
                 continue
 
-            filtered_result[key] = value
+            filtered_result[key] = _extract_supported_span_from_block(block_text, value)
             target = next((item for item in remaining_subparts if item["id"] == key), None)
             logger.info(
                 "Recovered Paper II sub-part %s from isolated main-question block %s.",
@@ -1172,14 +1800,13 @@ def _fill_missing_paper_ii_subparts_from_surfaced_candidates(
         }
 
         unique_candidates = {}
-        normalized_block = _normalize_marker_text(block_text)
         for candidate in raw_candidates:
             value = str(candidate.get("text") or "").strip()
             value_norm = _normalize_marker_text(value)
             if (
                 len(value_norm) < 6
                 or value_norm in existing_norms
-                or value_norm not in normalized_block
+                or not _is_supported_by_block(block_text, value)
             ):
                 continue
             unique_candidates.setdefault(value_norm, candidate)
@@ -1197,7 +1824,10 @@ def _fill_missing_paper_ii_subparts_from_surfaced_candidates(
         )
 
         for sub_item, candidate in zip(remaining_subparts, sorted_candidates):
-            filtered_result[sub_item["id"]] = candidate["text"]
+            filtered_result[sub_item["id"]] = _extract_supported_span_from_block(
+                block_text,
+                candidate["text"],
+            )
             logger.info(
                 "Filled missing Paper II sub-part %s from surfaced main-block candidate for main %s.",
                 sub_item.get("label"),
@@ -1240,6 +1870,61 @@ def _run_paper_ii_recovery_passes(
         surfaced_candidates_by_main,
         allowed_main_nos=allowed_main_nos,
     )
+    _fill_paper_ii_subparts_from_ordered_ocr_units(
+        answer_text,
+        chunk,
+        filtered_result,
+        allowed_main_nos=allowed_main_nos,
+    )
+
+
+def _detect_paper_ii_evidenced_main_nos(answer_text: str, chunk: list[dict]) -> set[str]:
+    """
+    Fast pre-pass: detect substantial numbered Paper II answer blocks directly
+    from OCR so we only invoke Gemini on mains that visibly exist.
+    """
+    main_nos = {
+        str(item.get("parent_main_label") or "")
+        for item in chunk
+        if item.get("is_sub_question") and item.get("parent_main_label")
+    }
+    evidenced: set[str] = set()
+
+    for main_no in sorted(main_nos, key=lambda value: int(value) if str(value).isdigit() else 10**9):
+        block_text, _ = _extract_main_question_block(answer_text, main_no)
+        if not block_text:
+            continue
+
+        block_body = re.sub(
+            rf'^\s*{re.escape(main_no)}\s*[\)\.\-:\s]*',
+            '',
+            str(block_text),
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip()
+        if _looks_like_full_main_answer(block_body):
+            evidenced.add(main_no)
+
+    return evidenced
+
+
+def _fast_map_paper_ii_by_main_blocks(answer_text: str, chunk: list[dict]) -> tuple[dict, set[str]]:
+    """
+    Faster Paper II path: map only the evidenced main-question blocks instead of
+    issuing one large whole-part prompt and several recovery prompts.
+    """
+    evidenced_main_nos = _detect_paper_ii_evidenced_main_nos(answer_text, chunk)
+    if not evidenced_main_nos:
+        return {}, set()
+
+    filtered_result: dict = {}
+    _fill_paper_ii_subparts_from_main_blocks(
+        answer_text,
+        chunk,
+        filtered_result,
+        allowed_main_nos=evidenced_main_nos,
+    )
+    return filtered_result, evidenced_main_nos
 
 def map_student_answers(answer_text: str, question_structure: list) -> dict:
     """
@@ -1273,6 +1958,43 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
                 chunk = part_items[i : i + batch_size]
                 logger.info("Processing batch %d for %s", (i // batch_size) + 1, part_name)
                 chunk_ids = {item["id"] for item in chunk}
+                fast_result = {}
+                evidenced_main_nos: set[str] = set()
+
+                if _is_paper_ii_part(part_name):
+                    fast_result, evidenced_main_nos = _fast_map_paper_ii_by_main_blocks(part_answer_text, chunk)
+                    evidenced_subpart_count = sum(
+                        1
+                        for item in chunk
+                        if item.get("is_sub_question")
+                        and str(item.get("parent_main_label") or "") in evidenced_main_nos
+                    )
+                    required_fast_count = max(
+                        3,
+                        (evidenced_subpart_count * 2 + 2) // 3,
+                    )
+                    if fast_result and (
+                        len(evidenced_main_nos) <= 2 or len(fast_result) >= required_fast_count
+                    ):
+                        all_mappings.update(fast_result)
+                        logger.info(
+                            "Batch %d for %s: fast main-block mapping accepted %d answers across mains %s; skipped whole-part Gemini call.",
+                            (i // batch_size) + 1,
+                            part_name,
+                            len(fast_result),
+                            sorted(evidenced_main_nos),
+                        )
+                        continue
+                    if fast_result:
+                        logger.info(
+                            "Batch %d for %s: fast main-block mapping found %d answers across mains %s, but coverage was below threshold (%d/%d); running whole-part fallback.",
+                            (i // batch_size) + 1,
+                            part_name,
+                            len(fast_result),
+                            sorted(evidenced_main_nos),
+                            len(fast_result),
+                            required_fast_count,
+                        )
                 
                 def _call_mapping(c):
                     return gemini_generate(
@@ -1299,9 +2021,11 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
 
                 if isinstance(batch_result, dict):
                     # We accept any key that the model returned, as long as it's in the original structure chunk
-                    filtered_result = {}
+                    seeded_fast_count = len(fast_result) if _is_paper_ii_part(part_name) else 0
+                    filtered_result = dict(fast_result) if _is_paper_ii_part(part_name) else {}
                     deferred_main_block_candidates = []
-                    evidenced_main_nos: set[str] = set()
+                    deferred_plain_number_candidates = []
+                    evidenced_main_nos = set(evidenced_main_nos)
                     surfaced_candidates_by_main: dict[str, list[dict]] = {}
                     for k, v in batch_result.items():
                         if k in chunk_ids and v:
@@ -1331,7 +2055,11 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
                             # but defer Paper II main-block-only hits so they can be
                             # reassigned to sub-parts in their actual OCR order.
                             if _has_direct_marker_supported_mapping(part_answer_text, v, q_label):
-                                filtered_result[k] = v
+                                filtered_result[k] = _extract_supported_span_for_label(
+                                    part_answer_text,
+                                    v,
+                                    q_label,
+                                )
                                 if q_item and q_item.get("is_sub_question"):
                                     evidenced_main_nos.add(str(q_item.get("parent_main_label") or ""))
                                 continue
@@ -1350,6 +2078,18 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
                                 })
                                 continue
 
+                            if (
+                                q_item
+                                and not q_item.get("is_sub_question")
+                                and _extract_numeric_label_value(q_label) is not None
+                                and not _is_paper_ii_part(part_name)
+                            ):
+                                deferred_plain_number_candidates.append({
+                                    "id": k,
+                                    "text": v,
+                                    "original_label": q_label,
+                                })
+
                             # Existing guard: if neither direct marker support nor
                             # the deferred Paper II main-block path applies, reject it.
                             if not _has_marker_supported_mapping(part_answer_text, v, q_label):
@@ -1360,7 +2100,11 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
                                 )
                                 continue
 
-                            filtered_result[k] = v
+                            filtered_result[k] = _extract_supported_span_for_label(
+                                part_answer_text,
+                                v,
+                                q_label,
+                            )
 
                     if _is_paper_ii_part(part_name):
                         _run_paper_ii_recovery_passes(
@@ -1371,11 +2115,24 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
                             evidenced_main_nos,
                             surfaced_candidates_by_main,
                         )
+                    else:
+                        _recover_plain_number_candidates_from_blocks(
+                            part_answer_text,
+                            chunk,
+                            filtered_result,
+                            deferred_plain_number_candidates,
+                        )
+                        _recover_plain_number_candidates_by_order(
+                            part_answer_text,
+                            chunk,
+                            filtered_result,
+                            deferred_plain_number_candidates,
+                        )
 
                     all_mappings.update(filtered_result)
                     initial_supported_count = sum(1 for result_id in batch_result.keys() if result_id in chunk_ids)
-                    recovered_count = max(0, len(filtered_result) - initial_supported_count)
-                    discarded_count = max(0, initial_supported_count - len(filtered_result) + recovered_count)
+                    recovered_count = max(0, len(filtered_result) - initial_supported_count - seeded_fast_count)
+                    discarded_count = max(0, initial_supported_count - max(0, len(filtered_result) - seeded_fast_count))
                     logger.info(
                         "Batch %d for %s: got %d/%d valid mappings (discarded %d initial outputs, recovered %d via Paper II post-pass).",
                         (i // batch_size) + 1,

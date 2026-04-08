@@ -73,6 +73,7 @@ class QuestionPaperRepository:
         question_text: str,
         max_marks: Optional[int] = None,
         part_name: Optional[str] = None,
+        question_type: Optional[str] = None,
         shared_stem: Optional[str] = None,
         inherits_shared_stem_from: Optional[str] = None,
         correct_answer: Optional[str] = None,
@@ -84,6 +85,7 @@ class QuestionPaperRepository:
             question_text=question_text,
             max_marks=max_marks,
             part_name=part_name,
+            question_type=question_type,
             shared_stem=shared_stem,
             inherits_shared_stem_from=inherits_shared_stem_from,
             correct_answer=correct_answer,
@@ -113,6 +115,7 @@ class QuestionPaperRepository:
         sub_question_text: str,
         max_marks: Optional[int] = None,
         parent_sub_question_id: Optional[UUID] = None,
+        question_type: Optional[str] = None,
         correct_answer: Optional[str] = None,
     ) -> SubQuestion:
         """Create a sub-question."""
@@ -122,6 +125,7 @@ class QuestionPaperRepository:
             sub_question_text=sub_question_text,
             max_marks=max_marks,
             parent_sub_question_id=parent_sub_question_id,
+            question_type=question_type,
             correct_answer=correct_answer,
         )
         self.db.add(sub_question)

@@ -95,6 +95,35 @@ class EvaluationWorkflowService:
         clean = re.sub(r'[().]', '', str(label)).strip().lower()
         return clean
 
+    def _infer_persisted_question_type(self, item_data: Dict[str, Any], parent_type: Optional[str] = None) -> Optional[str]:
+        detected = str((item_data or {}).get("detected_question_type") or "").strip().lower()
+        if detected:
+            return detected
+
+        has_children = bool((item_data or {}).get("sub_questions"))
+        if has_children:
+            return "structured"
+
+        marks = item_data.get("marks")
+        try:
+            marks_val = int(marks) if marks is not None else None
+        except Exception:
+            marks_val = None
+
+        if marks_val is not None:
+            if marks_val <= 2:
+                return "short"
+            if marks_val >= 8:
+                return "essay"
+
+        if parent_type in {"structured", "essay", "short", "mcq"}:
+            return parent_type
+
+        if marks_val is not None:
+            return "structured" if marks_val > 2 else "short"
+
+        return None
+
     def _find_matching_question(self, key: str, q_map: Dict[str, Any]):
         """Helper to find question/sub-question in map by key or normalized key."""
         norm = key.lower().replace(" ", "").replace(".", "").replace("(", "").replace(")", "")
@@ -837,6 +866,7 @@ class EvaluationWorkflowService:
             ))
 
         # 3. Process Question Paper
+        question_paper_ready = False
         try:
             qp_resource = self.db.query(SessionResource).filter(
                 SessionResource.session_id == chat_session_id,
@@ -846,7 +876,15 @@ class EvaluationWorkflowService:
             status_obj = None
             if qp_resource:
                 existing_qp = self.question_papers.get_question_papers_by_chat_session(chat_session_id)
+                already_parsed = False
                 if existing_qp:
+                    for qp in existing_qp:
+                        if getattr(qp, "resource_id", None) == qp_resource.resource_id:
+                            already_parsed = True
+                            question_paper_ready = True
+                            break
+
+                if already_parsed:
                     status_obj = DocumentProcessingStatus(
                         resource_id=qp_resource.resource_id,
                         role="question_paper",
@@ -856,6 +894,7 @@ class EvaluationWorkflowService:
                 else:
                     logger.info("Stream: Parsing Question Paper...")
                     self.parse_question_paper(chat_session_id, user_id)
+                    question_paper_ready = True
                     status_obj = DocumentProcessingStatus(
                         resource_id=qp_resource.resource_id,
                         role="question_paper",
@@ -888,6 +927,20 @@ class EvaluationWorkflowService:
         for res_id in answer_resource_ids:
             try:
                 self._ensure_resource_owner(res_id, user_id)
+
+                if not question_paper_ready:
+                    status_obj = DocumentProcessingStatus(
+                        resource_id=res_id,
+                        role="answer_script",
+                        status="skipped",
+                        message="Skipped because question paper parsing failed or is unavailable.",
+                    )
+                    current_step += 1
+                    yield make_event(
+                        f"Answer script {res_id} skipped",
+                        status_obj,
+                    )
+                    continue
                 
                 sessions = self.sessions.get_evaluation_sessions_by_chat_session(chat_session_id)
                 session = sessions[0] if sessions else None
@@ -1103,6 +1156,14 @@ class EvaluationWorkflowService:
                     continue  # Skip null papers
 
                 config = paper_data.get("config", {}) or {}
+                logger.info(
+                    "[SECTION_META] section=%s | detected_type=%s | numbering_scope=%s | total_questions=%s | qtypes=%s",
+                    paper_key,
+                    config.get("detected_section_type", "unknown"),
+                    config.get("numbering_scope", "unknown"),
+                    len(paper_data.get("questions", {}) or {}),
+                    config.get("question_type_counts", {}),
+                )
 
                 # 1️⃣ Create PaperConfig for this paper linked to Chat Session
                 self.paper_configs.save_config(
@@ -1120,12 +1181,23 @@ class EvaluationWorkflowService:
                 questions_dict = paper_data.get("questions", {}) or {}
                 for q_num, q_data in questions_dict.items():
                     normalized_q_num = self._normalize_question_number(q_num)
+                    logger.info(
+                        "[QUESTION_META] section=%s | q=%s | detected_type=%s | marks=%s | numbering_scope=%s | has_subquestions=%s",
+                        paper_key,
+                        normalized_q_num,
+                        q_data.get("detected_question_type", "unknown"),
+                        q_data.get("marks"),
+                        q_data.get("numbering_scope", config.get("numbering_scope", "unknown")),
+                        bool(q_data.get("sub_questions")),
+                    )
+                    question_type = self._infer_persisted_question_type(q_data)
                     question = self.question_papers.create_question(
                         question_paper_id=question_paper.id,
                         question_number=normalized_q_num,
                         question_text=q_data.get("text"),
                         max_marks=q_data.get("marks"),
                         part_name=paper_key,
+                        question_type=question_type,
                         shared_stem=q_data.get("shared_stem"),
                         inherits_shared_stem_from=q_data.get("inherits_shared_stem_from"),
                         correct_answer=q_data.get("correct_answer")
@@ -1137,12 +1209,14 @@ class EvaluationWorkflowService:
                             return
                         for label, data in sub_data.items():
                             normalized_label = self._normalize_sub_question_label(label)
+                            sub_question_type = self._infer_persisted_question_type(data, parent_type=question_type)
                             sq = self.question_papers.create_sub_question(
                                 question_id=parent_q_id,
                                 label=normalized_label,
                                 sub_question_text=data.get("text"),
                                 max_marks=data.get("marks"),
                                 parent_sub_question_id=parent_sq_id,
+                                question_type=sub_question_type,
                                 correct_answer=data.get("correct_answer")
                             )
                             # Recurse for children
