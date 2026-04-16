@@ -4,6 +4,7 @@ import json
 import logging
 import difflib
 import re
+from app.core.config import settings
 from app.services.evaluation.gemini_cost_policy import EvaluationGeminiClient
 from app.shared.ai.gemini_client import gemini_generate, gemini_generate_evaluation, gemini_generate_lightweight
 
@@ -68,6 +69,11 @@ def _repair_json(text: str) -> str:
     """Basic recovery for truncated JSON (unterminated strings/objects)."""
     text = text.strip()
     if not text: return "{}"
+
+    # Remove trailing commas before closing braces/brackets, which Gemini
+    # occasionally emits even in otherwise-valid JSON payloads.
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
+    text = re.sub(r",\s*$", "", text)
     
     # 1. Close unterminated string if it ends abruptly
     # If the last character is NOT a quote but there's an odd number of quotes in the last line
@@ -93,8 +99,148 @@ def _repair_json(text: str) -> str:
     # Append missing closers
     while stack:
         text += stack.pop()
-        
+
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
     return text
+
+
+_ROMAN_NUMERAL_MAP = {
+    "i": 1,
+    "ii": 2,
+    "iii": 3,
+    "iv": 4,
+    "v": 5,
+}
+
+
+def _roman_to_paper_key(token: str) -> str | None:
+    normalized = str(token or "").strip().lower()
+    value = _ROMAN_NUMERAL_MAP.get(normalized)
+    if value is None:
+        return None
+    return f"Paper_{normalized.upper()}"
+
+
+def _question_sort_key(label: str) -> tuple[int, str]:
+    text = str(label or "").strip()
+    match = re.search(r"\d+", text)
+    return (int(match.group()) if match else 10**9, text)
+
+
+def _question_has_sub_questions(question_data: dict) -> bool:
+    return bool((question_data or {}).get("sub_questions"))
+
+
+def _count_questions_with_subparts(questions: dict) -> int:
+    return sum(1 for q in (questions or {}).values() if _question_has_sub_questions(q))
+
+
+def _segment_exam_text_by_paper_headers(text: str) -> dict[str, str]:
+    if not text:
+        return {}
+
+    header_pattern = re.compile(
+        r"(?im)^\s*(?:"
+        r"(?:(?:paper|part|section)\s*[-: ]*\s*(?P<leading>iii|ii|iv|v|i))"
+        r"|(?:(?P<trailing>iii|ii|iv|v|i)\s*(?:paper|part|section|කොටස|භාගය))"
+        r"|(?:(?:කොටස|භාගය)\s*(?P<sinhala>iii|ii|iv|v|i))"
+        r")\b[^\n]*$"
+    )
+
+    matches = list(header_pattern.finditer(text))
+    if len(matches) < 2:
+        return {}
+
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        token = match.group("leading") or match.group("trailing") or match.group("sinhala")
+        paper_key = _roman_to_paper_key(token)
+        if not paper_key:
+            continue
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        section_text = text[start:end].strip()
+        if section_text:
+            sections[paper_key] = section_text
+    return sections
+
+
+def _prepare_exam_text_for_prompt(text: str) -> str:
+    sections = _segment_exam_text_by_paper_headers(text)
+    if len(sections) < 2:
+        return text
+
+    ordered = sorted(sections.items(), key=lambda item: _question_sort_key(item[0]))
+    blocks = [
+        f"{paper_key} SECTION (do not mix with other papers):\n{section_text}"
+        for paper_key, section_text in ordered
+    ]
+    return (
+        "The OCR text below was locally segmented by detected paper headers. "
+        "Keep every question inside its own paper section and do not move questions across sections.\n\n"
+        + "\n\n".join(blocks)
+    )
+
+
+def _normalize_extracted_exam_result(result: dict) -> dict:
+    cleaned_result: dict[str, dict] = {}
+    for paper_key, paper_data in (result or {}).items():
+        if not str(paper_key).startswith("Paper_") or not isinstance(paper_data, dict):
+            continue
+
+        questions = paper_data.get("questions", {}) or {}
+        if not isinstance(questions, dict):
+            questions = {}
+        ordered_questions = {
+            str(label): value
+            for label, value in sorted(questions.items(), key=lambda item: _question_sort_key(item[0]))
+        }
+
+        config = dict(paper_data.get("config", {}) or {})
+        config["total_questions_available"] = len(ordered_questions)
+
+        normalized_paper = dict(paper_data)
+        normalized_paper["config"] = config
+        normalized_paper["questions"] = ordered_questions
+        cleaned_result[str(paper_key)] = normalized_paper
+
+    paper_i = cleaned_result.get("Paper_I")
+    paper_ii = cleaned_result.get("Paper_II")
+    if paper_i and paper_ii:
+        paper_i_questions = dict(paper_i.get("questions", {}) or {})
+        paper_ii_questions = dict(paper_ii.get("questions", {}) or {})
+        paper_i_subparts = _count_questions_with_subparts(paper_i_questions)
+        paper_ii_subparts = _count_questions_with_subparts(paper_ii_questions)
+
+        # Heuristic repair for the common Sri Lankan split:
+        # Paper I is short-answer/no subparts, Paper II is main questions with subparts.
+        if paper_i_subparts == 0 and paper_ii_subparts >= 3:
+            migrated: dict[str, dict] = {}
+            remaining_paper_ii: dict[str, dict] = {}
+            for label, question_data in paper_ii_questions.items():
+                if _question_has_sub_questions(question_data):
+                    remaining_paper_ii[label] = question_data
+                else:
+                    migrated[label] = question_data
+
+            if migrated and remaining_paper_ii:
+                paper_i_questions.update(migrated)
+                paper_i["questions"] = {
+                    label: value
+                    for label, value in sorted(paper_i_questions.items(), key=lambda item: _question_sort_key(item[0]))
+                }
+                paper_ii["questions"] = {
+                    label: value
+                    for label, value in sorted(remaining_paper_ii.items(), key=lambda item: _question_sort_key(item[0]))
+                }
+                paper_i["config"]["total_questions_available"] = len(paper_i["questions"])
+                paper_ii["config"]["total_questions_available"] = len(paper_ii["questions"])
+                logger.warning(
+                    "Rebalanced extracted paper structure: moved %s plain questions from Paper_II to Paper_I.",
+                    len(migrated),
+                )
+
+    return cleaned_result
     
 
 # 1. Specialized Prompt for Sinhala Exam Extraction
@@ -395,9 +541,11 @@ def extract_complete_exam_data(text: str):
     try:
         logger.info("Starting combined exam extraction.")
 
+        prepared_text = _prepare_exam_text_for_prompt(text[:30000])
         response_text = gemini_generate(
-            COMBINED_EXAM_PROMPT.format(content=text[:30000]),
-            json_mode=True
+            COMBINED_EXAM_PROMPT.format(content=prepared_text),
+            json_mode=True,
+            model_name=settings.EVAL_GEMINI_QUESTION_PARSING_MODEL,
         )
 
         result = _safe_json_loads(response_text)
@@ -407,12 +555,12 @@ def extract_complete_exam_data(text: str):
         logger.info("Combined exam extraction completed successfully.")
         
         # 🔒 Generic Normalization: Accept any "Paper_*" keys
-        cleaned_result = {k: v for k, v in result.items() if k.startswith("Paper_") and v is not None}
+        cleaned_result = _normalize_extracted_exam_result(result)
         
         # Log basics for debugging
-        if cleaned_result["Paper_I"]:
+        if cleaned_result.get("Paper_I"):
             logger.info(f"Paper I Detected: {len(cleaned_result['Paper_I'].get('questions', {}))} questions")
-        if cleaned_result["Paper_II"]:
+        if cleaned_result.get("Paper_II"):
             logger.info(f"Paper II Detected: {len(cleaned_result['Paper_II'].get('questions', {}))} questions")
 
         return cleaned_result

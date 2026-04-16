@@ -75,8 +75,8 @@ class GeminiClient:
         return switched
 
     @classmethod
-    def _get_model_name(cls) -> str:
-        return MODEL_FALLBACKS[_active_model_index]
+    def _get_model_name(cls, override_model: str | None = None) -> str:
+        return override_model or MODEL_FALLBACKS[_active_model_index]
 
     @classmethod
     def _switch_to_next_model(cls) -> bool:
@@ -137,7 +137,14 @@ class GeminiClient:
         return min(30, (base_wait * (attempt + 1)) + random.uniform(1, 5))
 
     @classmethod
-    def generate_content(cls, prompt: str, max_retries: int = 15, safety_settings: list = None, json_mode: bool = False) -> dict:
+    def generate_content(
+        cls,
+        prompt: str,
+        max_retries: int = 15,
+        safety_settings: list = None,
+        json_mode: bool = False,
+        model_name: str | None = None,
+    ) -> dict:
         """
         Generate content from Gemini and return text + token usage.
         Includes rate limiting (semaphore) and retry logic (exponential backoff).
@@ -158,7 +165,7 @@ class GeminiClient:
                 client = cls.get_client()
                 with _ai_semaphore:
                     response = client.models.generate_content(
-                        model=cls._get_model_name(),
+                        model=cls._get_model_name(model_name),
                         contents=prompt,
                         config=config
                     )
@@ -181,7 +188,7 @@ class GeminiClient:
                 retry_reason = cls._classify_retry(error_msg)
 
                 if retry_reason and attempt < max_retries:
-                    if retry_reason == "model_not_found":
+                    if retry_reason == "model_not_found" and not model_name:
                         cls._switch_to_next_model()
                     else:
                         # If multiple keys are configured, rotate keys before backing off.

@@ -53,6 +53,7 @@ def gemini_generate(
             max_retries=max_retries,
             safety_settings=SAFETY_SETTINGS,
             json_mode=json_mode,
+            model_name=selected_model,
         )
         print(
             f"DEBUG: gemini_generate called (fixed version). JSON Mode: {json_mode}, Model: {selected_model}"
