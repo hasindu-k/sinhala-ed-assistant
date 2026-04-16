@@ -141,7 +141,7 @@ class GeminiClient:
         """
         Generate content from Gemini and return text + token usage.
         Includes rate limiting (semaphore) and retry logic (exponential backoff).
-        Token counting is estimated locally (no extra API round-trip).
+        Token counts are obtained from actual API response (usage_metadata).
         """
         from google.genai import types
         config = types.GenerateContentConfig(
@@ -149,9 +149,6 @@ class GeminiClient:
             response_mime_type="application/json" if json_mode else "text/plain",
             max_output_tokens=8192
         )
-
-        # Estimate prompt tokens locally — avoids one API round-trip per call
-        prompt_tokens_estimate = max(len(prompt) // 4, 1)
 
         for attempt in range(max_retries + 1):
             try:
@@ -165,13 +162,15 @@ class GeminiClient:
 
                     text = response.text or ""
 
-                    # Completion token estimation
-                    completion_tokens = max(len(text) // 4, 1)
-                    total_tokens = prompt_tokens_estimate + completion_tokens
+                    # Get actual token counts from API response
+                    usage = response.usage_metadata
+                    prompt_tokens = usage.prompt_token_count if usage else 0
+                    completion_tokens = usage.candidates_token_count if usage else 0
+                    total_tokens = usage.total_token_count if usage else 0
 
                     return {
                         "text": text,
-                        "prompt_tokens": prompt_tokens_estimate,
+                        "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "total_tokens": total_tokens
                     }
