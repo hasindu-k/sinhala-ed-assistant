@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY_V2: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
     GEMINI_LIGHT_API_KEY: Optional[str] = None
+    EVAL_GEMINI_OCR_CORRECTION_MAX_REQUESTS: int = 1
+    EVAL_GEMINI_ANSWER_MAPPING_MAX_REQUESTS: int = 1
+    EVAL_GEMINI_REFERENCE_SCHEMA_MAX_REQUESTS: int = 2
 
     # Database (optional)
     DATABASE_URL: Optional[str] = None

@@ -1,7 +1,3 @@
-# app/services/__init__.py
-
-# Export core service classes for convenient imports across the app
-
 from app.services.chat_session_service import ChatSessionService
 from app.services.message_service import MessageService
 from app.services.message_attachment_service import MessageAttachmentService
@@ -12,19 +8,7 @@ from app.services.resource_chunk_service import ResourceChunkService
 from app.services.session_resource_service import SessionResourceService
 from app.services.user_service import UserService
 
-# Evaluation domain services (already follow Service + Repository)
-from app.services.evaluation import (
-    RubricService,
-    QuestionPaperService,
-    AnswerEvaluationService,
-    EvaluationSessionService,
-    EvaluationResourceService,
-    PaperConfigService,
-    EvaluationWorkflowService,
-)
-
 __all__ = [
-    # core services
     "ChatSessionService",
     "MessageService",
     "MessageAttachmentService",
@@ -34,7 +18,6 @@ __all__ = [
     "ResourceChunkService",
     "SessionResourceService",
     "UserService",
-    # evaluation services
     "RubricService",
     "QuestionPaperService",
     "AnswerEvaluationService",
@@ -43,3 +26,19 @@ __all__ = [
     "PaperConfigService",
     "EvaluationWorkflowService",
 ]
+
+
+def __getattr__(name):
+    if name in {
+        "RubricService",
+        "QuestionPaperService",
+        "AnswerEvaluationService",
+        "EvaluationSessionService",
+        "EvaluationResourceService",
+        "PaperConfigService",
+        "EvaluationWorkflowService",
+    }:
+        from app.services import evaluation as evaluation_services
+
+        return getattr(evaluation_services, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

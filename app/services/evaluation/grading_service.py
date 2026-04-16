@@ -30,7 +30,10 @@ from app.shared.models.evaluation_session import EvaluationSession, PaperConfig
 from app.shared.models.resource_file import ResourceFile
 from app.shared.models.rubrics import Rubric, RubricCriterion
 from app.shared.ai.embeddings import xlmr, ml_semaphore, ensure_sentences_cached, _embedding_cache
+from app.shared.ai.gemini_client import gemini_generate_evaluation
+from app.core.config import settings
 from app.core.gemini_client import GeminiClient
+from app.services.evaluation.gemini_cost_policy import EvaluationGeminiClient
 
 logger = logging.getLogger(__name__)
 
@@ -174,103 +177,9 @@ class GradingService:
         total_questions = len(answer_doc.mapped_answers)
         processed_count = 0
 
-        # -------------------------------------------------------
-        # PHASE -1: Clean Student OCR Noise
-        # -------------------------------------------------------
         if progress_callback:
-            progress_callback("evaluating_answers", "AI Cleaning OCR noise from student answers...", percent=1)
-        
-        cleaned_answers = self._batch_clean_student_answers(answer_doc.mapped_answers)
-        answer_doc.mapped_answers = cleaned_answers
-
-        if progress_callback:
-            progress_callback("evaluating_answers", f"Scoring {total_questions} answers...", percent=2)
-
-        # -------------------------------------------------------
-        # PHASE 0: Gemini-based Reference Point Extraction
-        # -------------------------------------------------------
-        # Gemini reads the syllabus + question text and extracts the actual
-        # marking points. This replaces noisy BM25 retrieval as primary source.
-        # BM25 (_get_reference_context) is kept as fallback.
-        # -------------------------------------------------------
-        if progress_callback:
-            progress_callback("evaluating_answers", "Loading confirmed marking references...", percent=3)
-
-        # Collect question info for Gemini batch extraction
-        questions_for_extraction: List[Dict] = []
-        for key, student_text in answer_doc.mapped_answers.items():
-            target = self._find_matching_question(key, question_map)
-            if not target:
-                continue
-            if not student_text or str(student_text).strip().lower() in ["null", "none", ""]:
-                continue
-            # Skip parents when sub-questions are mapped
-            if isinstance(target, Question) and self._has_any_mapped_descendant(target, answer_doc.mapped_answers):
-                continue
-
-            # Use gold-standard correct_answer if available and NOT a placeholder — skip Gemini for those
-            correct = getattr(target, "correct_answer", None)
-            if correct and not self._is_placeholder_answer(correct):
-                continue  # _get_reference_context will return correct_answer directly
-
-            q_text = getattr(target, "question_text", "") or getattr(target, "sub_question_text", "")
-            max_marks = self._resolve_max_marks(target)
-            display_num = self._resolve_display_number(target, key)
-            q_type = getattr(target, "question_type", "short") or "short"
-
-            questions_for_extraction.append({
-                "key": key,
-                "target": target,
-                "question_text": q_text,
-                "max_marks": max_marks,
-                "display_number": display_num,
-                "question_type": q_type,
-            })
-
-        # Batch-extract reference points from Gemini
-        # NEW: Check for approved MarkingReference in DB first
-        db_refs = self.marking_refs.get_references_by_session(eval_session_id)
-        approved_refs = {str(ref.question_id or ref.sub_question_id): ref.reference_answer for ref in db_refs if ref.is_approved and ref.reference_answer}
-        
-        gemini_ref_map: Dict[str, str] = {}
-
-        cache_key = str(eval_session_id)
-        with GradingService._gemini_ref_cache_lock:
-            cached = GradingService._gemini_ref_cache.get(cache_key)
-
-        if cached is not None:
-            gemini_ref_map = cached
-            logger.info(f"Using cached Gemini references for session {cache_key} ({len(gemini_ref_map)} refs).")
-        elif False and syllabus_text and questions_for_extraction:
-            gemini_ref_map = self._batch_extract_reference_points(
-                questions_for_extraction, syllabus_text
-            )
-            # Store in class-level cache for other students in same session
-            with GradingService._gemini_ref_cache_lock:
-                cached = GradingService._gemini_ref_cache.get(cache_key)
-
-            if cached is not None:
-                # Merge cached into our map (prioritize DB over cache if both exist, though unlikely)
-                for k, v in cached.items():
-                    if k not in gemini_ref_map:
-                        gemini_ref_map[k] = v
-                logger.info(f"Using cached Gemini references for session {cache_key}.")
-            elif syllabus_text and questions_for_extraction:
-                # Still missing some? Call Gemini for the remaining ones
-                remaining_questions = [q for q in questions_for_extraction if q['key'] not in gemini_ref_map]
-                if remaining_questions:
-                    new_refs = self._batch_extract_reference_points(
-                        remaining_questions, syllabus_text
-                    )
-                    gemini_ref_map.update(new_refs)
-                    # Store in class-level cache
-                    with GradingService._gemini_ref_cache_lock:
-                        GradingService._gemini_ref_cache[cache_key] = gemini_ref_map
-
-        logger.info(f"Final reference map size: {len(gemini_ref_map)}/{len(questions_for_extraction)}")
-
-        if progress_callback:
-            progress_callback("evaluating_answers", "Loading confirmed marking references...", percent=3)
+            progress_callback("evaluating_answers", "Scoring persisted mapped answers...", percent=2)
+            progress_callback("evaluating_answers", "Using confirmed schema references...", percent=3)
 
         reference_map = reference_map or {}
         if not reference_map:
@@ -1230,7 +1139,7 @@ OUTPUT FORMAT — return ONLY a valid JSON object:
 Questions:
 """
 
-        def process_chunk(chunk: List[Dict]) -> Dict[str, str]:
+        def process_chunk(chunk: List[Dict], chunk_index: int, total_chunks: int) -> Dict[str, str]:
             chunk_prompt = base_prompt
             # Robust mapping: index -> UUID
             index_to_uuid = {}
@@ -1247,10 +1156,14 @@ Questions:
                 sent_indices = list(index_to_uuid.keys())
                 logger.info(f"[GEMINI_REF] Extracting references for surrogate keys: {sent_indices}")
 
-                response_data = self.gemini.generate_content(
-                    chunk_prompt, json_mode=True
+                response_json = gemini_generate_evaluation(
+                    chunk_prompt,
+                    budget=EvaluationGeminiClient.REFERENCE_SCHEMA,
+                    json_mode=True,
+                    reason=f"chunk_{chunk_index}_of_{total_chunks}",
                 )
-                response_json = response_data.get("text") or "{}"
+                if not response_json:
+                    return {}
 
                 clean_json = re.sub(
                     r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE
@@ -1306,14 +1219,34 @@ Questions:
                 logger.error(f"[GEMINI_REF] Extraction failed: {e}")
                 return {}
 
-        # Batch questions — 8 per Gemini call to stay within context limits
-        batch_size = 8
-        chunks = [questions[i:i + batch_size] for i in range(0, len(questions), batch_size)]
+        max_requests = max(1, int(settings.EVAL_GEMINI_REFERENCE_SCHEMA_MAX_REQUESTS))
+        chunks: List[List[Dict]] = [[]]
+        current_chars = 0
+        max_chunk_chars = 4500
+        for question in questions:
+            estimated_chars = len(question.get("question_text", "")) + 200
+            if (
+                chunks[-1]
+                and current_chars + estimated_chars > max_chunk_chars
+                and len(chunks) < max_requests
+            ):
+                chunks.append([])
+                current_chars = 0
+            chunks[-1].append(question)
+            current_chars += estimated_chars
+
+        logger.info(
+            "[GEMINI_REF] duty_name=reference_extraction request_budget=%s requests_used=%s fallback_used=%s reason=chunk_plan",
+            max_requests,
+            len(chunks),
+            len(chunks) > 1,
+        )
 
         all_refs: Dict[str, str] = {}
-        with ThreadPoolExecutor(max_workers=min(len(chunks), 4)) as executor:
+        with ThreadPoolExecutor(max_workers=min(len(chunks), max_requests)) as executor:
             future_to_chunk = {
-                executor.submit(process_chunk, chunk): chunk for chunk in chunks
+                executor.submit(process_chunk, chunk, idx + 1, len(chunks)): chunk
+                for idx, chunk in enumerate(chunks)
             }
             for future in as_completed(future_to_chunk):
                 try:

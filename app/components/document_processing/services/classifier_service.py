@@ -4,7 +4,8 @@ import json
 import logging
 import difflib
 import re
-from app.shared.ai.gemini_client import gemini_generate, gemini_generate_lightweight
+from app.services.evaluation.gemini_cost_policy import EvaluationGeminiClient
+from app.shared.ai.gemini_client import gemini_generate, gemini_generate_evaluation, gemini_generate_lightweight
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +287,11 @@ def fix_sinhala_ocr(text: str) -> str:
     """
 
     try:
-        corrected = gemini_generate(prompt).strip()
+        corrected = gemini_generate_evaluation(
+            prompt,
+            budget=EvaluationGeminiClient.OCR_CORRECTION,
+            reason="fix_sinhala_ocr",
+        ).strip()
         return corrected if corrected else text
 
     except Exception as e:
@@ -1399,6 +1404,78 @@ def map_student_answers(answer_text: str, question_structure: list) -> dict:
     except Exception as e:
         logger.error(f"❌ Error in answer mapping: {e}")
         return {}
+
+def map_student_answers(answer_text: str, question_structure: list) -> dict:
+    """
+    Maps student answer text to question IDs using a single Gemini request.
+    Local validation still rejects hallucinated or unsupported mappings.
+    """
+    if not answer_text or not answer_text.strip():
+        return {}
+
+    try:
+        logger.info("Starting student answer mapping in one pass.")
+        flat_structure = _simplify_structure_for_prompt(question_structure)
+        response_text = gemini_generate_evaluation(
+            ANSWER_MAPPING_PROMPT.format(
+                structure=json.dumps(flat_structure, ensure_ascii=False, indent=2),
+                answer_text=answer_text[:35000],
+            ),
+            budget=EvaluationGeminiClient.ANSWER_MAPPING,
+            json_mode=True,
+            reason="single_pass_full_paper",
+        )
+        print("=== RAW GEMINI RESPONSE FOR SINGLE-PASS ANSWER MAPPING ===")
+        print(response_text)
+        print("========================================================")
+        batch_result = _safe_json_loads(response_text) if response_text else None
+
+        if not isinstance(batch_result, dict):
+            logger.error("Single-pass answer mapping failed: invalid JSON or empty response.")
+            return {}
+
+        by_id = {item["id"]: item for item in flat_structure}
+        part_text_cache: dict[str, str] = {}
+        filtered_result = {}
+
+        for key, value in batch_result.items():
+            if key not in by_id or not value:
+                continue
+
+            q_item = by_id[key]
+            q_text = q_item.get("text", "")
+            q_label = q_item.get("label", "")
+            part_name = q_item.get("part") or "Unknown"
+            if part_name not in part_text_cache:
+                part_text_cache[part_name] = _get_part_specific_answer_text(answer_text, part_name)
+            part_answer_text = part_text_cache[part_name]
+
+            if _is_hallucinated_question_text(value, q_text):
+                logger.warning("Discarding hallucinated answer for ID %s - matches question text.", key)
+                continue
+
+            if not _has_marker_supported_mapping(part_answer_text, value, q_label):
+                logger.warning(
+                    "Discarding unsupported mapping for ID %s - no matching source marker found for label %s.",
+                    key,
+                    q_label,
+                )
+                continue
+
+            filtered_result[key] = value
+
+        filtered_result = _suppress_cross_part_duplicate_mappings(filtered_result, flat_structure)
+        logger.info(
+            "Single-pass answer mapping completed. accepted=%d requested=%d",
+            len(filtered_result),
+            len(flat_structure),
+        )
+        return filtered_result
+
+    except Exception as e:
+        logger.error(f"Error in answer mapping: {e}")
+        return {}
+
 
 def _simplify_structure_for_prompt(questions: list) -> list:
     """

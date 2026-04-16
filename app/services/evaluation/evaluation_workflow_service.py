@@ -55,6 +55,20 @@ class EvaluationWorkflowService:
         self.resource_files = ResourceService(db)
         self.usage = UsageService(db)
 
+    def _extract_answer_text_once(self, answer_resource) -> str:
+        """Load persisted answer text or extract and correct it exactly once."""
+        if answer_resource.extracted_text and answer_resource.extracted_text.strip():
+            return answer_resource.extracted_text
+
+        ocr_text, _ = extract_and_clean_text_from_file(
+            answer_resource.storage_path,
+            force_layout_analysis=False,
+            resource_type="answer_sheet",
+        )
+        cleaned_answer_text = fix_sinhala_ocr(ocr_text)
+        self.resource_files.update_resource_extracted_text(answer_resource.id, cleaned_answer_text)
+        return cleaned_answer_text
+
     def _acquire_answer_evaluation_slot(self, answer_id: UUID) -> Tuple[bool, threading.Event]:
         # New helper for stream/background coordination.
         key = str(answer_id)
@@ -967,6 +981,7 @@ class EvaluationWorkflowService:
         logger.info(f"OCR complete for syllabus. Length: {len(cleaned_text)}")
         
         # 3. AI Fix (Helper)
+        logger.info("Correcting OCR once for syllabus...")
         cleaned_text = fix_sinhala_ocr(cleaned_text)
         logger.info(f"AI correction complete for syllabus. Length: {len(cleaned_text)}")
         
@@ -996,6 +1011,7 @@ class EvaluationWorkflowService:
         logger.info(f"OCR complete for rubric. Length: {len(cleaned_text)}")
         
         # 3. AI Fix (Helper)
+        logger.info("Correcting OCR once for rubric...")
         cleaned_text = fix_sinhala_ocr(cleaned_text)
         logger.info(f"AI correction complete for rubric. Length: {len(cleaned_text)}")
         
@@ -1052,7 +1068,7 @@ class EvaluationWorkflowService:
                 logger.info("Extracted %s characters from %d pages in question paper", len(cleaned_text), page_count)
 
                 # AI Correction (Helper process - persisted to avoid repetition)
-                logger.info("Running AI correction on extracted text...")
+                logger.info("Correcting OCR once for question paper...")
                 cleaned_text = fix_sinhala_ocr(cleaned_text)
                 logger.info("AI correction complete. Final text length: %s", len(cleaned_text))
 
@@ -1287,19 +1303,7 @@ class EvaluationWorkflowService:
         if not answer_resource:
             raise ValueError("Answer resource not found")
 
-        # OCR the answer script if not already done
-        if not answer_resource.extracted_text:
-            # New answer-sheet extraction path: skip layout-block OCR so we favor
-            # full-page capture of the student's written answers.
-            ocr_text, _ = extract_and_clean_text_from_file(
-                answer_resource.storage_path,
-                force_layout_analysis=False,
-                resource_type="answer_sheet",
-            )
-            # Update the resource with extracted text
-            self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
-        else:
-            ocr_text = answer_resource.extracted_text
+        cleaned_answer_text = self._extract_answer_text_once(answer_resource)
         
         # Get Evaluation Session to find Chat Session
         eval_session = self.sessions.get_evaluation_session(answer_doc.evaluation_session_id)
@@ -1316,10 +1320,6 @@ class EvaluationWorkflowService:
         question_paper = question_papers[0]
         questions = self.question_papers.get_questions_by_paper(question_paper.id)
 
-        # OCR text is already extracted above.
-        # We now skip the separate fix_sinhala_ocr call as cleaning is handled in map_student_answers.
-        cleaned_answer_text = ocr_text
-        
         # 2. Map answers
         answer_mapping = map_student_answers(cleaned_answer_text, questions)
         
@@ -1426,21 +1426,9 @@ class EvaluationWorkflowService:
         if not answer_resource:
             raise ValueError("Answer resource not found")
 
-        # OCR the answer script if not already done
-        if not answer_resource.extracted_text:
-            if progress_callback:
-                progress_callback("processing_documents", "Extracting text from answer script (OCR)...")
-            # New answer-sheet extraction path: skip layout-block OCR so we favor
-            # full-page capture of the student's written answers.
-            ocr_text, _ = extract_and_clean_text_from_file(
-                answer_resource.storage_path,
-                force_layout_analysis=False,
-                resource_type="answer_sheet",
-            )
-            # Update the resource with extracted text
-            self.resource_files.update_resource_extracted_text(answer_resource.id, ocr_text)
-        else:
-            ocr_text = answer_resource.extracted_text
+        if progress_callback and not answer_resource.extracted_text:
+            progress_callback("processing_documents", "Correcting OCR once...")
+        cleaned_answer_text = self._extract_answer_text_once(answer_resource)
         
         # Get Evaluation Session to find Chat Session
         eval_session = self.sessions.get_evaluation_session(answer_doc.evaluation_session_id)
@@ -1457,29 +1445,11 @@ class EvaluationWorkflowService:
         if answer_doc.mapped_answers:
             logger.info("Using existing answer mapping...")
             answer_mapping = answer_doc.mapped_answers
-            # We still need the text for the prompt if we were doing grading, 
-            # but if we have mapping, we might assume text is extracted.
-            # For now, let's just ensure we have text.
-            if not answer_resource.extracted_text:
-                 cleaned_answer_text = fix_sinhala_ocr(ocr_text)
-            else:
-                 cleaned_answer_text = answer_resource.extracted_text
         else:
-            if progress_callback:
-                progress_callback("processing_documents", "Correcting OCR errors...")
-            logger.info("Running AI correction on student answer script...")
-            
-            # PERSISTENCE: Save fixed text to avoid repeating expensive AI calls
-            if not answer_resource.extracted_text or len(answer_resource.extracted_text) < 10:
-                cleaned_answer_text = fix_sinhala_ocr(ocr_text)
-                self.resource_files.update_resource_extracted_text(answer_resource.id, cleaned_answer_text)
-            else:
-                cleaned_answer_text = answer_resource.extracted_text
-            
             # 2. Map answers to questions using AI
             if progress_callback:
-                progress_callback("processing_documents", "Mapping answers to questions...")
-            logger.info("Mapping student answers to questions...")
+                progress_callback("processing_documents", "Mapping answers in one pass...")
+            logger.info("Mapping student answers in one pass...")
             answer_mapping = map_student_answers(cleaned_answer_text, questions)
             
             if not answer_mapping:
