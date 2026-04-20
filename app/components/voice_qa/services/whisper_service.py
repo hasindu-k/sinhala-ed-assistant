@@ -93,24 +93,42 @@ class VoiceService:
     def standardize_southern_sinhala(text: str, context_hints: str = ""):
         normalized = normalize_sinhala(text)
 
-        # We add a section specifically for the "Vocabulary" found in the documents
         prompt = f"""
-        You are a Sinhala transcription corrector. Your goal is to fix phonetic errors while PRESERVING the original meaning.
+    ### INSTRUCTION
+    You are a specialized Sinhala linguistic utility. Your ONLY task is to take a noisy, phonetically incorrect transcription and output the clean, standard literary Sinhala version (ලිඛිත සිංහල).
 
-        CONTEXT VOCABULARY (Prioritize these terms if the transcription sounds similar):
-        {context_hints}
+    ### CONTEXT VOCABULARY
+    {context_hints}
 
-        Constraints:
-        1. If a word sounds like a name or term from the CONTEXT VOCABULARY above, use the context term (e.g., if you hear 'මා නැමැති රජු' but the context is about 'මානවම්ම රජු', use 'මානවම්ම රජු').
-        2. Convert Southern-accented verb endings to Standard Literary Sinhala.
-        3. Return ONLY the corrected Sinhala text.
+    ### RULES
+    1. **NO EXPLANATIONS:** Do not say "Here is the correction" or "Analysis". Do not provide bullet points.
+    2. **STRICT OUTPUT:** Return ONLY the corrected Sinhala string. No other text.
+    3. **FUZZY MATCHING:** If the transcription sounds like a name in the CONTEXT VOCABULARY, use the correct name (e.g., if 'ලංම කරන' sounds like 'ලම්බකර්ණ', use 'ලම්බකර්ණ').
+    4. **MAINTAIN INTENT:** Do not change the user's question, just fix the grammar and spelling.
 
-        Input: {normalized}
-        """
+    ### EXAMPLES
+    Input: මකේ නම මොකක්ද
+    Output: මගේ නම කුමක්ද?
+
+    Input: මෙහේ සදහන්මන ලංම කරන වන්ෂයට ඇය ත්රජුවරුම් කවුරුන්ද?
+    Output: මෙහි සඳහන් වන ලම්බකර්ණ වංශයට අයත් රජවරුන් කවුරුන්ද?
+
+    ### TARGET INPUT
+    {normalized}
+
+    ### FINAL CORRECTED OUTPUT:
+    """
 
         gemini = GeminiClient()
         response = gemini.generate_content(prompt)
+        
+        # Use split or strip to ensure no trailing garbage text
         result = (response.get("text") or "").strip()
+        
+        # Safety: if the model still outputs a paragraph, take the last line or clean it
+        if "\n" in result:
+            # Sometimes models repeat the prompt; we just want the final line
+            result = result.split("\n")[-1].replace("Output:", "").strip()
 
         return normalized, result
 

@@ -2,7 +2,7 @@ import torch
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
 # Path to the saved model
-MODEL_PATH = "app/models/whisper-sinhala-accent-model"
+MODEL_PATH = "app/models/whisper-small-sinhala-robust-FINAL"
 
 class WhisperLoader:
     _processor = None
