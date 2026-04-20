@@ -25,8 +25,6 @@ api_router.include_router(rubrics.router, prefix="/rubrics", tags=["Rubrics"])
 api_router.include_router(users.router, prefix="/users", tags=["Users"]) 
 api_router.include_router(auth.router, prefix="/auth", tags=["Auth"]) 
 
-# Temporary Evaluation
-api_router.include_router(temporary_evaluation_router, prefix="/temporary-evaluation", tags=["Temporary Evaluation"])
 api_router.include_router(voice_router, prefix="/voice", tags=["Voice Q&A"])
 
 print("API Router configured with all components")

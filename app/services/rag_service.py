@@ -25,7 +25,8 @@ class RAGService:
     """RAG orchestration with hybrid retrieval, grounded generation, and safety checks."""
     
     # Threshold for considering retrieved content relevant
-    RELEVANCE_THRESHOLD = 0.5  # Increased for strict unanswerable detection
+    RELEVANCE_THRESHOLD = 0.20  # Lowered to reduce false negatives; LLM will handle the final gate.
+
 
     def __init__(self, db: Session):
         self.db = db
@@ -268,6 +269,46 @@ class RAGService:
         total_tokens = generated_result["total_tokens"]
 
         logger.info("Generated response of length %d", len(generated))
+
+        # -----------------------------
+        # 9.5. Check for LLM-detected unanswerability
+        # -----------------------------
+        REFUSAL_MARKER = "[NOT_ANSWERABLE]"
+        is_llm_refusal = generated.strip().startswith(REFUSAL_MARKER)
+
+        if is_llm_refusal:
+            logger.info("Gemini detected question is unanswerable (marker found)")
+            refusal_text = "මෙම ප්‍රශ්නයට අදාළ තොරතුරු ලබා දී ඇති අන්තර්ගතයේ නොමැත."
+            
+            assistant_msg = self.message_service.create_assistant_message(
+                session_id=session_id,
+                content=refusal_text,
+                model_info={"model_name": "gemini-3-flash-preview"},
+                parent_msg_id=user_message_id
+            )
+
+            # Log used chunks for metrics even if LLM refused
+            self.context_service.log_used_chunks(
+                user_message_id,
+                [
+                    {
+                        "chunk_id": h["id"],
+                        "similarity_score": h.get("similarity"),
+                        "rank": i + 1,
+                        "was_irrelevant": True
+                    }
+                    for i, h in enumerate(hits)
+                ],
+            )
+            
+            return {
+                "assistant_message_id": assistant_msg.id,
+                "content": refusal_text,
+                "sources": hits,
+                "retrieval_metadata": {"bm25_k": bm25_k, "final_k": final_k, "used_chunks": len(hits)},
+                "safety": None,
+                "xai_explanation": None
+            }
 
         # -----------------------------
         # 10. Safety & misconception checks (only for answerable questions)

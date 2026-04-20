@@ -75,8 +75,8 @@ class GeminiClient:
         return switched
 
     @classmethod
-    def _get_model_name(cls) -> str:
-        return MODEL_FALLBACKS[_active_model_index]
+    def _get_model_name(cls, override_model: str | None = None) -> str:
+        return override_model or MODEL_FALLBACKS[_active_model_index]
 
     @classmethod
     def _switch_to_next_model(cls) -> bool:
@@ -137,11 +137,18 @@ class GeminiClient:
         return min(30, (base_wait * (attempt + 1)) + random.uniform(1, 5))
 
     @classmethod
-    def generate_content(cls, prompt: str, max_retries: int = 15, safety_settings: list = None, json_mode: bool = False) -> dict:
+    def generate_content(
+        cls,
+        prompt: str,
+        max_retries: int = 15,
+        safety_settings: list = None,
+        json_mode: bool = False,
+        model_name: str | None = None,
+    ) -> dict:
         """
         Generate content from Gemini and return text + token usage.
         Includes rate limiting (semaphore) and retry logic (exponential backoff).
-        Token counting is estimated locally (no extra API round-trip).
+        Token counts are obtained from actual API response (usage_metadata).
         """
         from google.genai import types
         config = types.GenerateContentConfig(
@@ -150,28 +157,27 @@ class GeminiClient:
             max_output_tokens=8192
         )
 
-        # Estimate prompt tokens locally — avoids one API round-trip per call
-        prompt_tokens_estimate = max(len(prompt) // 4, 1)
-
         for attempt in range(max_retries + 1):
             try:
                 client = cls.get_client()
                 with _ai_semaphore:
                     response = client.models.generate_content(
-                        model=cls._get_model_name(),
+                        model=cls._get_model_name(model_name),
                         contents=prompt,
                         config=config
                     )
 
                     text = response.text or ""
 
-                    # Completion token estimation
-                    completion_tokens = max(len(text) // 4, 1)
-                    total_tokens = prompt_tokens_estimate + completion_tokens
+                    # Get actual token counts from API response
+                    usage = response.usage_metadata
+                    prompt_tokens = usage.prompt_token_count if usage else 0
+                    completion_tokens = usage.candidates_token_count if usage else 0
+                    total_tokens = usage.total_token_count if usage else 0
 
                     return {
                         "text": text,
-                        "prompt_tokens": prompt_tokens_estimate,
+                        "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "total_tokens": total_tokens
                     }
@@ -181,7 +187,7 @@ class GeminiClient:
                 retry_reason = cls._classify_retry(error_msg)
 
                 if retry_reason and attempt < max_retries:
-                    if retry_reason == "model_not_found":
+                    if retry_reason == "model_not_found" and not model_name:
                         cls._switch_to_next_model()
                     else:
                         # If multiple keys are configured, rotate keys before backing off.
