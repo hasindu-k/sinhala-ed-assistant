@@ -8,6 +8,13 @@ logger = logging.getLogger(__name__)
 OCR_LANG = "sin+eng"
 OCR_CONFIG_EXTRA = ""
 
+TROCR_MODEL_NAME = os.getenv(
+    "TROCR_MODEL_NAME",
+    "hasindu-k/sinhala-handwritten-notes-v2",
+)
+TROCR_DEVICE = os.getenv("TROCR_DEVICE", "auto")
+TROCR_MAX_NEW_TOKENS = int(os.getenv("TROCR_MAX_NEW_TOKENS", "256"))
+
 custom_model_name = "sin_custom_v3"
 custom_model_filename = f"{custom_model_name}.traineddata"
 

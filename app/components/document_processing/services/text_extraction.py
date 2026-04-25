@@ -374,12 +374,38 @@ def process_ocr_for_images_with_tables(
             non_table_area = cv2.bitwise_and(gray, gray, mask=cv2.bitwise_not(table_mask))
 
             logger.debug("TESSDATA_PREFIX: %s", os.environ.get("TESSDATA_PREFIX"))
-            
-            full_page_text = pytesseract.image_to_string(
+
+            page_text_type, page_confidence = classify_text_type(
                 non_table_area,
-                lang=lang,
-                config=tess_config
+                ml_model_predict=ml_model_predict,
+                ml_conf_threshold=ml_conf_threshold,
+                return_confidence=True,
             )
+            use_trocr = (
+                trocr_predict is not None
+                and page_text_type == "handwritten"
+                and page_confidence >= region_conf_threshold
+            )
+
+            if use_trocr:
+                try:
+                    full_page_text = trocr_predict(non_table_area)
+                except Exception as trocr_error:
+                    logger.warning(
+                        "TrOCR failed for page; using Tesseract fallback: %s",
+                        trocr_error,
+                    )
+                    full_page_text = pytesseract.image_to_string(
+                        non_table_area,
+                        lang=lang,
+                        config=tess_config
+                    )
+            else:
+                full_page_text = pytesseract.image_to_string(
+                    non_table_area,
+                    lang=lang,
+                    config=tess_config
+                )
             page_text = full_page_text.strip()
 
         # -------------------------------------
