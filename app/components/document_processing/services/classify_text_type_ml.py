@@ -69,7 +69,7 @@ class MobileNetV2TextTypeClassifier:
         probs = torch.softmax(logits, dim=1).squeeze(0)
         confidence, idx = torch.max(probs, dim=0)
 
-        label: TextTypeLabel = "printed" if int(idx.item()) == 0 else "handwritten"
+        label: TextTypeLabel = "handwritten" if int(idx.item()) == 0 else "printed"
         return label, float(confidence.item())
 
 
