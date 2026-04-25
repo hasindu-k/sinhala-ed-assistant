@@ -12,6 +12,7 @@ from app.routers import (
     websockets,
 )
 from app.core.whisper_loader import WhisperLoader
+from app.components.document_processing.services.classify_text_type_ml import TextTypeClassifierLoader
 from app.api.v1.router import api_router
 from app.core.database import Base, engine
 
@@ -57,6 +58,13 @@ def on_startup():
         logger.info("Whisper model loaded successfully.")
     except Exception as e:
         logger.error("Whisper model failed to load: %s", str(e))
+
+    try:
+        logger.info("Loading MobileNet text type classifier at startup...")
+        app.state.text_type_classifier = TextTypeClassifierLoader.load()
+        logger.info("MobileNet text type classifier loaded successfully.")
+    except Exception as e:
+        logger.error("MobileNet text type classifier failed to load: %s", str(e))
 
 def custom_openapi():
     """Add Bearer auth security scheme to OpenAPI and apply to protected endpoints."""
