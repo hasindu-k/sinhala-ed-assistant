@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 OCR_LANG = "sin+eng"
 OCR_CONFIG_EXTRA = ""
 
-custom_model_name = "sin_eng_custom"
+custom_model_name = "sin_custom_v3"
 custom_model_filename = f"{custom_model_name}.traineddata"
 
 utils_dir = os.path.join(os.getcwd(), "utils")
