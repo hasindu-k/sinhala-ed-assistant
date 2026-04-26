@@ -19,7 +19,7 @@ api_router = APIRouter()
 
 api_router.include_router(chat_sessions.router, prefix="/chat", tags=["Chat"])
 api_router.include_router(messages.router, prefix="/messages", tags=["Messages"])
-api_router.include_router(resources.rouster, prefix="/resources", tags=["Resources"])
+api_router.include_router(resources.router, prefix="/resources", tags=["Resources"])
 api_router.include_router(evaluation.router, prefix="/evaluation", tags=["Evaluation"])
 api_router.include_router(rubrics.router, prefix="/rubrics", tags=["Rubrics"])
 api_router.include_router(users.router, prefix="/users", tags=["Users"]) 
