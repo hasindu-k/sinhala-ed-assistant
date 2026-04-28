@@ -75,3 +75,17 @@ class ResourceProcessResponse(BaseModel):
 
 class ResourceBatchProcessRequest(BaseModel):
     resource_ids: List[UUID]
+
+
+class ResourceExtractedTextResponse(BaseModel):
+    resource_id: UUID
+    status: str
+    extracted_text: str
+    chunks_count: int = 0
+    page: int = 1
+    page_size: int = 10
+    total_pages: int = 0
+    returned_pages: int = 0
+    has_next: bool = False
+    has_previous: bool = False
+    language: Optional[str] = None
