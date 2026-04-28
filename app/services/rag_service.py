@@ -230,17 +230,19 @@ class RAGService:
             prompt = build_qa_prompt(
                 context=context,
                 count=count,
-                query=user_query
+                query=user_query,
+                grade=grade_level
             )
-            message_grade_level = None
+            message_grade_level = grade_level
 
         # 🟢 DIRECT ANSWER
         elif intent == "qa_answer":
             prompt = build_direct_answer_prompt(
                 context=context,
-                query=user_query
+                query=user_query,
+                grade=grade_level
             )
-            message_grade_level = None
+            message_grade_level = grade_level
 
         # 🟡 Explanation fallback
         elif intent == "explanation":
