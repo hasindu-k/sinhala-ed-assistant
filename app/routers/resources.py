@@ -14,7 +14,8 @@ from app.schemas.resource import (
     ResourceUploadResponse,
     ResourceBulkUploadResponse,
     ResourceProcessResponse,
-    ResourceBatchProcessRequest
+    ResourceBatchProcessRequest,
+    ResourceExtractedTextResponse
 )
 from app.schemas.resource_chunk import ResourceChunkResponse
 from app.services.resource_service import ResourceService
@@ -23,6 +24,7 @@ from app.services.evaluation.user_context_service import UserContextService
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.shared.models.user import User
+from app.utils.resource_text import split_extracted_text_pages
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -438,6 +440,71 @@ def get_resource_chunks(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve chunks"
+        )
+
+
+@router.get("/{resource_id}/extracted-text", response_model=ResourceExtractedTextResponse)
+def get_resource_extracted_text(
+    resource_id: UUID,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=10),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get full extracted OCR text for a resource.
+    Protected; owner-only.
+    """
+    try:
+        resource_service = ResourceService(db)
+        resource = resource_service.get_resource_with_ownership_check(
+            resource_id,
+            current_user.id,
+        )
+
+        chunk_service = ResourceChunkService(db)
+        chunks = chunk_service.get_chunks_for_resource(resource_id)
+
+        extracted_text = (getattr(resource, "extracted_text", None) or "").strip()
+        if not extracted_text:
+            extracted_text = "\n\n".join(
+                chunk.content
+                for chunk in chunks
+                if getattr(chunk, "content", None)
+            ).strip()
+
+        pages = split_extracted_text_pages(extracted_text)
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        page_slice = pages[start_index:end_index]
+        paginated_text = "\n\n".join(page_slice).strip()
+
+        return ResourceExtractedTextResponse(
+            resource_id=resource.id,
+            status="completed" if paginated_text else "empty",
+            extracted_text=paginated_text,
+            chunks_count=len(chunks),
+            page=page,
+            page_size=page_size,
+            total_pages=len(pages),
+            returned_pages=len(page_slice),
+            has_next=end_index < len(pages),
+            has_previous=page > 1 and bool(pages),
+            language=getattr(resource, "language", None),
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except Exception:
+        logger.error(
+            f"Error retrieving extracted text for resource {resource_id}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve extracted text",
         )
 
 
