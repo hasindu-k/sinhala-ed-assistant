@@ -31,3 +31,4 @@ python-multipart
 
 ultralytics
 modal
+sinling

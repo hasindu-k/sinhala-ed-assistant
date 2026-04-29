@@ -1,13 +1,61 @@
 # app/services/xai_service.py
 import logging
+import re
+import string
 from typing import Dict, List, Optional
 from uuid import UUID
+
+try:
+    from sinling import SinhalaTokenizer
+except ImportError:
+    SinhalaTokenizer = None
 
 logger = logging.getLogger(__name__)
 
 
 class XAIService:
     """Explainable AI service that provides transparency into RAG responses."""
+
+    SINHALA_STOP_WORDS = {
+        "අතර",
+        "අප",
+        "අපි",
+        "ඇත",
+        "ඇති",
+        "ඇතුළු",
+        "ඒ",
+        "එය",
+        "එම",
+        "ඔබ",
+        "කර",
+        "කරයි",
+        "කරන",
+        "කිරීම",
+        "තුළ",
+        "ද",
+        "දී",
+        "නම්",
+        "නිසා",
+        "බව",
+        "මෙම",
+        "මෙය",
+        "මේ",
+        "ය",
+        "ලෙස",
+        "වල",
+        "වශයෙන්",
+        "වැනි",
+        "විසින්",
+        "සඳහා",
+        "සහ",
+        "හා",
+        "වේ",
+        "දෙන්න",
+        "ලදී",
+        "තවද",
+    }
+    PUNCTUATION = set(string.punctuation) | {"।", "“", "”", "‘", "’"}
+    _tokenizer = SinhalaTokenizer() if SinhalaTokenizer else None
     
     @staticmethod
     def generate_explanation(
@@ -58,6 +106,7 @@ class XAIService:
     ) -> List[Dict]:
         """Analyze which chunks contributed most to the answer."""
         contributions = []
+        answer_key_terms = set(XAIService._extract_key_terms(answer))
         
         for i, chunk in enumerate(chunks[:5]):  # Limit to top 5 chunks
             chunk_text = chunk.get("content", "")
@@ -67,6 +116,10 @@ class XAIService:
             chunk_words = set(chunk_text.lower().split())
             overlap = len(answer_words & chunk_words)
             total_unique = len(answer_words | chunk_words)
+            chunk_key_terms = XAIService._extract_key_terms(chunk_text)
+            shared_key_terms = [
+                term for term in chunk_key_terms if term in answer_key_terms
+            ][:10]
             
             contribution_score = overlap / total_unique if total_unique > 0 else 0
             
@@ -76,10 +129,62 @@ class XAIService:
                 "similarity_score": chunk.get("similarity", 0),
                 "contribution_score": round(contribution_score, 3),
                 "preview": chunk_text[:200] + "..." if len(chunk_text) > 200 else chunk_text,
-                "key_terms": list(chunk_words & answer_words)[:10],
+                "key_terms": shared_key_terms,
             })
         
         return contributions
+
+    @staticmethod
+    def _extract_key_terms(text: str) -> List[str]:
+        """Extract unique non-stop-word terms while preserving text order."""
+        terms = []
+        seen = set()
+
+        for term in XAIService._tokenize_terms(text):
+            term = XAIService._normalize_token(term)
+
+            if (
+                not term
+                or term in XAIService.SINHALA_STOP_WORDS
+                or term in seen
+            ):
+                continue
+            seen.add(term)
+            terms.append(term)
+
+        return terms
+
+    @staticmethod
+    def _tokenize_terms(text: str) -> List[str]:
+        """Tokenize terms with sinling when available, otherwise regex fallback."""
+        text = XAIService._normalize_unicode(text)
+
+        if XAIService._tokenizer:
+            tokens = XAIService._tokenizer.tokenize(text)
+            return [
+                token.strip().lower()
+                for token in tokens
+                if token.strip()
+                and not all(char in XAIService.PUNCTUATION for char in token)
+            ]
+
+        return re.findall(r"[^\W_]+", text.lower(), flags=re.UNICODE)
+
+    @staticmethod
+    def _normalize_unicode(text: str) -> str:
+        """Remove hidden Unicode characters that split visually identical terms."""
+        return text.replace("\u200d", "")
+
+    @staticmethod
+    def _normalize_token(token: str) -> str:
+        """Apply lightweight Sinhala token normalization."""
+        token = token.replace("\u200d", "")
+
+        for suffix in ("ටත්", "ට"):
+            if token.endswith(suffix) and len(token) > len(suffix) + 2:
+                return token[: -len(suffix)]
+
+        return token
     
     @staticmethod
     def _explain_safety(
