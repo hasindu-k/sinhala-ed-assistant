@@ -1630,6 +1630,9 @@ class EvaluationWorkflowService:
     def get_marking_schema(self, session_id: UUID, user_id: UUID):
         return self.marking_schemas.get_or_create_schema(session_id, user_id)
 
+    def download_marking_schema_pdf(self, session_id: UUID, user_id: UUID) -> bytes:
+        return self.marking_schemas.build_pdf(session_id, user_id)
+
     def save_marking_schema(self, session_id: UUID, payload: MarkingSchemaUpdateRequest, user_id: UUID):
         return self.marking_schemas.save_schema(session_id=session_id, payload=payload, user_id=user_id, confirmed=False)
 

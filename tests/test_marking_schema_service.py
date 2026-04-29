@@ -192,3 +192,35 @@ def test_get_confirmed_reference_map_uses_saved_question_ids_and_numbers():
     assert result[str(question_id)] == "Saved reference"
     assert result["1(a)"] == "Saved reference"
     assert result["1a"] == "Saved reference"
+
+
+def test_build_pdf_fetches_schema_and_returns_pdf_bytes():
+    pytest.importorskip("fitz")
+    service = build_service()
+    session_id = uuid4()
+    user_id = uuid4()
+    response = make_response(session_id=session_id, confirmed=True)
+
+    service.get_or_create_schema = MagicMock(return_value=response)
+    service._resolve_pdf_font_path = MagicMock(return_value=None)
+
+    pdf_bytes = service.build_pdf(session_id, user_id)
+
+    assert pdf_bytes.startswith(b"%PDF")
+    service.get_or_create_schema.assert_called_once_with(session_id, user_id)
+
+
+def test_render_pdf_includes_marking_schema_content():
+    fitz = pytest.importorskip("fitz")
+    service = build_service()
+    service._resolve_pdf_font_path = MagicMock(return_value=None)
+    response = make_response(confirmed=True)
+
+    pdf_bytes = service._render_pdf(response)
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    extracted_text = "\n".join(page.get_text() for page in doc)
+    doc.close()
+
+    assert "Generated Marking Scheme" in extracted_text
+    assert "Question 1(a) (5 marks)" in extracted_text
+    assert "Reference points" in extracted_text

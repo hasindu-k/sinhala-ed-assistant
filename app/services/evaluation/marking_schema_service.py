@@ -1,6 +1,10 @@
 import json
 import logging
+import os
 import re
+import textwrap
+from io import BytesIO
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -24,6 +28,13 @@ logger = logging.getLogger(__name__)
 
 class MarkingSchemaService:
     SESSION_RESOURCE_LABEL = "marking_schema"
+    PDF_MARGIN = 48
+    PDF_LINE_HEIGHT = 15
+    PDF_BODY_FONT_SIZE = 10.5
+    PDF_TITLE_FONT_SIZE = 17
+    PDF_HEADING_FONT_SIZE = 12
+    PDF_PAGE_WIDTH = 595
+    PDF_PAGE_HEIGHT = 842
 
     def __init__(self, db: Session):
         self.db = db
@@ -114,6 +125,10 @@ class MarkingSchemaService:
             normalized_number = self._normalize_question_key(item.question_number)
             reference_map[normalized_number] = item.reference_text
         return reference_map
+
+    def build_pdf(self, session_id: UUID, user_id: UUID) -> bytes:
+        schema = self.get_or_create_schema(session_id, user_id)
+        return self._render_pdf(schema)
 
     def _resolve_eval_session(self, session_id: UUID, user_id: UUID):
         eval_session = self.sessions.get_evaluation_session(session_id)
@@ -298,3 +313,172 @@ class MarkingSchemaService:
 
     def _normalize_question_key(self, value: str) -> str:
         return re.sub(r"[\s().]", "", (value or "").lower())
+
+    def _render_pdf(self, schema: MarkingSchemaResponse) -> bytes:
+        try:
+            import fitz
+        except ImportError as exc:
+            raise RuntimeError("PDF generation requires PyMuPDF") from exc
+
+        font_path = self._resolve_pdf_font_path()
+        doc = fitz.open()
+        page = doc.new_page(width=self.PDF_PAGE_WIDTH, height=self.PDF_PAGE_HEIGHT)
+        y = self.PDF_MARGIN
+
+        y = self._write_pdf_text(
+            page,
+            "Generated Marking Scheme",
+            y,
+            font_path=font_path,
+            font_size=self.PDF_TITLE_FONT_SIZE,
+            color=(0.08, 0.12, 0.20),
+        )
+        y = self._write_pdf_text(
+            page,
+            f"Session: {schema.session_id}",
+            y + 4,
+            font_path=font_path,
+            font_size=9,
+            color=(0.35, 0.38, 0.45),
+        )
+        y = self._write_pdf_text(
+            page,
+            f"Status: {'Confirmed' if schema.is_confirmed else 'Draft'}",
+            y,
+            font_path=font_path,
+            font_size=9,
+            color=(0.35, 0.38, 0.45),
+        )
+        y += 14
+
+        current_part = None
+        for index, question in enumerate(schema.questions, start=1):
+            if question.part_name and question.part_name != current_part:
+                current_part = question.part_name
+                page, y = self._ensure_pdf_space(doc, page, y, 34)
+                y = self._write_pdf_text(
+                    page,
+                    current_part.replace("_", " "),
+                    y + 4,
+                    font_path=font_path,
+                    font_size=self.PDF_HEADING_FONT_SIZE,
+                    color=(0.10, 0.25, 0.50),
+                )
+                y += 4
+
+            marks = f" ({question.max_marks} marks)" if question.max_marks is not None else ""
+            block_lines = self._format_pdf_question_lines(
+                number=question.question_number or str(index),
+                marks=marks,
+                question_text=question.question_text,
+                reference_text=question.reference_text,
+            )
+
+            page, y = self._ensure_pdf_space(doc, page, y, 46)
+            for line, options in block_lines:
+                page, y = self._ensure_pdf_space(doc, page, y, self.PDF_LINE_HEIGHT)
+                y = self._write_pdf_text(
+                    page,
+                    line,
+                    y,
+                    font_path=font_path,
+                    font_size=options.get("font_size", self.PDF_BODY_FONT_SIZE),
+                    color=options.get("color", (0.12, 0.12, 0.12)),
+                    x_offset=options.get("x_offset", 0),
+                )
+            y += 9
+
+        self._add_pdf_page_numbers(doc, font_path)
+        output = BytesIO()
+        doc.save(output, garbage=4, deflate=True)
+        doc.close()
+        return output.getvalue()
+
+    def _format_pdf_question_lines(
+        self,
+        *,
+        number: str,
+        marks: str,
+        question_text: str,
+        reference_text: str,
+    ) -> List[tuple[str, Dict[str, Any]]]:
+        lines: List[tuple[str, Dict[str, Any]]] = []
+        question_label = f"Question {number}{marks}"
+        lines.append((question_label, {"font_size": self.PDF_HEADING_FONT_SIZE, "color": (0.05, 0.05, 0.05)}))
+        lines.extend(
+            (line, {"x_offset": 10, "color": (0.16, 0.16, 0.16)})
+            for line in self._wrap_pdf_text(question_text or "-", width=82)
+        )
+        lines.append(("Reference answer:", {"font_size": 10, "color": (0.32, 0.32, 0.32)}))
+        lines.extend(
+            (line, {"x_offset": 10, "color": (0.12, 0.12, 0.12)})
+            for line in self._wrap_pdf_text(reference_text or "-", width=84)
+        )
+        return lines
+
+    def _write_pdf_text(
+        self,
+        page,
+        text: str,
+        y: float,
+        *,
+        font_path: Optional[str],
+        font_size: float,
+        color: tuple,
+        x_offset: float = 0,
+    ) -> float:
+        kwargs: Dict[str, Any] = {"fontsize": font_size, "color": color}
+        if font_path:
+            kwargs.update({"fontname": "sinhala", "fontfile": font_path})
+        page.insert_text((self.PDF_MARGIN + x_offset, y), text, **kwargs)
+        return y + max(self.PDF_LINE_HEIGHT, font_size + 4)
+
+    def _ensure_pdf_space(self, doc, page, y: float, required_height: float):
+        if y + required_height <= self.PDF_PAGE_HEIGHT - self.PDF_MARGIN:
+            return page, y
+        page = doc.new_page(width=self.PDF_PAGE_WIDTH, height=self.PDF_PAGE_HEIGHT)
+        return page, self.PDF_MARGIN
+
+    def _add_pdf_page_numbers(self, doc, font_path: Optional[str]) -> None:
+        for page_index, page in enumerate(doc, start=1):
+            text = f"Page {page_index} of {doc.page_count}"
+            kwargs: Dict[str, Any] = {"fontsize": 8, "color": (0.45, 0.45, 0.45)}
+            if font_path:
+                kwargs.update({"fontname": "sinhala", "fontfile": font_path})
+            page.insert_text(
+                (self.PDF_PAGE_WIDTH - self.PDF_MARGIN - 70, self.PDF_PAGE_HEIGHT - 24),
+                text,
+                **kwargs,
+            )
+
+    def _wrap_pdf_text(self, value: str, width: int) -> List[str]:
+        wrapped: List[str] = []
+        for paragraph in str(value or "").splitlines() or [""]:
+            if not paragraph.strip():
+                wrapped.append("")
+                continue
+            wrapped.extend(
+                textwrap.wrap(
+                    paragraph,
+                    width=width,
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                    replace_whitespace=False,
+                )
+                or [paragraph]
+            )
+        return wrapped
+
+    def _resolve_pdf_font_path(self) -> Optional[str]:
+        candidates = [
+            os.getenv("MARKING_SCHEMA_PDF_FONT_PATH"),
+            "C:/Windows/Fonts/Nirmala.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansSinhala-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansSinhalaUI-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ]
+        for candidate in candidates:
+            if candidate and Path(candidate).exists():
+                return candidate
+        logger.warning("No Unicode font found for marking schema PDF generation")
+        return None

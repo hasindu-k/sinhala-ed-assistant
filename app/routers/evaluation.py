@@ -484,6 +484,30 @@ def get_marking_schema(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get marking schema")
 
 
+@router.get("/sessions/{session_id}/marking-schema/pdf")
+def download_marking_schema_pdf(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    service = EvaluationWorkflowService(db)
+    try:
+        pdf_bytes = service.download_marking_schema_pdf(session_id, current_user.id)
+        filename = f"marking_schema_{session_id}.pdf"
+        return StreamingResponse(
+            iter([pdf_bytes]),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to download marking schema PDF for session {session_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to download marking schema PDF")
+
+
 @router.put("/sessions/{session_id}/marking-schema", response_model=MarkingSchemaResponse)
 def update_marking_schema(
     session_id: UUID,
