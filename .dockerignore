@@ -134,6 +134,7 @@ datasets/
 *.yaml
 !.pre-commit-config.yaml
 !.github/workflows/*.yaml
+!app/models/whisper-sinhala-accent-model/*.json
 
 # Frontend/static assets (if you have them)
 static/

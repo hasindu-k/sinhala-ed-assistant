@@ -13,9 +13,19 @@ from app.routers import (
 )
 from app.core.whisper_loader import WhisperLoader
 from app.api.v1.router import api_router
+from app.core.config import settings
 from app.core.database import Base, engine
 
 logger = logging.getLogger(__name__)
+
+cors_origins = [
+    "http://localhost:64792",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+if settings.FRONTEND_URL and settings.FRONTEND_URL not in cors_origins:
+    cors_origins.append(settings.FRONTEND_URL)
 
 app = FastAPI(
     title="Sinhala Educational Assistant API",
@@ -25,11 +35,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:64792",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

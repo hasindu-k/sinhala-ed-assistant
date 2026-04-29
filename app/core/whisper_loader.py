@@ -1,8 +1,10 @@
+import os
+
 import torch
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
 # Path to the saved model
-MODEL_PATH = "app/models/whisper-sinhala-accent-model"
+MODEL_PATH = os.getenv("WHISPER_MODEL_PATH", "app/models/whisper-sinhala-accent-model")
 
 class WhisperLoader:
     _processor = None
@@ -17,10 +19,12 @@ class WhisperLoader:
             cls._processor = WhisperProcessor.from_pretrained(MODEL_PATH)
             cls._model = WhisperForConditionalGeneration.from_pretrained(MODEL_PATH)
 
-            # Move the model to the appropriate device (GPU if available)
             cls._model.to(cls._device)
 
-            # Enable mixed precision for faster inference if on GPU
-            cls._model.half()  # Use FP16 (mixed precision)
+            # FP16 is useful on GPU, but CPU Azure containers should stay FP32.
+            if cls._device == "cuda":
+                cls._model.half()
+
+            cls._model.eval()
             
         return cls._processor, cls._model, cls._device
