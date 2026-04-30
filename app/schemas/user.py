@@ -18,6 +18,10 @@ class UserUpdate(BaseModel):
     password: Optional[str] = None
 
 
+class UserTierUpdate(BaseModel):
+    tier: str
+
+
 class UserResponse(BaseModel):
     id: UUID
     email: str
