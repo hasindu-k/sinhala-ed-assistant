@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/deployment_fixes
+      - Feat/deployment_fixes
   workflow_dispatch:
 
 env:
