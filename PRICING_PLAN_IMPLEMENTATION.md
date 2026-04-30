@@ -27,7 +27,7 @@ This document tracks the implementation of Basic, Intermediate, and Enterprise p
 - [ ] For Enterprise, should extra evaluations be allowed automatically, or blocked until billing/admin approval?
 - [ ] Should users be able to upgrade tier directly, or only admins/payment webhook should update `users.tier`?
 - [ ] Should old tiers be mapped as `normal -> basic`, `classroom -> intermediate`, `institution -> enterprise`?
-- [ ] Should the first admin user be created by migration, seed script, or manual database update?
+- [x] Should the first admin user be created by migration, seed script, or manual database update?
 - [ ] Should plan limits remain code-managed for now, or should admins be able to edit plan limits from the database?
 
 ## Tier Vs Role
@@ -65,10 +65,10 @@ An Enterprise user should not automatically become an admin. An admin can manage
 - [x] Add `role` column to `app/shared/models/user.py`.
 - [x] Use default role `user`.
 - [x] Create Alembic migration for `users.role`.
-- [ ] Decide how the first admin account is created.
+- [x] Decide how the first admin account is created.
 - [x] Expose `role` in user response only if needed by frontend.
 - [x] Add helper/dependency such as `require_admin_user`.
-- [ ] Protect tier-management endpoints with admin-only access.
+- [x] Protect tier-management endpoints with admin-only access.
 - [ ] Protect future plan-management endpoints with admin-only access.
 
 ### Phase 4: Usage Service
