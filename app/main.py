@@ -57,12 +57,15 @@ def on_startup():
             str(e)
         )
 
-    try:
-        logger.info("Loading Whisper model at startup...")
-        WhisperLoader.load()
-        logger.info("Whisper model loaded successfully.")
-    except Exception as e:
-        logger.error("Whisper model failed to load: %s", str(e))
+    if settings.LOAD_WHISPER_ON_STARTUP:
+        try:
+            logger.info("Loading Whisper model at startup...")
+            WhisperLoader.load()
+            logger.info("Whisper model loaded successfully.")
+        except Exception as e:
+            logger.error("Whisper model failed to load: %s", str(e))
+    else:
+        logger.info("Skipping Whisper startup load; model will load on first use.")
 
 def custom_openapi():
     """Add Bearer auth security scheme to OpenAPI and apply to protected endpoints."""

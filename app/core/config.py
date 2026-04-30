@@ -35,6 +35,7 @@ class Settings(BaseSettings):
 
     # HuggingFace Hub token (optional, suppresses rate-limit warnings)
     HF_TOKEN: Optional[str] = None
+    LOAD_WHISPER_ON_STARTUP: bool = False
 
     # Email (SMTP)
     MAIL_MAILER: str = "smtp"
