@@ -4,7 +4,7 @@ This document tracks the implementation of Basic, Intermediate, and Enterprise p
 
 ## Current Status
 
-- Status: Phase 7 complete
+- Status: Phase 9 mostly complete
 - Owner: TBD
 - Started: 2026-04-30
 - Main user field: `users.tier`
@@ -130,18 +130,18 @@ Possible future table:
 ### Phase 9: Tests
 
 - [x] Test Basic learning limit: 5 requests/hour allowed, 6th blocked.
-- [ ] Test Intermediate learning limit: 20 requests/hour.
-- [ ] Test Enterprise learning limit: 50 requests/hour.
+- [x] Test Intermediate learning limit: 20 requests/hour.
+- [x] Test Enterprise learning limit: 50 requests/hour.
 - [x] Test Basic evaluation sessions: 1/day allowed, 2nd blocked.
-- [ ] Test Intermediate evaluation sessions: 5/day.
-- [ ] Test Enterprise evaluation sessions: 10/day.
+- [x] Test Intermediate evaluation sessions: 5/day.
+- [x] Test Enterprise evaluation sessions: 10/day.
 - [x] Test Basic evaluations/session: 10 allowed, 11th blocked.
-- [ ] Test migration maps old tiers correctly.
-- [ ] Test pricing plans endpoint returns all required frontend metadata.
-- [ ] Test normal users cannot update tiers.
-- [ ] Test admins can update user tiers.
-- [ ] Test admin-only endpoints reject unauthenticated users.
-- [ ] Test admin-only endpoints reject authenticated non-admin users.
+- [x] Test migration maps old tiers correctly.
+- [x] Test pricing plans endpoint returns all required frontend metadata.
+- [x] Test normal users cannot update tiers.
+- [x] Test admins can update user tiers.
+- [x] Test admin-only endpoints reject unauthenticated users.
+- [x] Test admin-only endpoints reject authenticated non-admin users.
 
 ## Code Touchpoints
 

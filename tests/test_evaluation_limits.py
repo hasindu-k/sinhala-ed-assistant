@@ -2,6 +2,7 @@
 import os
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import Column, DateTime, ForeignKey, String, create_engine
@@ -75,6 +76,20 @@ def test_tier_aliases_return_daily_evaluation_session_limits():
     assert service.get_user_tier_limit("enterprise") == 10
 
 
+def test_user_tier_migration_maps_old_tiers():
+    migration_path = (
+        Path(BASE_DIR)
+        / "migrations"
+        / "versions"
+        / "c9d2f1e8a4b3_update_user_tier_defaults.py"
+    )
+    migration_text = migration_path.read_text(encoding="utf-8")
+
+    assert "normal' THEN 'basic" in migration_text
+    assert "classroom' THEN 'intermediate" in migration_text
+    assert "institution' THEN 'enterprise" in migration_text
+
+
 def test_basic_evaluation_session_limit_blocks_second_session_today():
     db = setup_db()
     service = UsageService(db)
@@ -139,6 +154,100 @@ def test_basic_learning_request_limit_blocks_sixth_request():
         assert getattr(exc, "status_code", None) == 403
     else:
         raise AssertionError("Expected learning request limit to block the request")
+
+
+def test_intermediate_learning_request_limit_blocks_twenty_first_request():
+    db = setup_db()
+    service = UsageService(db)
+    user_id = str(uuid4())
+    chat_id = str(uuid4())
+
+    db.add(User(id=user_id, email="intermediate@test.com", tier="intermediate"))
+    db.add(ChatSession(id=chat_id, user_id=user_id, mode="learning"))
+    for _ in range(20):
+        db.add(
+            Message(
+                id=str(uuid4()),
+                session_id=chat_id,
+                role="user",
+                created_at=datetime.now(),
+            )
+        )
+    db.commit()
+
+    try:
+        service.check_learning_request_limit(user_id)
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 403
+    else:
+        raise AssertionError("Expected intermediate learning limit to block the request")
+
+
+def test_enterprise_learning_request_limit_blocks_fifty_first_request():
+    db = setup_db()
+    service = UsageService(db)
+    user_id = str(uuid4())
+    chat_id = str(uuid4())
+
+    db.add(User(id=user_id, email="enterprise@test.com", tier="enterprise"))
+    db.add(ChatSession(id=chat_id, user_id=user_id, mode="learning"))
+    for _ in range(50):
+        db.add(
+            Message(
+                id=str(uuid4()),
+                session_id=chat_id,
+                role="user",
+                created_at=datetime.now(),
+            )
+        )
+    db.commit()
+
+    try:
+        service.check_learning_request_limit(user_id)
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 403
+    else:
+        raise AssertionError("Expected enterprise learning limit to block the request")
+
+
+def test_intermediate_evaluation_session_limit_blocks_sixth_session_today():
+    db = setup_db()
+    service = UsageService(db)
+    user_id = str(uuid4())
+    chat_id = str(uuid4())
+
+    db.add(User(id=user_id, email="intermediate@test.com", tier="intermediate"))
+    db.add(ChatSession(id=chat_id, user_id=user_id, mode="evaluation"))
+    for _ in range(5):
+        db.add(EvaluationSession(id=str(uuid4()), session_id=chat_id, created_at=datetime.now()))
+    db.commit()
+
+    try:
+        service.check_evaluation_session_limit(user_id)
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 403
+    else:
+        raise AssertionError("Expected intermediate evaluation limit to block the request")
+
+
+def test_enterprise_evaluation_session_limit_blocks_eleventh_session_today():
+    db = setup_db()
+    service = UsageService(db)
+    user_id = str(uuid4())
+    chat_id = str(uuid4())
+
+    db.add(User(id=user_id, email="enterprise@test.com", tier="enterprise"))
+    db.add(ChatSession(id=chat_id, user_id=user_id, mode="evaluation"))
+    for _ in range(10):
+        db.add(EvaluationSession(id=str(uuid4()), session_id=chat_id, created_at=datetime.now()))
+    db.commit()
+
+    try:
+        service.check_evaluation_session_limit(user_id)
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 403
+    else:
+        raise AssertionError("Expected enterprise evaluation limit to block the request")
 
 
 def test_basic_evaluations_per_session_limit_blocks_over_ten():
