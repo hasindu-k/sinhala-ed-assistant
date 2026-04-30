@@ -4,7 +4,7 @@ This document tracks the implementation of Basic, Intermediate, and Enterprise p
 
 ## Current Status
 
-- Status: Phase 4 complete
+- Status: Phase 5 complete
 - Owner: TBD
 - Started: 2026-04-30
 - Main user field: `users.tier`
@@ -82,10 +82,10 @@ An Enterprise user should not automatically become an admin. An admin can manage
 
 ### Phase 5: Learning Mode Enforcement
 
-- [ ] Add learning limit check to `app/routers/messages.py` before user message creation.
-- [ ] Add learning limit check to voice learning endpoints in `app/components/voice_qa/routers/voice_router.py`.
-- [ ] Make sure only user-created learning requests count, not assistant/system messages.
-- [ ] Make sure evaluation-mode chat messages do not consume learning quota unless intentionally required.
+- [x] Add learning limit check to `app/routers/messages.py` before user message creation.
+- [x] Add learning limit check to voice learning endpoints in `app/components/voice_qa/routers/voice_router.py`.
+- [x] Make sure only user-created learning requests count, not assistant/system messages.
+- [x] Make sure evaluation-mode chat messages do not consume learning quota unless intentionally required.
 
 ### Phase 6: Evaluation Mode Enforcement
 
