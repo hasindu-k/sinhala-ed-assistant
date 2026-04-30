@@ -4,7 +4,7 @@ This document tracks the implementation of Basic, Intermediate, and Enterprise p
 
 ## Current Status
 
-- Status: Phase 2 complete
+- Status: Phase 3 partially complete
 - Owner: TBD
 - Started: 2026-04-30
 - Main user field: `users.tier`
@@ -62,12 +62,12 @@ An Enterprise user should not automatically become an admin. An admin can manage
 
 ### Phase 3: Admin Role And Permissions
 
-- [ ] Add `role` column to `app/shared/models/user.py`.
-- [ ] Use default role `user`.
-- [ ] Create Alembic migration for `users.role`.
+- [x] Add `role` column to `app/shared/models/user.py`.
+- [x] Use default role `user`.
+- [x] Create Alembic migration for `users.role`.
 - [ ] Decide how the first admin account is created.
-- [ ] Expose `role` in user response only if needed by frontend.
-- [ ] Add helper/dependency such as `require_admin_user`.
+- [x] Expose `role` in user response only if needed by frontend.
+- [x] Add helper/dependency such as `require_admin_user`.
 - [ ] Protect tier-management endpoints with admin-only access.
 - [ ] Protect future plan-management endpoints with admin-only access.
 

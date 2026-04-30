@@ -23,6 +23,7 @@ class UserResponse(BaseModel):
     email: str
     full_name: Optional[str]
     tier: str
+    role: str
     created_at: datetime
     updated_at: Optional[datetime]
 
