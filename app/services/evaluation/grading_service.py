@@ -680,23 +680,21 @@ class GradingService:
 
         logger.info(f"Generating on-demand batch & overall feedback for result {result.id}")
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            # Only send essays to Gemini
-            essay_items = [i for i in scored_items if i["max_marks"] > 2]
-            future_batch = executor.submit(self._get_batch_feedback_from_gemini, essay_items)
-            future_overall = executor.submit(self._generate_overall_feedback, result.total_score, result.id)
+        # Only send essays to Gemini. Keep feedback calls sequential because the
+        # paid API can still return transient 503s when several Flash requests
+        # are fired at once.
+        essay_items = [i for i in scored_items if i["max_marks"] > 2]
+        try:
+            eval_data_map = self._get_batch_feedback_from_gemini(essay_items)
+        except Exception as e:
+            logger.error(f"Batch feedback generation failed: {e}")
+            eval_data_map = {}
 
-            try:
-                eval_data_map = future_batch.result()
-            except Exception as e:
-                logger.error(f"Batch feedback generation failed: {e}")
-                eval_data_map = {}
-
-            try:
-                overall_feedback = future_overall.result()
-            except Exception as e:
-                logger.error(f"Overall feedback generation failed: {e}")
-                overall_feedback = f"Total Score: {result.total_score}"
+        try:
+            overall_feedback = self._generate_overall_feedback(result.total_score, result.id)
+        except Exception as e:
+            logger.error(f"Overall feedback generation failed: {e}")
+            overall_feedback = f"Total Score: {result.total_score}"
 
         # Generate short-answer feedback locally - improved templates
         for item in scored_items:
@@ -938,6 +936,8 @@ class GradingService:
         snapped_marks = (Decimal(str(actual_marks)) / step).quantize(
             Decimal("1"), rounding=ROUND_HALF_UP
         ) * step
+        if max_marks > 2 and ratio < high_threshold:
+            snapped_marks = min(snapped_marks, Decimal(str(max_marks)) - step)
 
         final_ratio = float(snapped_marks / Decimal(str(max_marks)))
         return min(1.0, final_ratio)
@@ -1630,11 +1630,10 @@ Return ONLY a valid JSON object mirroring the keys provided.
         """
         Measures how many key concepts from the reference the student covered.
 
-        FIX: The denominator is now capped to max_marks * 2 instead of
-        len(sentences) * 0.70. This means:
-        - A 4-mark question expects ~8 key concept sentences.
-        - A student who covers 4 of them gets 4/8 = 0.50 coverage (not 4/14 = 0.28).
-        - This correctly reflects partial credit for partial answers.
+        The denominator is capped to a mark-aware expected concept count instead
+        of the full raw reference sentence count. This means a 4-mark question
+        expects roughly 4 distinct covered points, while long BM25 contexts do
+        not unfairly dilute otherwise relevant answers.
 
         Previously, BM25 could return 20 long syllabus sentences as context, and a
         student covering all the required points still got coverage ~0.21 because
@@ -1666,10 +1665,11 @@ Return ONLY a valid JSON object mirroring the keys provided.
         threshold = 0.28 if max_marks <= 2 else 0.28
         hits = int((sims >= threshold).sum().item())
 
-        # KEY FIX: Cap denominator to expected concept count for this question.
-        # Ensure deep essays (e.g. 18 marks) don't unreasonably penalize excellent answers
-        # by expecting 36 discrete points to score a 1.0 coverage. Cap to max_marks * 0.6.
-        expected_concepts = min(len(sentences), max_marks * 0.60)
+        # Cap the denominator to a fair expected concept count for this question.
+        # A 4-mark structured essay should normally need about 4 distinct points
+        # for full coverage. The previous max_marks * 0.60 cap let 2-3 loose
+        # matches count as perfect coverage and inflated Paper II scores.
+        expected_concepts = min(len(sentences), max(1, max_marks))
         ratio = hits / max(1, expected_concepts)
 
         return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
@@ -2004,7 +2004,12 @@ Questions to evaluate:
                 sent_keys = [it["key"] for it in chunk]
                 logger.info(f"Sending Gemini feedback batch for keys: {sent_keys}")
 
-                res_data = self.gemini.generate_content(chunk_prompt, json_mode=True)
+                res_data = self.gemini.generate_content(
+                    chunk_prompt,
+                    json_mode=True,
+                    max_retries=2,
+                    model_name=settings.EVAL_GEMINI_QUESTION_PARSING_MODEL,
+                )
                 response_json = res_data.get("text") or "{}"
                 try:
                     clean_json = re.sub(r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE)
@@ -2039,21 +2044,19 @@ Questions to evaluate:
                 logger.error(f"Gemini feedback batch failed: {e}")
                 return {}
 
-        # Batch size 8: Gemini context window handles this easily, reduces API call count
-        batch_size = 8
+        # Smaller chunks recover better when one model is overloaded or denied.
+        batch_size = 4
         chunks = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
 
         evaluation_data = {}
-        # max_workers 6: more parallelism to reduce total wall-clock time
-        with ThreadPoolExecutor(max_workers=min(len(chunks), 6)) as executor:
-            future_to_chunk = {executor.submit(process_chunk, chunk): chunk for chunk in chunks}
-            for future in as_completed(future_to_chunk):
-                try:
-                    result = future.result()
-                    if result:
-                        evaluation_data.update(result)
-                except Exception as exc:
-                    logger.error(f"Gemini feedback chunk failed: {exc}")
+        for chunk in chunks:
+            try:
+                result = process_chunk(chunk)
+                if result:
+                    evaluation_data.update(result)
+            except Exception as exc:
+                logger.error(f"Gemini feedback chunk failed: {exc}")
+            time.sleep(0.5)
 
         # Build final map — ONLY extract feedback text, never any numeric value
         final_map = {}
@@ -2067,6 +2070,9 @@ Questions to evaluate:
                 # NOTE: No "marks", "score", or numeric value is ever stored here.
                 # awarded_marks is set exclusively by _apply_discrete_bands().
             }
+            if not raw_feedback or raw_feedback.startswith("("):
+                raw_feedback = "ප්‍රතිපෝෂණ ලබා ගත නොහැක. Gemini සේවාව තාවකාලිකව අසාර්ථක විය."
+            final_map[key]["feedback"] = f"**ප්‍රශ්නය {item['display_number']}** {raw_feedback}"
 
         return final_map
 
@@ -2080,6 +2086,14 @@ Evaluate the performance based on this score and generate a quality overall feed
 High quality feedback highlights strengths and provides specific advice for improvement.
 Use Markdown for presentation. Use simple and direct language.
 """
-            return self.gemini.generate_content(prompt).text or ""
-        except Exception:
+            res_data = self.gemini.generate_content(
+                prompt,
+                max_retries=2,
+                model_name=settings.EVAL_GEMINI_QUESTION_PARSING_MODEL,
+            )
+            if isinstance(res_data, dict):
+                return res_data.get("text") or f"Total Score: {total_score}"
+            return f"Total Score: {total_score}"
+        except Exception as e:
+            logger.error(f"Overall feedback generation failed: {e}")
             return f"Total Score: {total_score}"

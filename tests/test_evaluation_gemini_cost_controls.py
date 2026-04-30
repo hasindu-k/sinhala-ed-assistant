@@ -377,3 +377,51 @@ def test_normalize_extracted_exam_result_rebalances_plain_questions():
     assert normalized["Paper_II"]["config"]["total_questions_available"] == 3
     assert "3" in normalized["Paper_I"]["questions"]
     assert "3" not in normalized["Paper_II"]["questions"]
+
+
+def test_segment_exam_text_detects_sinhala_shra_paper_headers():
+    text = """
+11 ශ්‍රේණිය - ඉතිහාසය
+
+I ශ්‍රකාටස - ශ්‍රකටි පිළිතුරු ප්‍රශ්න
+1. කෙටි ප්‍රශ්නයකි. (02 ලකුණු)
+2. තවත් කෙටි ප්‍රශ්නයකි. (02 ලකුණු)
+
+II ශ්‍රකාටස - විග්‍රහාත්මක රචනා ප්‍රශ්න
+01.
+(අ) රචනා ප්‍රශ්නයකි. (04 ලකුණු)
+(ආ) තවත් උප ප්‍රශ්නයකි. (04 ලකුණු)
+"""
+
+    sections = classifier_service._segment_exam_text_by_paper_headers(text)
+
+    assert set(sections) == {"Paper_I", "Paper_II"}
+    assert "කෙටි ප්‍රශ්නයකි" in sections["Paper_I"]
+    assert "විග්‍රහාත්මක" in sections["Paper_II"]
+
+
+def test_backfill_missing_segmented_paper_ii_questions():
+    text = """
+I ශ්‍රකාටස - ශ්‍රකටි පිළිතුරු ප්‍රශ්න
+1. කෙටි ප්‍රශ්නයකි. (02 ලකුණු)
+
+II ශ්‍රකාටස - විග්‍රහාත්මක රචනා ප්‍රශ්න
+01.
+(අ) පළමු රචනා උප ප්‍රශ්නය. (04 ලකුණු)
+(ආ) දෙවන උප ප්‍රශ්නය. (04 ලකුණු)
+(ඇ) තුන්වන උප ප්‍රශ්නය. (04 ලකුණු)
+02.
+(අ) දෙවන රචනා ප්‍රශ්නය. (04 ලකුණු)
+03.
+(අ) තුන්වන රචනා ප්‍රශ්නය. (04 ලකුණු)
+"""
+    parsed = {
+        "Paper_I": {"config": {}, "questions": {"1": {"text": "කෙටි ප්‍රශ්නයකි"}}},
+        "Paper_II": {"config": {}, "questions": {"1": {"text": "only one"}}},
+    }
+
+    backfilled = classifier_service._backfill_missing_segmented_questions(parsed, text)
+
+    assert set(backfilled["Paper_II"]["questions"]) == {"1", "2", "3"}
+    assert backfilled["Paper_II"]["config"]["total_questions_available"] == 3
+    assert set(backfilled["Paper_II"]["questions"]["2"]["sub_questions"]) == {"අ"}

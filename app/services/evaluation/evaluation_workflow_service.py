@@ -121,6 +121,18 @@ class EvaluationWorkflowService:
             return eval_session.session_id
         return session_id
 
+    def _chat_session_has_confirmed_paper_config(self, chat_session_id: UUID) -> bool:
+        configs = self.paper_configs.get_config(chat_session_id=chat_session_id) or []
+        if not isinstance(configs, list):
+            configs = [configs]
+        return bool(configs) and all(bool(getattr(config, "is_confirmed", False)) for config in configs)
+
+    def _can_reuse_question_paper_parse(self, chat_session_id: UUID, resource_id: UUID) -> bool:
+        if not self._chat_session_has_confirmed_paper_config(chat_session_id):
+            return False
+        question_papers = self.question_papers.get_question_papers_by_chat_session(chat_session_id)
+        return any(getattr(qp, "resource_id", None) == resource_id for qp in question_papers)
+
     # ------------------------------------------------------------------
     # Ownership helpers
     # ------------------------------------------------------------------
@@ -599,6 +611,7 @@ class EvaluationWorkflowService:
             ))
 
         # 3. Process Question Paper
+        question_paper_ready = False
         try:
             # Check if QP is attached
             qp_resource = self.db.query(SessionResource).filter(
@@ -607,25 +620,18 @@ class EvaluationWorkflowService:
             ).first()
             
             if qp_resource:
-                # Check if already parsed
-                existing_qp = self.question_papers.get_question_papers_by_chat_session(chat_session_id)
-                already_parsed = False
-                if existing_qp:
-                    for qp in existing_qp:
-                        if getattr(qp, 'resource_id', None) == qp_resource.resource_id:
-                            already_parsed = True
-                            break
-                            
-                if already_parsed:
+                if self._can_reuse_question_paper_parse(chat_session_id, qp_resource.resource_id):
+                    question_paper_ready = True
                     results.append(DocumentProcessingStatus(
                         resource_id=qp_resource.resource_id,
                         role="question_paper",
                         status="already_processed",
-                        message="Question paper already parsed."
+                        message="Question paper already parsed and config confirmed."
                     ))
                 else:
                     # Process QP
                     self.parse_question_paper(chat_session_id, user_id)
+                    question_paper_ready = True
                     results.append(DocumentProcessingStatus(
                         resource_id=qp_resource.resource_id,
                         role="question_paper",
@@ -650,6 +656,16 @@ class EvaluationWorkflowService:
             ))
 
         # 4. Process Answer Scripts
+        if not question_paper_ready:
+            for res_id in answer_resource_ids:
+                results.append(DocumentProcessingStatus(
+                    resource_id=res_id,
+                    role="answer_script",
+                    status="failed",
+                    message="Skipped because question paper parsing failed."
+                ))
+            return ProcessDocumentsResponse(results=results)
+
         for res_id in answer_resource_ids:
             try:
                 self._ensure_resource_owner(res_id, user_id)
@@ -851,6 +867,7 @@ class EvaluationWorkflowService:
             ))
 
         # 3. Process Question Paper
+        question_paper_ready = False
         try:
             qp_resource = self.db.query(SessionResource).filter(
                 SessionResource.session_id == chat_session_id,
@@ -859,17 +876,18 @@ class EvaluationWorkflowService:
             
             status_obj = None
             if qp_resource:
-                existing_qp = self.question_papers.get_question_papers_by_chat_session(chat_session_id)
-                if existing_qp:
+                if self._can_reuse_question_paper_parse(chat_session_id, qp_resource.resource_id):
+                    question_paper_ready = True
                     status_obj = DocumentProcessingStatus(
                         resource_id=qp_resource.resource_id,
                         role="question_paper",
                         status="already_processed",
-                        message="Question paper already parsed."
+                        message="Question paper already parsed and config confirmed."
                     )
                 else:
                     logger.info("Stream: Parsing Question Paper...")
                     self.parse_question_paper(chat_session_id, user_id)
+                    question_paper_ready = True
                     status_obj = DocumentProcessingStatus(
                         resource_id=qp_resource.resource_id,
                         role="question_paper",
@@ -899,6 +917,22 @@ class EvaluationWorkflowService:
             ))
 
         # 4. Process Answer Scripts
+        if not question_paper_ready:
+            for res_id in answer_resource_ids:
+                current_step += 1
+                yield make_event(
+                    "Answer script skipped because question paper parsing failed",
+                    DocumentProcessingStatus(
+                        resource_id=res_id,
+                        role="answer_script",
+                        status="failed",
+                        message="Skipped because question paper parsing failed."
+                    )
+                )
+            logger.info("Stream: Stopped after question paper failure")
+            yield make_event("Processing stopped because question paper parsing failed")
+            return
+
         for res_id in answer_resource_ids:
             try:
                 self._ensure_resource_owner(res_id, user_id)
@@ -1039,12 +1073,25 @@ class EvaluationWorkflowService:
         if not session_resource:
             raise ValueError("No question paper resource attached to this chat session")
             
-        # Check if already parsed for this chat session AND resource
+        # Reuse parsed structure only after the user has confirmed the paper
+        # config. Before confirmation, repeated process clicks should refresh
+        # the generated structure/config instead of reporting stale completion.
         question_papers = self.question_papers.get_question_papers_by_chat_session(session_id)
-        if question_papers:
+        can_reuse_parsed_paper = self._can_reuse_question_paper_parse(
+            session_id,
+            session_resource.resource_id,
+        )
+        if question_papers and can_reuse_parsed_paper:
             for qp in question_papers:
                 if getattr(qp, 'resource_id', None) == session_resource.resource_id:
+                    logger.info(
+                        "Question paper already parsed and config confirmed. Reusing parsed structure."
+                    )
                     return self.question_papers.get_question_paper_with_questions(qp.id)
+        elif question_papers:
+            logger.info(
+                "Question paper has existing generated structure, but config is not confirmed. Reprocessing."
+            )
 
         self._ensure_resource_owner(session_resource.resource_id, user_id)
         
@@ -1130,6 +1177,7 @@ class EvaluationWorkflowService:
                     weightage=float(config.get("suggested_weightage")) if config.get("suggested_weightage") is not None else None,
                     total_main_questions=config.get("total_questions_available"),
                     selection_rules=config.get("selection_rules"),
+                    is_confirmed=False,
                 )
 
                 # 2️⃣ Create Questions

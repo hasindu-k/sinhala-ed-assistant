@@ -115,6 +115,7 @@ _ROMAN_NUMERAL_MAP = {
 
 def _roman_to_paper_key(token: str) -> str | None:
     normalized = str(token or "").strip().lower()
+    normalized = {"1": "i", "2": "ii", "3": "iii", "4": "iv", "5": "v"}.get(normalized, normalized)
     value = _ROMAN_NUMERAL_MAP.get(normalized)
     if value is None:
         return None
@@ -135,9 +136,57 @@ def _count_questions_with_subparts(questions: dict) -> int:
     return sum(1 for q in (questions or {}).values() if _question_has_sub_questions(q))
 
 
+_PAPER_HEADER_WORDS = (
+    "paper",
+    "part",
+    "section",
+    "කොටස",
+    "කොටස",
+    "කාටස",
+    "ශ්‍රකාටස",
+    "ශ්‍රේකාටස",
+    "භාගය",
+)
+_PAPER_HEADER_WORD_PATTERN = "|".join(re.escape(word) for word in _PAPER_HEADER_WORDS)
+_PAPER_TOKEN_PATTERN = r"iii|ii|iv|v|i|[1-5]"
+
+
+def _detect_paper_header_key(line: str) -> str | None:
+    if not line or len(line.strip()) > 160:
+        return None
+
+    normalized = re.sub(r"\s+", " ", line.strip().lower())
+    patterns = [
+        rf"^(?P<token>{_PAPER_TOKEN_PATTERN})\s*[-:.)]?\s*(?:{_PAPER_HEADER_WORD_PATTERN})\b",
+        rf"^(?:{_PAPER_HEADER_WORD_PATTERN})\s*[-: ]*\s*(?P<token>{_PAPER_TOKEN_PATTERN})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            return _roman_to_paper_key(match.group("token"))
+    return None
+
+
 def _segment_exam_text_by_paper_headers(text: str) -> dict[str, str]:
     if not text:
         return {}
+
+    matches: list[tuple[str, int]] = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        paper_key = _detect_paper_header_key(line)
+        if paper_key:
+            matches.append((paper_key, offset))
+        offset += len(line)
+
+    if len(matches) >= 2:
+        sections: dict[str, str] = {}
+        for index, (paper_key, start) in enumerate(matches):
+            end = matches[index + 1][1] if index + 1 < len(matches) else len(text)
+            section_text = text[start:end].strip()
+            if section_text:
+                sections[paper_key] = section_text
+        return sections
 
     header_pattern = re.compile(
         r"(?im)^\s*(?:"
@@ -177,9 +226,90 @@ def _prepare_exam_text_for_prompt(text: str) -> str:
     ]
     return (
         "The OCR text below was locally segmented by detected paper headers. "
-        "Keep every question inside its own paper section and do not move questions across sections.\n\n"
+        "Keep every question inside its own paper section and do not move questions across sections. "
+        f"You MUST return these paper keys: {', '.join(key for key, _ in ordered)}.\n\n"
         + "\n\n".join(blocks)
     )
+
+
+def _extract_structured_main_questions_from_section(section_text: str) -> dict[str, dict]:
+    if not section_text:
+        return {}
+
+    marker_pattern = re.compile(r"(?m)^\s*(?P<label>\d{1,2})\.\s*$")
+    matches = list(marker_pattern.finditer(section_text))
+    questions: dict[str, dict] = {}
+
+    for index, match in enumerate(matches):
+        raw_label = match.group("label")
+        label = str(int(raw_label))
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(section_text)
+        body = section_text[start:end].strip()
+        if not body:
+            continue
+
+        sub_questions = {}
+        for sub_match in re.finditer(
+            r"(?ms)\(\s*(?P<label>[^)\s]{1,3})\s*\)\s*(?P<text>.*?)(?=\n\s*\(\s*[^)\s]{1,3}\s*\)|\Z)",
+            body,
+        ):
+            sub_label = sub_match.group("label").strip()
+            sub_text = re.sub(r"\s+", " ", sub_match.group("text")).strip()
+            marks_match = re.search(r"\((\d{1,2})\s*[^\)]*ලකුණු\)", sub_text)
+            sub_questions[sub_label] = {
+                "text": sub_text,
+                "marks": int(marks_match.group(1)) if marks_match else None,
+            }
+
+        questions[label] = {
+            "type": "structured",
+            "text": re.sub(r"\s+", " ", body).strip(),
+            "marks": sum(
+                value["marks"] for value in sub_questions.values() if value.get("marks") is not None
+            ) or None,
+            "sub_questions": sub_questions,
+        }
+
+    return questions
+
+
+def _backfill_missing_segmented_questions(result: dict, original_text: str) -> dict:
+    sections = _segment_exam_text_by_paper_headers(original_text)
+    if not sections:
+        return result
+
+    for paper_key, section_text in sections.items():
+        local_questions = _extract_structured_main_questions_from_section(section_text)
+        if not local_questions:
+            continue
+
+        paper = result.setdefault(paper_key, {})
+        if not isinstance(paper, dict):
+            continue
+        questions = paper.setdefault("questions", {})
+        if not isinstance(questions, dict):
+            questions = {}
+            paper["questions"] = questions
+
+        missing = {
+            label: question
+            for label, question in local_questions.items()
+            if str(label) not in {str(existing) for existing in questions}
+        }
+        if missing:
+            questions.update(missing)
+            logger.warning(
+                "Backfilled %s missing main question(s) for %s from locally segmented text.",
+                len(missing),
+                paper_key,
+            )
+
+        config = paper.setdefault("config", {})
+        if isinstance(config, dict):
+            config["total_questions_available"] = len(questions)
+
+    return result
 
 
 def _normalize_extracted_exam_result(result: dict) -> dict:
@@ -470,6 +600,9 @@ SECTION 2: QUESTION STRUCTURE RULES
 **Question Detection:**
 - Identify main questions (1, 2, 3...) and sub-questions (a, b, c or i, ii, iii).
 - Preserve the exact question numbering and mapping from the paper.
+- Selection instructions like "answer any 5 from 8" are grading rules only.
+  They mean 8 questions are available and 5 are required. NEVER extract only
+  the required count. Extract ALL available printed questions.
 
 **MCQ Structure:**
 - Detect MCQs by options like (1)(2)(3)(4) or (A)(B)(C)(D).
@@ -485,6 +618,8 @@ SECTION 2: QUESTION STRUCTURE RULES
 SECTION 3: ROBUST LAYOUT & TEXT REPAIR
 ========================
 You are receiving text from a system OCR or digital extraction which may have jumbled line orders due to multi-column layouts or PDF encoding issues.
+IMPORTANT: If a section says "answer any 05 from 08", that is a requirement rule,
+not the number of printed questions. Extract all 8 printed main questions.
 1. **Restore Logical Flow**: Use linguistic context to re-order the questions. If sub-question (b) appears before (a) in the text, logically group them correctly in the JSON.
 2. **Exhaustive Detection**: Every numbered (1, 2...) or lettered ((a), (b)... / (අ), (ආ)...) item MUST be captured. If sub-questions span multiple pages or are interrupted by tables, bridge the gap and include them all.
 3. **Sinhala Repair**: Fix broken conjuncts (ක් ෂ → ක්‍ෂ), diacritic drifts, and accidental spaces within words.
@@ -511,7 +646,11 @@ Only include keys for papers actually found in the text.
         "text": "Question text here",
         "marks": 5
       }},
-      "2": {{ "..." }}
+      "2": {{
+        "type": "structured",
+        "text": "Second question text here",
+        "marks": null
+      }}
     }}
   }},
   "Paper_III": {{
@@ -551,6 +690,8 @@ def extract_complete_exam_data(text: str):
         result = _safe_json_loads(response_text)
         if not result or not isinstance(result, dict):
             return {}
+
+        result = _backfill_missing_segmented_questions(result, prepared_text)
             
         logger.info("Combined exam extraction completed successfully.")
         
