@@ -21,7 +21,6 @@ from jiwer import wer, cer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import torch
-from transformers import AutoTokenizer, AutoModel
 
 # Hybrid retrieval helpers (lexical + dense + cross-encoder rerank)
 from app.components.voice_qa.services.hybrid_retrieval import (
@@ -122,6 +121,8 @@ class VoiceService:
     @staticmethod
     def _load_embedding_model():
         if VoiceService._embedding_model is None:
+            from transformers import AutoTokenizer, AutoModel
+
             VoiceService._embedding_tokenizer = AutoTokenizer.from_pretrained(
                 "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
             )

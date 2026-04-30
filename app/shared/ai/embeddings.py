@@ -4,7 +4,6 @@ import threading
 from app.core.gemini_client import GeminiClient
 from app.core.config import settings
 from google.genai import types
-from sentence_transformers import SentenceTransformer, util
 import huggingface_hub
 
 if settings.HF_TOKEN:
@@ -28,6 +27,8 @@ def get_xlmr_model():
     if _xlmr is None:
         with _xlmr_lock:
             if _xlmr is None:
+                from sentence_transformers import SentenceTransformer
+
                 _xlmr = SentenceTransformer(
                     "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
                 )
@@ -77,6 +78,8 @@ def semantic_similarity(a: str, b: str) -> float:
         return 0.0
 
     try:
+        from sentence_transformers import util
+
         # Check cache first
         with _cache_lock:
             a_vec = _embedding_cache.get(a)

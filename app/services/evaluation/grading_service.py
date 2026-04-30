@@ -13,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import torch
 from rank_bm25 import BM25Okapi
-from sentence_transformers import util
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from sqlalchemy.orm.exc import StaleDataError
@@ -29,13 +28,19 @@ from app.shared.models.session_resources import SessionResource
 from app.shared.models.evaluation_session import EvaluationSession, PaperConfig
 from app.shared.models.resource_file import ResourceFile
 from app.shared.models.rubrics import Rubric, RubricCriterion
-from app.shared.ai.embeddings import xlmr, ml_semaphore, ensure_sentences_cached, _embedding_cache
+from app.shared.ai.embeddings import get_xlmr_model, ml_semaphore, ensure_sentences_cached, _embedding_cache
 from app.shared.ai.gemini_client import gemini_generate_evaluation
 from app.core.config import settings
 from app.core.gemini_client import GeminiClient
 from app.services.evaluation.gemini_cost_policy import EvaluationGeminiClient
 
 logger = logging.getLogger(__name__)
+
+
+def _cosine_util():
+    from sentence_transformers import util
+
+    return util
 
 
 class GradingService:
@@ -856,25 +861,25 @@ class GradingService:
         if not sentences:
             with ml_semaphore:
                 emb1 = student_emb if student_emb is not None else _embedding_cache.get(student_text)
-                if emb1 is None: emb1 = xlmr.encode(student_text, convert_to_tensor=True)
+                if emb1 is None: emb1 = get_xlmr_model().encode(student_text, convert_to_tensor=True)
 
                 emb2 = reference_emb if reference_emb is not None else _embedding_cache.get(reference_text)
-                if emb2 is None: emb2 = xlmr.encode(reference_text, convert_to_tensor=True)
+                if emb2 is None: emb2 = get_xlmr_model().encode(reference_text, convert_to_tensor=True)
 
-            raw_sim = util.cos_sim(emb1, emb2).item()
+            raw_sim = _cosine_util().cos_sim(emb1, emb2).item()
             return self._sinhala_sigmoid_boost(raw_sim, max_marks)
 
         s_emb = student_emb if student_emb is not None else _embedding_cache.get(student_text)
         if s_emb is None:
             with ml_semaphore:
-                s_emb = xlmr.encode(student_text, convert_to_tensor=True)
+                s_emb = get_xlmr_model().encode(student_text, convert_to_tensor=True)
 
         missing = [s for s in sentences if s not in _embedding_cache]
         if missing:
             ensure_sentences_cached(missing)
 
         ref_embs = torch.stack([_embedding_cache[s] for s in sentences])
-        sims = util.cos_sim(s_emb, ref_embs)[0]
+        sims = _cosine_util().cos_sim(s_emb, ref_embs)[0]
 
         # Blend max-match (70%) with top-3 average (30%) for stability
         k = min(3, len(sims))
@@ -1647,14 +1652,14 @@ Return ONLY a valid JSON object mirroring the keys provided.
         s_emb = student_emb if student_emb is not None else _embedding_cache.get(student_text)
         if s_emb is None:
             with ml_semaphore:
-                s_emb = xlmr.encode(student_text, convert_to_tensor=True)
+                s_emb = get_xlmr_model().encode(student_text, convert_to_tensor=True)
 
         missing_sentences = [s for s in sentences if s not in _embedding_cache]
         if missing_sentences:
             ensure_sentences_cached(missing_sentences)
 
         sentence_embs = torch.stack([_embedding_cache[s] for s in sentences])
-        sims = util.cos_sim(s_emb, sentence_embs)[0]
+        sims = _cosine_util().cos_sim(s_emb, sentence_embs)[0]
 
         # Threshold: how similar must a sentence be to count as "covered"
         # Relaxed from 0.32 to 0.28 to reward pooled concise bullet items without dilution.
