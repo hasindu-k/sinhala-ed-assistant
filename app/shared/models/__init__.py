@@ -21,6 +21,7 @@ from app.shared.models.password_reset_token import PasswordResetToken
 from app.shared.models.refresh_token import RefreshToken
 from app.shared.models.user_evaluation_context import UserEvaluationContext
 from app.shared.models.processing_log import ProcessingLog
+from app.shared.models.api_usage_log import ApiUsageLog
 
 __all__ = [
     "User",
@@ -49,4 +50,5 @@ __all__ = [
     "RefreshToken",
     "UserEvaluationContext",
     "ProcessingLog",
+    "ApiUsageLog",
 ]

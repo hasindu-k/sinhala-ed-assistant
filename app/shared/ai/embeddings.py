@@ -28,19 +28,33 @@ EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIM = 768
 
 
-def generate_embedding(text: str) -> list[float]:
+def generate_embedding(
+    text: str,
+    user_id=None,
+    session_id=None,
+    message_id=None,
+    resource_id=None,
+    service_name: str = "embedding_generation",
+    metadata_json: dict | None = None,
+) -> list[float]:
     """
-    Generate a 768-dim embedding using Gemini.
+    Generate a 768-dim embedding using Gemini and log API usage.
     """
     if not text or not text.strip():
         return []
 
+    import time
+    import random
+    from app.services.api_usage_log_service import ApiUsageLogService
+
+    request_start_time = time.time()
+    request_id = f"embedding-{int(request_start_time * 1000)}-{random.randint(1000, 9999)}"
+
     try:
-        # Move client initialization inside to avoid startup crash if API keys missing
         client = GeminiClient.get_client()
         if not client:
             return []
-            
+
         result = client.models.embed_content(
             model=EMBED_MODEL,
             contents=text,
@@ -49,15 +63,73 @@ def generate_embedding(text: str) -> list[float]:
             )
         )
 
-        if result.embeddings:
-            return result.embeddings[0].values
+        embedding_values = []
 
-        return []
+        if result.embeddings:
+            embedding_values = result.embeddings[0].values
+
+        duration_ms = round((time.time() - request_start_time) * 1000, 2)
+
+        ApiUsageLogService.create_log(
+            request_id=request_id,
+            provider="gemini",
+            service_name=service_name,
+            model_name=EMBED_MODEL,
+            status="success" if embedding_values else "empty_response",
+            user_id=user_id,
+            session_id=session_id,
+            message_id=message_id,
+            prompt_chars=len(text or ""),
+            response_chars=0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            attempt_number=1,
+            max_retries=0,
+            is_retry=False,
+            duration_ms=duration_ms,
+            metadata_json={
+                **(metadata_json or {}),
+                "resource_id": str(resource_id) if resource_id else None,
+                "embedding_dimensions": len(embedding_values),
+                "output_dimensionality": EMBED_DIM,
+            },
+        )
+
+        return embedding_values
 
     except Exception as e:
+        duration_ms = round((time.time() - request_start_time) * 1000, 2)
+
+        ApiUsageLogService.create_log(
+            request_id=request_id,
+            provider="gemini",
+            service_name=service_name,
+            model_name=EMBED_MODEL,
+            status="failed",
+            user_id=user_id,
+            session_id=session_id,
+            message_id=message_id,
+            prompt_chars=len(text or ""),
+            response_chars=0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            attempt_number=1,
+            max_retries=0,
+            is_retry=False,
+            error_type=type(e).__name__,
+            error_message=str(e)[:1000],
+            duration_ms=duration_ms,
+            metadata_json={
+                **(metadata_json or {}),
+                "resource_id": str(resource_id) if resource_id else None,
+                "output_dimensionality": EMBED_DIM,
+            },
+        )
+
         print(f"[ERROR] Gemini Embedding failed: {e}")
         return []
-
 
 def semantic_similarity(a: str, b: str) -> float:
     """

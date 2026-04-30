@@ -3,6 +3,7 @@ import logging
 import time
 import random
 import threading
+from uuid import UUID
 from google import genai
 from app.core.config import settings
 
@@ -144,6 +145,10 @@ class GeminiClient:
         safety_settings: list = None,
         json_mode: bool = False,
         model_name: str | None = None,
+        user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        message_id: UUID | None = None,
+        service_name: str = "message_generation",
     ) -> dict:
         """
         Generate content from Gemini and return text + token usage.
@@ -151,6 +156,10 @@ class GeminiClient:
         Token counts are obtained from actual API response (usage_metadata).
         """
         from google.genai import types
+
+        request_start_time = time.time()
+        logical_request_id = f"gemini-{int(request_start_time * 1000)}-{random.randint(1000, 9999)}"
+
         config = types.GenerateContentConfig(
             safety_settings=safety_settings,
             response_mime_type="application/json" if json_mode else "text/plain",
@@ -158,6 +167,7 @@ class GeminiClient:
         )
 
         for attempt in range(max_retries + 1):
+            attempt_start_time = time.time()
             try:
                 client = cls.get_client()
                 with _ai_semaphore:
@@ -175,6 +185,34 @@ class GeminiClient:
                     completion_tokens = usage.candidates_token_count if usage else 0
                     total_tokens = usage.total_token_count if usage else 0
 
+                    duration_ms = round((time.time() - attempt_start_time) * 1000, 2)
+
+                    from app.services.api_usage_log_service import ApiUsageLogService
+
+                    ApiUsageLogService.create_log(
+                        request_id=logical_request_id,
+                        provider="gemini",
+                        service_name=service_name,
+                        model_name=cls._get_model_name(model_name),
+                        user_id=user_id,
+                        session_id=session_id,
+                        message_id=message_id,
+                        prompt_chars=len(prompt or ""),
+                        response_chars=len(text or ""),
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        attempt_number=attempt + 1,
+                        max_retries=max_retries,
+                        is_retry=attempt > 0,
+                        status="success",
+                        duration_ms=duration_ms,
+                        metadata_json={
+                            "json_mode": json_mode,
+                            "key_slot": _active_client_index,
+                        },
+                    )
+
                     return {
                         "text": text,
                         "prompt_tokens": prompt_tokens,
@@ -183,8 +221,37 @@ class GeminiClient:
                     }
 
             except Exception as e:
+                duration_ms = round((time.time() - attempt_start_time) * 1000, 2)
                 error_msg = str(e).lower()
                 retry_reason = cls._classify_retry(error_msg)
+
+                current_model_name = cls._get_model_name(model_name)
+                current_key_slot = _active_client_index
+
+                from app.services.api_usage_log_service import ApiUsageLogService
+
+                ApiUsageLogService.create_log(
+                    request_id=logical_request_id,
+                    provider="gemini",
+                    service_name=service_name,
+                    model_name=current_model_name,
+                    user_id=user_id,
+                    session_id=session_id,
+                    message_id=message_id,
+                    prompt_chars=len(prompt or ""),
+                    response_chars=0,
+                    attempt_number=attempt + 1,
+                    max_retries=max_retries,
+                    is_retry=attempt > 0,
+                    status="retry" if retry_reason and attempt < max_retries else "failed",
+                    error_type=retry_reason or "unknown_error",
+                    error_message=str(e)[:1000],
+                    duration_ms=duration_ms,
+                    metadata_json={
+                        "json_mode": json_mode,
+                        "key_slot": current_key_slot,
+                    },
+                )
 
                 if retry_reason and attempt < max_retries:
                     if retry_reason == "model_not_found" and not model_name:

@@ -313,6 +313,7 @@ class MessageService:
             bm25_k=bm25_k,
             final_k=final_k,
             grade_level=message.grade_level,
+            user_id=user_id,
         )
 
         logger.info("RAG response generated for message %s", message_id)
