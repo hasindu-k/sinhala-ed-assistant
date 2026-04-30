@@ -4,7 +4,7 @@ This document tracks the implementation of Basic, Intermediate, and Enterprise p
 
 ## Current Status
 
-- Status: Phase 3 partially complete
+- Status: Phase 4 complete
 - Owner: TBD
 - Started: 2026-04-30
 - Main user field: `users.tier`
@@ -73,12 +73,12 @@ An Enterprise user should not automatically become an admin. An admin can manage
 
 ### Phase 4: Usage Service
 
-- [ ] Refactor `app/services/usage_service.py` to use the new plan config.
-- [ ] Add `check_learning_request_limit(user_id)`.
-- [ ] Add `check_evaluation_session_limit(user_id)`.
-- [ ] Add `check_evaluations_per_session_limit(user_id, answer_resource_ids)`.
-- [ ] Return clear HTTP 403 errors with current tier and limit details.
-- [ ] Decide whether unknown tier should fallback to `basic` or fail loudly.
+- [x] Refactor `app/services/usage_service.py` to use the new plan config.
+- [x] Add `check_learning_request_limit(user_id)`.
+- [x] Add `check_evaluation_session_limit(user_id)`.
+- [x] Add `check_evaluations_per_session_limit(user_id, answer_resource_ids)`.
+- [x] Return clear HTTP 403 errors with current tier and limit details.
+- [x] Decide whether unknown tier should fallback to `basic` or fail loudly.
 
 ### Phase 5: Learning Mode Enforcement
 
@@ -129,13 +129,13 @@ Possible future table:
 
 ### Phase 9: Tests
 
-- [ ] Test Basic learning limit: 5 requests/hour allowed, 6th blocked.
+- [x] Test Basic learning limit: 5 requests/hour allowed, 6th blocked.
 - [ ] Test Intermediate learning limit: 20 requests/hour.
 - [ ] Test Enterprise learning limit: 50 requests/hour.
-- [ ] Test Basic evaluation sessions: 1/day allowed, 2nd blocked.
+- [x] Test Basic evaluation sessions: 1/day allowed, 2nd blocked.
 - [ ] Test Intermediate evaluation sessions: 5/day.
 - [ ] Test Enterprise evaluation sessions: 10/day.
-- [ ] Test Basic evaluations/session: 10 allowed, 11th blocked.
+- [x] Test Basic evaluations/session: 10 allowed, 11th blocked.
 - [ ] Test migration maps old tiers correctly.
 - [ ] Test pricing plans endpoint returns all required frontend metadata.
 - [ ] Test normal users cannot update tiers.
