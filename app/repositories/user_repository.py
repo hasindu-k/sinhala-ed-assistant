@@ -1,7 +1,8 @@
 # app/repositories/user_repository.py
 
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.shared.models.user import ADMIN_ROLE, User
@@ -18,6 +19,28 @@ class UserRepository:
 
     def get_user_by_email(self, email: str) -> Optional[User]:
         return self.db.query(User).filter(User.email == email).first()
+
+    def list_users(
+        self,
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[User]:
+        query = self.db.query(User)
+        if search:
+            pattern = f"%{search.strip()}%"
+            query = query.filter(
+                or_(
+                    User.email.ilike(pattern),
+                    User.full_name.ilike(pattern),
+                )
+            )
+        return (
+            query.order_by(User.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
 
     def create_user(
         self,

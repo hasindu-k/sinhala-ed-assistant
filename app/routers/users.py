@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from uuid import UUID
-from typing import Optional
+from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from app.schemas.user import (
@@ -40,14 +40,17 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/{user_id}", response_model=UserResponse)
-def get_user(user_id: UUID, db: Session = Depends(get_db)):
-    """Get a user by ID."""
+@router.get("/", response_model=List[UserResponse])
+def list_users(
+    q: Optional[str] = Query(None, description="Search by email or full name"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    _admin_user=Depends(require_admin_user),
+    db: Session = Depends(get_db),
+):
+    """List/search users. Admin-only."""
     service = UserService(db)
-    user = service.get_user(user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return user
+    return service.list_users(search=q, limit=limit, offset=offset)
 
 
 @router.get("/by-email", response_model=UserResponse)
@@ -81,6 +84,16 @@ def update_user_tier(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     return service.update_user_tier(user, normalized_tier)
+
+
+@router.get("/{user_id}", response_model=UserResponse)
+def get_user(user_id: UUID, db: Session = Depends(get_db)):
+    """Get a user by ID."""
+    service = UserService(db)
+    user = service.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return user
 
 
 @router.put("/{user_id}", response_model=UserResponse)

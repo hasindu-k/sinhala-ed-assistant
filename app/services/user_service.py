@@ -20,6 +20,14 @@ class UserService:
     def get_user_by_email(self, email: str):
         return self.repository.get_user_by_email(email)
 
+    def list_users(
+        self,
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ):
+        return self.repository.list_users(search=search, limit=limit, offset=offset)
+
     def create_user(
         self,
         email: str,
