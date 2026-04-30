@@ -4,12 +4,12 @@ This document tracks the implementation of Basic, Intermediate, and Enterprise p
 
 ## Current Status
 
-- Status: Phase 1 complete
+- Status: Phase 2 complete
 - Owner: TBD
 - Started: 2026-04-30
 - Main user field: `users.tier`
 - Proposed permission field: `users.role`
-- Current default tier in code: `normal`
+- Current default tier in code: `basic`
 - Target default tier: `basic`
 
 ## Target Plans
@@ -52,13 +52,13 @@ An Enterprise user should not automatically become an admin. An admin can manage
 
 ### Phase 2: User Tier Model And Migration
 
-- [ ] Update `app/shared/models/user.py` so `tier` defaults to `basic`.
-- [ ] Create Alembic migration to change database default to `basic`.
-- [ ] Migrate existing rows:
-  - [ ] `normal` -> `basic`
-  - [ ] `classroom` -> `intermediate`
-  - [ ] `institution` -> `enterprise`
-- [ ] Expose `tier` in `app/schemas/user.py` response models if frontend needs it.
+- [x] Update `app/shared/models/user.py` so `tier` defaults to `basic`.
+- [x] Create Alembic migration to change database default to `basic`.
+- [x] Migrate existing rows:
+  - [x] `normal` -> `basic`
+  - [x] `classroom` -> `intermediate`
+  - [x] `institution` -> `enterprise`
+- [x] Expose `tier` in `app/schemas/user.py` response models if frontend needs it.
 
 ### Phase 3: Admin Role And Permissions
 

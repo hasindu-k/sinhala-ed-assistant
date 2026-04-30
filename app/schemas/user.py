@@ -22,6 +22,7 @@ class UserResponse(BaseModel):
     id: UUID
     email: str
     full_name: Optional[str]
+    tier: str
     created_at: datetime
     updated_at: Optional[datetime]
 
