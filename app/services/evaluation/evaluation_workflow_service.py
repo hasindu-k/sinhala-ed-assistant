@@ -187,24 +187,46 @@ class EvaluationWorkflowService:
         
         return session
 
+    def _get_or_create_limited_evaluation_session(self, chat_session_id: UUID, user_id: UUID):
+        sessions = self.sessions.get_evaluation_sessions_by_chat_session(chat_session_id)
+        if sessions:
+            return sessions[0]
+
+        self.usage.check_evaluation_session_limit(user_id)
+        payload = EvaluationSessionCreate(session_id=chat_session_id)
+        return self.create_session(payload, user_id)
+
+    def _ensure_evaluations_per_session_limit(
+        self,
+        session: EvaluationSession,
+        answer_resource_ids: List[UUID],
+        user_id: UUID,
+    ) -> None:
+        existing_answer_docs = self.answers.get_answer_documents_by_evaluation_session(session.id)
+        existing_resource_ids = {doc.resource_id for doc in existing_answer_docs}
+        new_answer_resource_ids = [
+            resource_id
+            for resource_id in dict.fromkeys(answer_resource_ids)
+            if resource_id not in existing_resource_ids
+        ]
+        self.usage.check_evaluations_per_session_limit(
+            user_id=user_id,
+            answer_resource_ids=new_answer_resource_ids,
+            existing_answer_count=len(existing_answer_docs),
+        )
+
 
     def initialize_evaluation_session(self, chat_session_id: UUID, answer_resource_ids: List[UUID], user_id: UUID):
         """
         Creates a session, attaches active context + answers, and sets status to processing.
         Returns the session immediately.
         """
-        # 0. Check Evaluation Limit
-        self.usage.check_evaluation_limit(user_id)
-
         # 1. Create Session (reuses logic to attach Rubric, Syllabus, QP)
         # Check if session already exists for this chat_session (created by process_documents)
-        sessions = self.sessions.get_evaluation_sessions_by_chat_session(chat_session_id)
-        if sessions:
-            session = sessions[0]
-        else:
-            payload = EvaluationSessionCreate(session_id=chat_session_id)
-            session = self.create_session(payload, user_id)
+        session = self._get_or_create_limited_evaluation_session(chat_session_id, user_id)
         
+        self._ensure_evaluations_per_session_limit(session, answer_resource_ids, user_id)
+
         # 2. Attach Answer Scripts
         for resource_id in answer_resource_ids:
             self._ensure_resource_owner(resource_id, user_id)
@@ -650,18 +672,24 @@ class EvaluationWorkflowService:
             ))
 
         # 4. Process Answer Scripts
+        session = None
+        try:
+            session = self._get_or_create_limited_evaluation_session(chat_session_id, user_id)
+            self._ensure_evaluations_per_session_limit(session, answer_resource_ids, user_id)
+        except Exception as e:
+            logger.error(f"Error preparing evaluation session for answer scripts: {e}")
+            for res_id in answer_resource_ids:
+                results.append(DocumentProcessingStatus(
+                    resource_id=res_id,
+                    role="answer_script",
+                    status="failed",
+                    message=str(e)
+                ))
+            return ProcessDocumentsResponse(results=results)
+
         for res_id in answer_resource_ids:
             try:
                 self._ensure_resource_owner(res_id, user_id)
-                
-                # Find existing session for this chat_session
-                sessions = self.sessions.get_evaluation_sessions_by_chat_session(chat_session_id)
-                session = sessions[0] if sessions else None
-                
-                if not session:
-                    # Create a new session
-                    payload = EvaluationSessionCreate(session_id=chat_session_id)
-                    session = self.create_session(payload, user_id)
                 
                 # Check if AnswerDocument exists for this session and resource
                 existing_ad = self.answers.get_answer_document_by_session_and_resource(session.id, res_id)
@@ -899,17 +927,26 @@ class EvaluationWorkflowService:
             ))
 
         # 4. Process Answer Scripts
+        session = None
+        try:
+            session = self._get_or_create_limited_evaluation_session(chat_session_id, user_id)
+            self._ensure_evaluations_per_session_limit(session, answer_resource_ids, user_id)
+        except Exception as e:
+            logger.error(f"Error preparing evaluation session for answer scripts: {e}")
+            for res_id in answer_resource_ids:
+                current_step += 1
+                yield make_event(f"Answer script failed: {e}", DocumentProcessingStatus(
+                    resource_id=res_id,
+                    role="answer_script",
+                    status="failed",
+                    message=str(e)
+                ))
+            yield json.dumps({"progress": 100, "message": "Document processing failed", "status": "failed"}) + "\n"
+            return
+
         for res_id in answer_resource_ids:
             try:
                 self._ensure_resource_owner(res_id, user_id)
-                
-                sessions = self.sessions.get_evaluation_sessions_by_chat_session(chat_session_id)
-                session = sessions[0] if sessions else None
-                
-                if not session:
-                    from app.schemas.evaluation import EvaluationSessionCreate
-                    payload = EvaluationSessionCreate(session_id=chat_session_id)
-                    session = self.create_session(payload, user_id)
                 
                 existing_ad = self.answers.get_answer_document_by_session_and_resource(session.id, res_id)
                 
@@ -1270,8 +1307,9 @@ class EvaluationWorkflowService:
         return configs
 
     def register_answer_document(self, evaluation_id: UUID, payload: AnswerDocumentCreate, user_id: UUID):
-        self._get_eval_session_with_owner_check(evaluation_id, user_id)
+        eval_session = self._get_eval_session_with_owner_check(evaluation_id, user_id)
         self._ensure_resource_owner(payload.resource_id, user_id)
+        self._ensure_evaluations_per_session_limit(eval_session, [payload.resource_id], user_id)
         return self.answers.create_answer_document(
             evaluation_session_id=evaluation_id,
             resource_id=payload.resource_id,

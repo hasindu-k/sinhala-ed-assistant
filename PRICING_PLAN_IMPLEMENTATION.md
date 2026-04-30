@@ -4,7 +4,7 @@ This document tracks the implementation of Basic, Intermediate, and Enterprise p
 
 ## Current Status
 
-- Status: Phase 5 complete
+- Status: Phase 6 complete
 - Owner: TBD
 - Started: 2026-04-30
 - Main user field: `users.tier`
@@ -89,11 +89,11 @@ An Enterprise user should not automatically become an admin. An admin can manage
 
 ### Phase 6: Evaluation Mode Enforcement
 
-- [ ] Replace current evaluation limit check in `app/services/evaluation/evaluation_workflow_service.py`.
-- [ ] Enforce daily evaluation session limit before creating or starting a new evaluation session.
-- [ ] Enforce Basic per-session evaluation limit of 10 answer scripts.
-- [ ] Implement Enterprise overage behavior.
-- [ ] Avoid double-counting reused evaluation sessions if `process_documents` created a session earlier.
+- [x] Replace current evaluation limit check in `app/services/evaluation/evaluation_workflow_service.py`.
+- [x] Enforce daily evaluation session limit before creating or starting a new evaluation session.
+- [x] Enforce Basic per-session evaluation limit of 10 answer scripts.
+- [x] Implement Enterprise overage behavior.
+- [x] Avoid double-counting reused evaluation sessions if `process_documents` created a session earlier.
 
 ### Phase 7: API Endpoints
 
