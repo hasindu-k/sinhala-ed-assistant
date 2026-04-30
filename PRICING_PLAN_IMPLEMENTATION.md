@@ -4,7 +4,7 @@ This document tracks the implementation of Basic, Intermediate, and Enterprise p
 
 ## Current Status
 
-- Status: Phase 6 complete
+- Status: Phase 7 complete
 - Owner: TBD
 - Started: 2026-04-30
 - Main user field: `users.tier`
@@ -97,11 +97,11 @@ An Enterprise user should not automatically become an admin. An admin can manage
 
 ### Phase 7: API Endpoints
 
-- [ ] Add `GET /api/v1/pricing/plans`.
-- [ ] Add `GET /api/v1/usage/me`.
-- [ ] Add admin-only tier update flow.
+- [x] Add `GET /api/v1/pricing/plans`.
+- [x] Add `GET /api/v1/usage/me`.
+- [x] Add admin-only tier update flow.
 - [ ] Optionally add payment-webhook tier update flow later.
-- [ ] Register new router in `app/api/v1/router.py`.
+- [x] Register new router in `app/api/v1/router.py`.
 
 ### Phase 8: Future Admin-Managed Plan Limits
 

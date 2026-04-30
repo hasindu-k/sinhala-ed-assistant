@@ -35,3 +35,10 @@ class UserService:
         self.repository.db.commit()
         self.repository.db.refresh(user)
         return user
+
+    def update_user_tier(self, user, tier: str):
+        user.tier = tier
+        self.repository.db.add(user)
+        self.repository.db.commit()
+        self.repository.db.refresh(user)
+        return user

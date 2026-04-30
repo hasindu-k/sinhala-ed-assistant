@@ -7,11 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.schemas.user import (
     UserCreate,
+    UserTierUpdate,
     UserUpdate,
     UserResponse,
 )
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.pricing_plans import PRICING_PLANS, normalize_tier
+from app.core.security import get_current_user, require_admin_user
 from app.services.user_service import UserService
 
 router = APIRouter()
@@ -56,6 +58,29 @@ def get_user_by_email(email: str = Query(..., description="User email"), db: Ses
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return user
+
+
+@router.patch("/{user_id}/tier", response_model=UserResponse)
+def update_user_tier(
+    user_id: UUID,
+    payload: UserTierUpdate,
+    _admin_user=Depends(require_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Update a user's pricing tier. Admin-only."""
+    normalized_tier = normalize_tier(payload.tier)
+    if payload.tier.strip().lower() not in PRICING_PLANS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid tier. Use one of: basic, intermediate, enterprise",
+        )
+
+    service = UserService(db)
+    user = service.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    return service.update_user_tier(user, normalized_tier)
 
 
 @router.put("/{user_id}", response_model=UserResponse)
