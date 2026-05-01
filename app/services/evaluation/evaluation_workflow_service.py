@@ -1380,16 +1380,109 @@ class EvaluationWorkflowService:
             "mapped_answers": answer_mapping
         }
 
+    def _get_questions_for_answer_document(self, answer_doc) -> List[Question]:
+        eval_session = self.sessions.get_evaluation_session(answer_doc.evaluation_session_id)
+        if not eval_session:
+            return []
+
+        question_papers = self.question_papers.get_question_papers_by_evaluation_session(eval_session.id)
+        if not question_papers:
+            question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
+        if not question_papers:
+            return []
+
+        questions = []
+        seen = set()
+        for question_paper in question_papers:
+            for question in self.question_papers.get_questions_by_paper(question_paper.id):
+                if question.id in seen:
+                    continue
+                seen.add(question.id)
+                questions.append(question)
+        return questions
+
+    @staticmethod
+    def _paper_part_sort_key(part_name: str) -> Tuple[int, str]:
+        normalized = re.sub(r"[\s\-]+", "_", str(part_name or "").strip().lower())
+        order = {
+            "paper_i": 1,
+            "part_i": 1,
+            "i": 1,
+            "paper_ii": 2,
+            "part_ii": 2,
+            "ii": 2,
+            "paper_iii": 3,
+            "part_iii": 3,
+            "iii": 3,
+        }
+        return (order.get(normalized, 99), normalized)
+
+    @staticmethod
+    def _question_number_sort_key(question_number: str) -> Tuple[int, str]:
+        text = str(question_number or "").strip()
+        match = re.match(r"0*(\d+)(?:[.\s]*\(?([^)]*)\)?)?", text)
+        if not match:
+            return (10**9, text.lower())
+        main = int(match.group(1))
+        sub = (match.group(2) or "").strip().lower()
+        return (main, sub)
+
+    def _build_mapping_display_lookup(self, questions: List[Question]) -> Dict[str, Dict[str, Any]]:
+        lookup: Dict[str, Dict[str, Any]] = {}
+
+        def clean_part(part_name: str) -> str:
+            return str(part_name or "Unknown").strip() or "Unknown"
+
+        def add_subs(subs: List[SubQuestion], parent_num: str, part_name: str):
+            for sq in subs or []:
+                full_num = f"{parent_num}({sq.label})" if parent_num else str(sq.label)
+                part = clean_part(part_name)
+                lookup[str(sq.id)] = {
+                    "display": f"{part} - {full_num}",
+                    "sort_key": (self._paper_part_sort_key(part), self._question_number_sort_key(full_num)),
+                }
+                add_subs(getattr(sq, "children", []) or [], full_num, part_name)
+
+        for q in questions or []:
+            part_name = clean_part(getattr(q, "part_name", ""))
+            question_number = str(getattr(q, "question_number", "") or "")
+            lookup[str(q.id)] = {
+                "display": f"{part_name} - {question_number}",
+                "sort_key": (self._paper_part_sort_key(part_name), self._question_number_sort_key(question_number)),
+            }
+            add_subs(getattr(q, "sub_questions", []) or [], question_number, part_name)
+
+        return lookup
+
+    def _display_mapped_answers(self, mapped_answers: Dict[str, Any], questions: List[Question]) -> Dict[str, Any]:
+        display_lookup = self._build_mapping_display_lookup(questions)
+        display_mapping: Dict[str, Any] = {}
+        rows = []
+
+        for key, value in (mapped_answers or {}).items():
+            display_info = display_lookup.get(str(key), {})
+            display_key = display_info.get("display", str(key))
+            sort_key = display_info.get("sort_key", ((99, ""), (10**9, str(key))))
+            rows.append((sort_key, display_key, key, value))
+
+        for _, display_key, key, value in sorted(rows, key=lambda row: (row[0], row[1])):
+            if display_key in display_mapping:
+                display_key = f"{display_key} ({str(key)[:8]})"
+            display_mapping[display_key] = value
+
+        return display_mapping
+
     def get_answer_mapping(self, answer_id: UUID, user_id: UUID):
-        """Get the stored mapping for an answer document."""
+        """Get the stored mapping for an answer document using readable display labels."""
         answer_doc = self._ensure_answer_owner(answer_id, user_id)
-        
+
         # Get resource for text
         resource = self.resource_files.get_resource(answer_doc.resource_id)
-        
+        questions = self._get_questions_for_answer_document(answer_doc)
+
         return {
             "answer_document_id": answer_id,
-            "mapped_answers": answer_doc.mapped_answers,
+            "mapped_answers": self._display_mapped_answers(answer_doc.mapped_answers or {}, questions),
             "extracted_text": resource.extracted_text if resource else None
         }
 
@@ -1699,11 +1792,9 @@ class EvaluationWorkflowService:
         """
         Get detailed answer mapping with question text and numbering.
         """
-        mapping_data = self.get_answer_mapping(answer_id, user_id)
-        mapped_answers = mapping_data.get("mapped_answers", {}) or {}
-        
         # Get Question Paper
-        answer_doc = self.answers.get_answer_document(answer_id)
+        answer_doc = self._ensure_answer_owner(answer_id, user_id)
+        mapped_answers = answer_doc.mapped_answers or {}
         eval_session = self.sessions.get_evaluation_session(answer_doc.evaluation_session_id)
         question_papers = self.question_papers.get_question_papers_by_chat_session(eval_session.session_id)
         

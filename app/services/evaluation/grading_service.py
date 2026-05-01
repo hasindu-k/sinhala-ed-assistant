@@ -343,6 +343,16 @@ class GradingService:
 
         logger.info(f"Scoring loop finished. Scored {len(scored_items)} items total.")
 
+        # Pre-compute the exact marks that will be persisted so feedback can be
+        # written against the same score the user sees in the UI.
+        for item in scored_items:
+            system_ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
+            final_snapped_ratio = self._apply_discrete_bands(system_ratio, item["max_marks"])
+            final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
+            item["system_ratio"] = system_ratio
+            item["final_snapped_ratio"] = final_snapped_ratio
+            item["final_marks"] = final_marks
+
         # -------------------------------------------------------
         # PHASE 2: Gemini feedback ONLY — no marks from Gemini ever
         # Only runs for Paper II (max_marks > 2) to save time.
@@ -453,12 +463,25 @@ class GradingService:
                 # _apply_discrete_bands snaps to clean mark steps.
                 # Gemini output is NOT read here for marks under any circumstance.
                 # -------------------------------------------------------
-                system_ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
-                final_snapped_ratio = self._apply_discrete_bands(system_ratio, item["max_marks"])
-                final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
+                system_ratio = item.get("system_ratio") or float(item["awarded_marks"]) / max(1, item["max_marks"])
+                final_snapped_ratio = item.get("final_snapped_ratio")
+                if final_snapped_ratio is None:
+                    final_snapped_ratio = self._apply_discrete_bands(system_ratio, item["max_marks"])
+                final_marks = item.get("final_marks")
+                if final_marks is None:
+                    final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
                 # Feedback text from Gemini (text only, never marks)
                 meaning_data = eval_data_map.get(item["key"], {})
                 feedback = meaning_data.get("feedback", "පිළිතුර අගය කරන ලදී.")
+                if not feedback or self._feedback_contradicts_score(feedback, item):
+                    logger.warning(
+                        "Replacing missing or score-contradictory feedback for Q%s. final_marks=%s/%s feedback=%s",
+                        item["display_number"],
+                        final_marks,
+                        item["max_marks"],
+                        str(feedback)[:120],
+                    )
+                    feedback = self._build_score_aligned_feedback(item)
                 logger.info(
                     f"[FINAL_MARK] Q{item['display_number']} | "
                     f"system_ratio={system_ratio:.4f} -> snapped_ratio={final_snapped_ratio:.4f} -> "
@@ -1509,9 +1532,14 @@ Questions:
         max_requests = max(1, int(settings.EVAL_GEMINI_REFERENCE_SCHEMA_MAX_REQUESTS))
         chunks: List[List[Dict]] = [[]]
         current_chars = 0
-        max_chunk_chars = 4500
+        max_chunk_chars = 2500
         for question in questions:
-            estimated_chars = len(question.get("question_text", "")) + 200
+            evidence_preview = self._build_reference_context_block(question, syllabus_text)
+            estimated_chars = (
+                len(question.get("question_text", ""))
+                + len(evidence_preview or "")
+                + 300
+            )
             if (
                 chunks[-1]
                 and current_chars + estimated_chars > max_chunk_chars
@@ -1949,6 +1977,82 @@ Return ONLY a valid JSON object mirroring the keys provided.
                 return str(question.label)
         return q_number
 
+    def _score_band_label(self, item: Dict[str, Any]) -> str:
+        final_marks = Decimal(str(item.get("final_marks", item.get("awarded_marks", 0))))
+        max_marks = Decimal(str(max(1, item.get("max_marks", 1))))
+        ratio = float(final_marks / max_marks)
+        if ratio >= 0.875:
+            return "excellent"
+        if ratio >= 0.625:
+            return "good"
+        if ratio >= 0.375:
+            return "partial"
+        if ratio > 0:
+            return "limited"
+        return "not_creditworthy"
+
+    def _build_score_aligned_feedback(self, item: Dict[str, Any]) -> str:
+        display = item.get("display_number", "")
+        final_marks = item.get("final_marks", item.get("awarded_marks", 0))
+        max_marks = item.get("max_marks", 1)
+        band = self._score_band_label(item)
+
+        if band == "excellent":
+            body = "ලබා දී ඇති ලකුණු අනුව පිළිතුර ඉතා හොඳ මට්ටමේ ඇත. ප්‍රධාන කරුණු බොහෝ දුරට නිවැරදිව ආවරණය කර ඇත."
+        elif band == "good":
+            body = "ලබා දී ඇති ලකුණු අනුව පිළිතුර බොහෝ දුරට නිවැරදිය. තවත් නිශ්චිත කරුණු කිහිපයක් එකතු කළහොත් පිළිතුර වඩා සම්පූර්ණ වේ."
+        elif band == "partial":
+            body = "ලබා දී ඇති ලකුණු අනුව පිළිතුර අර්ධ වශයෙන් නිවැරදිය. ප්‍රශ්නයට අදාළ ප්‍රධාන කරුණු තවදුරටත් පැහැදිලි කළ යුතුය."
+        elif band == "limited":
+            body = "ලබා දී ඇති ලකුණු අනුව පිළිතුර සීමිත මට්ටමේ ඇත. අදාළ කරුණු පැහැදිලිව සහ ප්‍රමාණවත් ලෙස දැක්වීම අවශ්‍ය වේ."
+        else:
+            body = "ලබා දී ඇති ලකුණු අනුව පිළිතුරට ලකුණු ලබා දීමට ප්‍රමාණවත් අදාළ කරුණු හමු නොවේ."
+
+        return f"**ප්‍රශ්නය {display}** {body} ({final_marks}/{max_marks})"
+
+    def _feedback_contradicts_score(self, feedback: str, item: Dict[str, Any]) -> bool:
+        if not feedback:
+            return True
+
+        text = str(feedback).lower()
+        unavailable_markers = [
+            "gemini",
+            "ප්‍රතිපෝෂණ ලබා ගත නොහැක",
+            "ලබා ගත නොහැක",
+        ]
+        if any(marker in text for marker in unavailable_markers):
+            return True
+
+        final_marks = Decimal(str(item.get("final_marks", item.get("awarded_marks", 0))))
+        max_marks = Decimal(str(max(1, item.get("max_marks", 1))))
+        ratio = float(final_marks / max_marks)
+
+        says_fully_correct = any(
+            marker in text
+            for marker in [
+                "සම්පූර්ණයෙන්ම නිවැරදි",
+                "සම්පූර්ණ නිවැරදි",
+                "fully correct",
+                "completely correct",
+            ]
+        )
+        says_wrong = any(
+            marker in text
+            for marker in [
+                "සම්පූර්ණයෙන්ම වැරදි",
+                "සම්පූර්ණයෙන්ම වැරදියි",
+                "නිවැරදි නොවේ",
+                "completely wrong",
+                "fully wrong",
+            ]
+        )
+
+        if ratio <= 0.25 and says_fully_correct:
+            return True
+        if ratio >= 0.75 and says_wrong:
+            return True
+        return False
+
 
     # ----------------------------------------------------------
     # GEMINI FEEDBACK — TEXT ONLY, NEVER MARKS
@@ -1977,6 +2081,8 @@ FEEDBACK REQUIREMENTS:
 3. Keep feedback concise (2-3 sentences).
 4. Use Markdown formatting: **bold** for emphasis, bullet points if needed.
 5. Language: Simple, professional written Sinhala.
+6. The final awarded mark is already fixed. Your feedback MUST match that mark.
+7. If the final mark is 0, do not say the answer is correct. If the final mark is high, do not say the answer is completely wrong.
 
 OUTPUT FORMAT (Pure JSON only):
 {
@@ -1997,6 +2103,8 @@ Questions to evaluate:
                 chunk_prompt += f"Question Number: {item['display_number']}\n"
                 chunk_prompt += f"Question: {q_text}\n"
                 chunk_prompt += f"Max Marks: {item['max_marks']}\n"
+                chunk_prompt += f"Final Awarded Marks: {item.get('final_marks', item['awarded_marks'])}/{item['max_marks']}\n"
+                chunk_prompt += f"Score Band: {self._score_band_label(item)}\n"
                 chunk_prompt += f"Student Answer: {str(item['student_text'])[:500]}\n"
                 chunk_prompt += f"Reference Context: {str(item['reference_text'])[:600]}\n"
 
@@ -2073,6 +2181,18 @@ Questions to evaluate:
             if not raw_feedback or raw_feedback.startswith("("):
                 raw_feedback = "ප්‍රතිපෝෂණ ලබා ගත නොහැක. Gemini සේවාව තාවකාලිකව අසාර්ථක විය."
             final_map[key]["feedback"] = f"**ප්‍රශ්නය {item['display_number']}** {raw_feedback}"
+
+        for item in items:
+            key = item["key"]
+            feedback = (final_map.get(key) or {}).get("feedback")
+            if not feedback or self._feedback_contradicts_score(feedback, item):
+                logger.warning(
+                    "Replacing missing or score-contradictory Gemini feedback for Q%s. final_marks=%s/%s",
+                    item["display_number"],
+                    item.get("final_marks", item["awarded_marks"]),
+                    item["max_marks"],
+                )
+                final_map[key] = {"feedback": self._build_score_aligned_feedback(item)}
 
         return final_map
 
