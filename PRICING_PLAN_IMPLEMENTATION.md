@@ -4,13 +4,14 @@ This document tracks the implementation of Basic, Intermediate, and Enterprise p
 
 ## Current Status
 
-- Status: Phase 9 mostly complete
+- Status: Core pricing, usage limits, admin tier updates, database-backed plan limits, and tests are complete
 - Owner: TBD
 - Started: 2026-04-30
 - Main user field: `users.tier`
 - Proposed permission field: `users.role`
 - Current default tier in code: `basic`
 - Target default tier: `basic`
+- Verification: `.\venv\Scripts\python.exe -m pytest tests\test_evaluation_limits.py tests\test_pricing_admin_api.py` passes.
 
 ## Target Plans
 
@@ -20,15 +21,20 @@ This document tracks the implementation of Basic, Intermediate, and Enterprise p
 | `intermediate` | 5000 LKR/tier | Most Popular | 20 requests/hour | 5 sessions/day | TBD |
 | `enterprise` | 10000 LKR onwards/tier | Best for Scale | 50 requests/hour | 10 sessions/day | Extra evaluations billable |
 
-## Decisions To Confirm
+## Decisions
 
-- [ ] Should evaluation daily limits reset by calendar day in `Asia/Colombo`, or by rolling 24-hour window?
-- [ ] For Intermediate, is there a per-session evaluation limit, or only 5 sessions/day?
-- [ ] For Enterprise, should extra evaluations be allowed automatically, or blocked until billing/admin approval?
-- [ ] Should users be able to upgrade tier directly, or only admins/payment webhook should update `users.tier`?
-- [ ] Should old tiers be mapped as `normal -> basic`, `classroom -> intermediate`, `institution -> enterprise`?
+- [x] Evaluation daily limits reset by calendar day in `Asia/Colombo`.
+- [x] Intermediate currently has only 5 evaluation sessions/day and no per-session evaluation count limit.
+- [x] Enterprise currently has 10 evaluation sessions/day and allows per-session evaluation overage.
+- [x] Tier changes are currently admin-managed through the user tier update endpoint.
+- [x] Old tiers are mapped as `normal -> basic`, `classroom -> intermediate`, `institution -> enterprise`.
 - [x] Should the first admin user be created by migration, seed script, or manual database update?
-- [ ] Should plan limits remain code-managed for now, or should admins be able to edit plan limits from the database?
+- [x] Admins should be able to edit plan limits from the database.
+
+## Future Decisions
+
+- [ ] Should users be able to upgrade tier directly through a payment flow?
+- [ ] Should Enterprise overage trigger billing automatically or require later admin review?
 
 ## Tier Vs Role
 
@@ -69,7 +75,7 @@ An Enterprise user should not automatically become an admin. An admin can manage
 - [x] Expose `role` in user response only if needed by frontend.
 - [x] Add helper/dependency such as `require_admin_user`.
 - [x] Protect tier-management endpoints with admin-only access.
-- [ ] Protect future plan-management endpoints with admin-only access.
+- [ ] Protect future plan-management endpoints with admin-only access when those endpoints are added.
 
 ### Phase 4: Usage Service
 
@@ -103,13 +109,15 @@ An Enterprise user should not automatically become an admin. An admin can manage
 - [ ] Optionally add payment-webhook tier update flow later.
 - [x] Register new router in `app/api/v1/router.py`.
 
-### Phase 8: Future Admin-Managed Plan Limits
+### Phase 8: Admin-Managed Plan Limits
 
-- [ ] Add database table for editable pricing plans if runtime updates are needed.
-- [ ] Add admin-only CRUD endpoints for pricing plans.
-- [ ] Track who updated plan limits with `updated_by`.
-- [ ] Track when plan limits changed with `updated_at`.
+- [x] Add database table for editable pricing plans.
+- [x] Add admin-only endpoints for listing and updating pricing plans.
+- [x] Track who updated plan limits with `updated_by`.
+- [x] Track when plan limits changed with `updated_at`.
 - [ ] Keep audit history if pricing changes affect billing or contractual limits.
+
+Phase 8 is implemented for database-backed plan edits. `app/core/pricing_plans.py` remains the fallback/default catalog used to seed missing rows and keep tests resilient before migrations run.
 
 Possible future table:
 
@@ -142,6 +150,8 @@ Possible future table:
 - [x] Test admins can update user tiers.
 - [x] Test admin-only endpoints reject unauthenticated users.
 - [x] Test admin-only endpoints reject authenticated non-admin users.
+- [x] Test unauthenticated users cannot list admin pricing plans.
+- [x] Test admins can update pricing plan limits.
 
 ## Code Touchpoints
 
@@ -149,6 +159,8 @@ Possible future table:
 - `app/schemas/user.py`
 - `app/core/security.py`
 - `app/core/pricing_plans.py`
+- `app/shared/models/pricing_plan.py`
+- `app/services/pricing_plan_service.py`
 - `app/services/usage_service.py`
 - `app/routers/messages.py`
 - `app/components/voice_qa/routers/voice_router.py`
@@ -161,6 +173,8 @@ Possible future table:
 ## Notes
 
 - Learning requests reset every hour.
-- Evaluation limits reset daily.
-- Enterprise customers may be billed for extra evaluations after exceeding the included quota.
-- The current `UsageService` uses old tier names and a 12-hour evaluation window, so it should be refactored rather than extended as-is.
+- Evaluation limits reset daily by calendar day in `Asia/Colombo`.
+- Enterprise customers can continue past the per-session evaluation count limit; billing/review for that overage is future work.
+- `UsageService` reads pricing limits through `PricingPlanService`, so database edits affect quota enforcement.
+- Admin-editable plan limits are available through `GET /api/v1/pricing/admin/plans` and `PATCH /api/v1/pricing/admin/plans/{tier}`.
+- Test coverage currently includes learning limits, evaluation session limits, Basic per-session evaluation limits, tier migration mapping, pricing metadata, admin-only tier update behavior, and admin pricing-plan updates.

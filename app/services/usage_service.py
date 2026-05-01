@@ -10,7 +10,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.pricing_plans import PricingPlan, get_pricing_plan
+from app.core.pricing_plans import PricingPlan
+from app.services.pricing_plan_service import PricingPlanService
 from app.shared.models.chat_session import ChatSession
 from app.shared.models.evaluation_session import EvaluationSession
 from app.shared.models.message import Message
@@ -36,7 +37,7 @@ class UsageService:
 
     def _get_user_plan(self, user_id: UUID) -> tuple[User, PricingPlan]:
         user = self._get_user(user_id)
-        return user, get_pricing_plan(user.tier)
+        return user, PricingPlanService(self.db).get_plan(user.tier)
 
     def _count_learning_requests_since(self, user_id: UUID, threshold: datetime) -> int:
         return (
@@ -73,7 +74,7 @@ class UsageService:
 
     def get_user_tier_limit(self, tier: str) -> int:
         """Backward-compatible helper returning daily evaluation-session limit."""
-        return get_pricing_plan(tier).limits.evaluation_sessions_per_day
+        return PricingPlanService(self.db).get_plan(tier).limits.evaluation_sessions_per_day
 
     def check_learning_request_limit(self, user_id: UUID) -> bool:
         user, plan = self._get_user_plan(user_id)

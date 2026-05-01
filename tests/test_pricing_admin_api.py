@@ -145,3 +145,92 @@ def test_admin_tier_update_rejects_invalid_tier(monkeypatch):
     )
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+def test_unauthenticated_user_cannot_list_admin_pricing_plans():
+    client = TestClient(create_test_app())
+
+    response = client.get("/api/v1/pricing/admin/plans")
+
+    assert response.status_code in {status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN}
+
+
+def test_admin_can_update_pricing_plan_limits(monkeypatch):
+    app = create_test_app()
+    admin_id = uuid4()
+
+    class FakeAdmin:
+        id = admin_id
+
+    class FakePlan:
+        tier = "basic"
+        name = "Basic Plan"
+        price_label = "Free / forever"
+        description = "A lightweight plan for getting started with Learning Mode"
+        badge = "Starter"
+        features = ("Learning mode: 7 requests per hour",)
+        cta = "Start Free"
+        note = "No credit card required"
+        is_popular = False
+
+        class limits:
+            learning_requests_per_hour = 7
+            evaluation_sessions_per_day = 2
+            evaluations_per_session = 12
+            allow_evaluation_overage = False
+
+    class FakePricingPlanService:
+        def __init__(self, db):
+            self.db = db
+
+        def update_plan(self, tier, payload, admin_user_id):
+            assert tier == "basic"
+            assert admin_user_id == admin_id
+            assert payload.limits.learning_requests_per_hour == 7
+            assert payload.limits.evaluation_sessions_per_day == 2
+            return FakePlan()
+
+        @staticmethod
+        def to_response(plan):
+            return {
+                "tier": plan.tier,
+                "name": plan.name,
+                "price_label": plan.price_label,
+                "description": plan.description,
+                "badge": plan.badge,
+                "features": list(plan.features),
+                "cta": plan.cta,
+                "note": plan.note,
+                "limits": {
+                    "learning_requests_per_hour": plan.limits.learning_requests_per_hour,
+                    "evaluation_sessions_per_day": plan.limits.evaluation_sessions_per_day,
+                    "evaluations_per_session": plan.limits.evaluations_per_session,
+                    "allow_evaluation_overage": plan.limits.allow_evaluation_overage,
+                },
+                "is_popular": plan.is_popular,
+            }
+
+    def allow_admin():
+        return FakeAdmin()
+
+    def fake_db():
+        yield object()
+
+    monkeypatch.setattr(pricing, "PricingPlanService", FakePricingPlanService)
+    app.dependency_overrides[pricing.require_admin_user] = allow_admin
+    app.dependency_overrides[pricing.get_db] = fake_db
+    client = TestClient(app)
+
+    response = client.patch(
+        "/api/v1/pricing/admin/plans/basic",
+        json={
+            "limits": {
+                "learning_requests_per_hour": 7,
+                "evaluation_sessions_per_day": 2,
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["limits"]["learning_requests_per_hour"] == 7
+    assert response.json()["limits"]["evaluation_sessions_per_day"] == 2

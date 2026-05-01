@@ -26,7 +26,7 @@ class UserService:
         limit: int = 50,
         offset: int = 0,
     ):
-        return self.repository.list_users(search=search, limit=limit, offset=offset)
+        return self.repository.list_users_with_count(search=search, limit=limit, offset=offset)
 
     def create_user(
         self,

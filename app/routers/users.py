@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.schemas.user import (
     UserCreate,
+    UserListResponse,
     UserTierUpdate,
     UserUpdate,
     UserResponse,
@@ -40,7 +41,7 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/", response_model=List[UserResponse])
+@router.get("/", response_model=UserListResponse)
 def list_users(
     q: Optional[str] = Query(None, description="Search by email or full name"),
     limit: int = Query(50, ge=1, le=100),
@@ -50,7 +51,19 @@ def list_users(
 ):
     """List/search users. Admin-only."""
     service = UserService(db)
-    return service.list_users(search=q, limit=limit, offset=offset)
+
+    users, total = service.list_users(
+        search=q,
+        limit=limit,
+        offset=offset,
+    )
+
+    return {
+        "items": users,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/by-email", response_model=UserResponse)

@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
-
+from typing import List
 
 class UserCreate(BaseModel):
     email: str
@@ -33,3 +33,9 @@ class UserResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class UserListResponse(BaseModel):
+    items: List[UserResponse]
+    total: int
+    limit: int
+    offset: int

@@ -22,6 +22,7 @@ from app.shared.models.refresh_token import RefreshToken
 from app.shared.models.user_evaluation_context import UserEvaluationContext
 from app.shared.models.processing_log import ProcessingLog
 from app.shared.models.api_usage_log import ApiUsageLog
+from app.shared.models.pricing_plan import PricingPlanModel
 
 __all__ = [
     "User",
@@ -51,4 +52,5 @@ __all__ = [
     "UserEvaluationContext",
     "ProcessingLog",
     "ApiUsageLog",
+    "PricingPlanModel",
 ]

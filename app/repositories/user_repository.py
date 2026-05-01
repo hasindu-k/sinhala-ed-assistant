@@ -20,27 +20,34 @@ class UserRepository:
     def get_user_by_email(self, email: str) -> Optional[User]:
         return self.db.query(User).filter(User.email == email).first()
 
-    def list_users(
+    def list_users_with_count(
         self,
         search: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[User]:
+    ):
         query = self.db.query(User)
+
         if search:
-            pattern = f"%{search.strip()}%"
+            search_pattern = f"%{search.strip()}%"
             query = query.filter(
                 or_(
-                    User.email.ilike(pattern),
-                    User.full_name.ilike(pattern),
+                    User.email.ilike(search_pattern),
+                    User.full_name.ilike(search_pattern),
                 )
             )
-        return (
-            query.order_by(User.created_at.desc())
+
+        total = query.count()
+
+        users = (
+            query
+            .order_by(User.created_at.desc())
             .offset(offset)
             .limit(limit)
             .all()
         )
+
+        return users, total
 
     def create_user(
         self,
