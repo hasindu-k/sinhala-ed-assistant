@@ -72,6 +72,26 @@ class UsageService:
     def _tomorrow_start_utc(self, now: Optional[datetime] = None) -> datetime:
         return self._today_start_utc(now) + timedelta(days=1)
 
+    def _current_hour_start_utc(self, now: Optional[datetime] = None) -> datetime:
+        local_now = now or datetime.now(APP_TIMEZONE)
+
+        if local_now.tzinfo is None:
+            local_now = local_now.replace(tzinfo=APP_TIMEZONE)
+
+        local_now = local_now.astimezone(APP_TIMEZONE)
+
+        local_hour_start = local_now.replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+
+        return local_hour_start.astimezone(timezone.utc)
+
+
+    def _next_hour_start_utc(self, now: Optional[datetime] = None) -> datetime:
+        return self._current_hour_start_utc(now) + timedelta(hours=1)
+
     def get_user_tier_limit(self, tier: str) -> int:
         """Backward-compatible helper returning daily evaluation-session limit."""
         return PricingPlanService(self.db).get_plan(tier).limits.evaluation_sessions_per_day
@@ -79,7 +99,8 @@ class UsageService:
     def check_learning_request_limit(self, user_id: UUID) -> bool:
         user, plan = self._get_user_plan(user_id)
         limit = plan.limits.learning_requests_per_hour
-        threshold = datetime.now(timezone.utc) - timedelta(hours=1)
+        now = datetime.now(timezone.utc)
+        threshold = self._current_hour_start_utc(now)
         count = self._count_learning_requests_since(user_id, threshold)
 
         if count >= limit:
@@ -163,7 +184,7 @@ class UsageService:
     def get_usage_summary(self, user_id: UUID) -> dict:
         user, plan = self._get_user_plan(user_id)
         now = datetime.now(timezone.utc)
-        learning_threshold = now - timedelta(hours=1)
+        learning_threshold = self._current_hour_start_utc(now)
         day_threshold = self._today_start_utc(now)
 
         learning_used = self._count_learning_requests_since(user_id, learning_threshold)
@@ -184,7 +205,7 @@ class UsageService:
                 "used": learning_used,
                 "limit": learning_limit,
                 "remaining": max(learning_limit - learning_used, 0),
-                "reset_at": now + timedelta(hours=1),
+                "reset_at": self._next_hour_start_utc(now),
             },
             "evaluation_sessions": {
                 "used": evaluation_used,

@@ -12,7 +12,7 @@ class UsageWindowResponse(BaseModel):
     used: int
     limit: int
     remaining: int
-    reset_at: datetime
+    reset_at: datetime | None = None
 
 
 class UsageSummaryResponse(BaseModel):
