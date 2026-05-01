@@ -3,6 +3,7 @@ import torch
 from typing import List, Dict
 import subprocess
 import os
+import tempfile
 
 from app.core.whisper_loader import WhisperLoader
 from app.core.utils import normalize_sinhala
@@ -20,7 +21,6 @@ from jiwer import wer, cer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import torch
-from transformers import AutoTokenizer, AutoModel
 
 # Hybrid retrieval helpers (lexical + dense + cross-encoder rerank)
 from app.components.voice_qa.services.hybrid_retrieval import (
@@ -37,9 +37,6 @@ class VoiceService:
     def transcribe_audio(file_path: str):
         processor, model, device = WhisperLoader.load()
         
-        # Enable mixed precision (FP16) for GPU
-        model.half()
-        
         # Method 1: Try using soundfile directly first
         try:
             import soundfile as sf
@@ -51,8 +48,11 @@ class VoiceService:
                 sr = 16000
         except:
             # Method 2: Use FFmpeg directly to convert to WAV
+            temp_converted = None
             try:
-                temp_converted = "temp_converted.wav"
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    temp_converted = tmp.name
+
                 cmd = [
                     'ffmpeg', '-i', file_path, 
                     '-ar', '16000',  # Sample rate
@@ -68,8 +68,11 @@ class VoiceService:
                 audio, sr = sf.read(temp_converted)
                 
                 # Clean up
-                os.remove(temp_converted)
+                if temp_converted and os.path.exists(temp_converted):
+                    os.remove(temp_converted)
             except Exception as e:
+                if temp_converted and os.path.exists(temp_converted):
+                    os.remove(temp_converted)
                 # Method 3: Fall back to librosa with explicit backend
                 import librosa
                 import audioread
@@ -79,8 +82,9 @@ class VoiceService:
         # Process the audio file with WhisperProcessor
         inputs = processor(audio, sampling_rate=16000, return_tensors="pt").to(device)
         
-        # Convert the input features to FP16
-        inputs = {k: v.half() for k, v in inputs.items()}
+        # Match model precision: FP16 only when CUDA is available.
+        if device == "cuda":
+            inputs = {k: v.half() for k, v in inputs.items()}
         
         with torch.no_grad():
             ids = model.generate(inputs["input_features"])
@@ -117,6 +121,8 @@ class VoiceService:
     @staticmethod
     def _load_embedding_model():
         if VoiceService._embedding_model is None:
+            from transformers import AutoTokenizer, AutoModel
+
             VoiceService._embedding_tokenizer = AutoTokenizer.from_pretrained(
                 "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
             )

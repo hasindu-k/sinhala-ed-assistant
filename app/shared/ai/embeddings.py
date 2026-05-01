@@ -4,7 +4,6 @@ import threading
 from app.core.gemini_client import GeminiClient
 from app.core.config import settings
 from google.genai import types
-from sentence_transformers import SentenceTransformer, util
 import huggingface_hub
 
 if settings.HF_TOKEN:
@@ -19,10 +18,21 @@ _embedding_cache = {}
 _cache_lock = threading.Lock()
 
 
-# Load local semantic model once
-xlmr = SentenceTransformer(
-    "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
-)
+_xlmr = None
+_xlmr_lock = threading.Lock()
+
+
+def get_xlmr_model():
+    global _xlmr
+    if _xlmr is None:
+        with _xlmr_lock:
+            if _xlmr is None:
+                from sentence_transformers import SentenceTransformer
+
+                _xlmr = SentenceTransformer(
+                    "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
+                )
+    return _xlmr
 
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIM = 768
@@ -140,6 +150,8 @@ def semantic_similarity(a: str, b: str) -> float:
         return 0.0
 
     try:
+        from sentence_transformers import util
+
         # Check cache first
         with _cache_lock:
             a_vec = _embedding_cache.get(a)
@@ -149,10 +161,10 @@ def semantic_similarity(a: str, b: str) -> float:
         if a_vec is None or b_vec is None:
             with ml_semaphore:
                 if a_vec is None:
-                    a_vec = xlmr.encode(a, convert_to_tensor=True)
+                    a_vec = get_xlmr_model().encode(a, convert_to_tensor=True)
                     with _cache_lock: _embedding_cache[a] = a_vec
                 if b_vec is None:
-                    b_vec = xlmr.encode(b, convert_to_tensor=True)
+                    b_vec = get_xlmr_model().encode(b, convert_to_tensor=True)
                     with _cache_lock: _embedding_cache[b] = b_vec
 
         sim = float(util.cos_sim(a_vec, b_vec))
@@ -183,7 +195,7 @@ def ensure_sentences_cached(sentences: list[str]):
     # Batch encode with semaphore
     print(f"[INFO] Batch encoding {len(to_encode)} new sentences...")
     with ml_semaphore:
-        new_embs = xlmr.encode(
+        new_embs = get_xlmr_model().encode(
             to_encode, 
             batch_size=32, 
             convert_to_tensor=True,
