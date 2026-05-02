@@ -1,11 +1,9 @@
 # app/shared/models/resource_chunks.py
 
 import uuid
-from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, Numeric
+from sqlalchemy import Column, String, Integer, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Text
 
 from app.core.database import Base
 
@@ -24,4 +22,3 @@ class ResourceChunk(Base):
     start_char = Column(Integer, nullable=True)
     end_char = Column(Integer, nullable=True)
     pseudo_questions = Column(Text, nullable=True)
-    

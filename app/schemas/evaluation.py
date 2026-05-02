@@ -98,6 +98,37 @@ class RubricContentResponse(BaseModel):
     extracted_text: Optional[str] = None
 
 
+class MarkingSchemaQuestionBase(BaseModel):
+    question_id: Optional[UUID] = None
+    question_number: str
+    question_text: str
+    reference_text: str
+    max_marks: Optional[int] = None
+    part_name: Optional[str] = None
+
+
+class MarkingSchemaQuestionUpdate(MarkingSchemaQuestionBase):
+    id: str
+
+
+class MarkingSchemaQuestionResponse(MarkingSchemaQuestionUpdate):
+    pass
+
+
+class MarkingSchemaUpdateRequest(BaseModel):
+    questions: List[MarkingSchemaQuestionUpdate]
+
+
+class MarkingSchemaResponse(BaseModel):
+    id: UUID
+    session_id: UUID
+    resource_id: Optional[UUID] = None
+    is_confirmed: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    questions: List[MarkingSchemaQuestionResponse] = Field(default_factory=list)
+
+
 class EvaluationResourceResponse(BaseModel):
     id: UUID
     evaluation_session_id: UUID
@@ -292,7 +323,14 @@ class QuestionScoreResponse(BaseModel):
     evaluation_result_id: UUID
     question_id: Optional[UUID] = None
     sub_question_id: Optional[UUID] = None
+    question_label: Optional[str] = None
+    main_question_key: Optional[str] = None
+    sub_label: Optional[str] = None
+    paper_part: Optional[str] = None
+    paper_part_display: Optional[str] = None
+    is_leaf: Optional[bool] = None
     awarded_marks: Optional[Decimal] = None
+    max_marks: Optional[Decimal] = None
     feedback: Optional[str] = None
 
     class Config:
@@ -314,22 +352,3 @@ class EvaluationResultDetail(BaseModel):
     class Config:
         from_attributes = True
 
-
-# Marking Reference Schemas
-class MarkingReferenceResponse(BaseModel):
-    id: UUID
-    evaluation_session_id: UUID
-    question_id: Optional[UUID] = None
-    sub_question_id: Optional[UUID] = None
-    question_number: Optional[str] = None
-    question_text: Optional[str] = None
-    reference_answer: Optional[str] = None
-    is_approved: bool = False
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class MarkingReferenceUpdate(BaseModel):
-    reference_answer: str

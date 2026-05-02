@@ -15,14 +15,17 @@ class AnswerabilityService:
     # Stopwords for Sinhala and English
     STOPWORDS = {
         # Sinhala stopwords
-        "යනු", "කුමක්ද", "ද", "මොනවාද", "පිළිබඳ", "පිලිබඳ",
+        # "යනු", "කුමක්ද",  "මොනවාද", "මගින්"
+        "ද", "පිළිබඳ", "පිලිබඳ",
         "කරුණාකර", "පැහැදිලි", "කරන්න", "සඳහා", "මෙම", "මෙහි", "මෙහී",
         "එම", "ඒ", "මේ", "සහ", "හා", "තුළ", "අනුව",
         "ලෙස", "වන", "වූ", "බව", "සිට", "දක්වා",
-        "පමණ", "හැකි", "විය", "ය", "මගින්", "සමග",
+        "පමණ", "හැකි", "විය", "ය", "සමග",
         "වැනි", "පිළිබඳව", "ගැන", "අතර", "සඳහන්",
-        "දෙන්න", "ගන්න", "වෙන්න",
-        "ලද්දේද", "ලැබුණේද", "ලැබුනේද", "ලැබුනාද", "ලැබුණාද"," කවදාද","ලැබුණේ", "කවුද", "කොහොමද", "කොහොම", "කොහොමත්", "කොහොමහරි", "කොහොමද", "කොහොමද", "කොහොමද",
+        "දෙන්න", "ගන්න", "වෙන්න", "විසින්", "ලියන", 
+        "ලද්දේ", "ලද්දේද", "කවුරුන්", "කුමන", "මොනවා",
+        "ඇයි", "කොහේද", "කවදාද", "කොහොමද", "කියන්න",
+        "ලැබුණේද", "ලැබුනේද", "ලැබුනාද", "ලැබුණාද", "ලැබුණේ", "කවුද", "කොහොම", "කොහොමත්", "කොහොමහරි",
         # English stopwords
         "what", "is", "are", "the", "of", "in", "on", "at",
         "to", "for", "with", "by", "about", "as", "an",
@@ -89,7 +92,7 @@ class AnswerabilityService:
             logger.debug(f"Extracted topic using pattern2: '{topic}'")
             return [topic]
         
-        # Pattern 3: "X යනු කුමක්ද" (What is X)
+        # # Pattern 3: "X යනු කුමක්ද" (What is X)
         pattern3 = r"([\u0d80-\u0dff]+(?:\s+[\u0d80-\u0dff]+)*)\s+යනු\s+කුමක්ද"
         match3 = re.search(pattern3, question_lower)
         if match3:
@@ -150,20 +153,35 @@ class AnswerabilityService:
             avg_chunk_similarity = np.mean(chunk_similarities) if chunk_similarities else 0
             return avg_chunk_similarity
         
-        # Method 1: Key term overlap
+        # Method 1: Key term overlap (with boundary awareness)
         term_matches = 0
         matched_terms = []
         for term in question_terms:
-            if term in context_lower:
+            # Use a more flexible boundary for Sinhala to handle inflections
+            # Still require start of word/whitespace or start of string
+            # But allow common Sinhala suffixes or just whitespace/punctuation after
+            if re.search(fr"(^|\s|[.,!?;]){re.escape(term)}", context_lower):
                 term_matches += 1
                 matched_terms.append(term)
         
-        # If no terms match at all, score should be very low
+        # If no terms match at all, score should be 0
         if term_matches == 0:
-            logger.debug(f"No question terms found in context: {question_terms}")
+            logger.debug(f"No matches for terms: {question_terms}")
             return 0.0
         
         term_overlap_ratio = term_matches / len(question_terms)
+        
+        # Optimized overlap for short queries
+        if len(question_terms) <= 3:
+            if term_matches < 1:
+                term_overlap_ratio = 0
+            elif term_matches == 1:
+                # Small penalty for only 1 match if query was multi-term
+                if len(question_terms) > 1:
+                    term_overlap_ratio *= 0.5
+            elif term_matches == 2 and len(question_terms) == 3:
+                # 2/3 is quite good in Sinhala due to spelling variations
+                term_overlap_ratio = 0.8
         
         # Method 2: Use chunk similarity scores
         chunk_similarities = []

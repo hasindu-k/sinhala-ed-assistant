@@ -37,6 +37,7 @@ from app.services.chat_session_service import ChatSessionService
 from app.services.message_service import MessageService
 from app.services.message_attachment_service import MessageAttachmentService
 from app.services.session_resource_service import SessionResourceService
+from app.services.usage_service import UsageService
 
 
 router = APIRouter()
@@ -52,14 +53,31 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/transcribe")
-async def transcribe(audio: UploadFile = File(...)):
-
+async def transcribe(
+    audio: UploadFile = File(...),
+    resource_ids: Optional[str] = Form(None), # Added this
+    db: Session = Depends(get_db)
+):
     temp_path = "temp.wav"
     with open(temp_path, "wb") as f:
         f.write(await audio.read())
 
+    # 1. Get raw transcription from Whisper
     raw_text = VoiceService.transcribe_audio(temp_path)
-    normalized, standard = VoiceService.standardize_southern_sinhala(raw_text)
+    
+    # 2. Fetch context hints from documents if resources exist
+    context_hints = ""
+    if resource_ids:
+        try:
+            ids = [UUID(rid.strip()) for rid in resource_ids.split(",") if rid.strip()]
+            # Retrieve top 3-5 chunks that look like the raw text
+            top_chunks = retrieve_top_k(query=raw_text, resource_ids=ids, k=3)
+            context_hints = "\n".join([c.content for c in top_chunks])
+        except Exception as e:
+            logger.error(f"Context retrieval failed: {e}")
+
+    # 3. Pass hints to the standardization service
+    normalized, standard = VoiceService.standardize_southern_sinhala(raw_text, context_hints)
 
     return {
         "raw": raw_text,
@@ -100,6 +118,7 @@ async def qa_from_voice(
     
     chat_session_service = ChatSessionService(db)
     message_service = MessageService(db)
+    UsageService(db).check_learning_request_limit(current_user.id)
 
     # ----------------------------------------------------
     # 1️⃣ ENSURE SESSION EXISTS
@@ -131,7 +150,14 @@ async def qa_from_voice(
     # 4️⃣ TRANSCRIBE + NORMALIZE
     # ----------------------------------------------------
     raw_text = VoiceService.transcribe_audio(temp_path)
-    _, standard = VoiceService.standardize_southern_sinhala(raw_text)
+    ids = [UUID(rid) for rid in resource_ids.split(",")] if resource_ids else []
+    
+    context_hints = ""
+    if ids:
+        top_chunks = retrieve_top_k(query=raw_text, resource_ids=ids, k=3)
+        context_hints = "\n".join([c.content for c in top_chunks])
+
+    _, standard = VoiceService.standardize_southern_sinhala(raw_text, context_hints=context_hints)
     question_text = standard
 
     # ----------------------------------------------------
@@ -222,12 +248,14 @@ async def qa_from_text(
     resource_ids: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    grade_level: Optional[str] = Form(None),  # New field for grade level
 ):
     logger.info("Entered qa_from_text function")
     logger.info(f"Received text: {text[:50]}..., session_id: {session_id}, user_id: {current_user.id}")
-    
+        
     chat_session_service = ChatSessionService(db)
     message_service = MessageService(db)
+    UsageService(db).check_learning_request_limit(current_user.id)
 
     # ----------------------------------------------------
     # 1️⃣ ENSURE SESSION EXISTS
@@ -253,6 +281,7 @@ async def qa_from_text(
         modality="voice",
         transcript=text,  # Same as content since it's already transcribed
         audio_url=None,  # No audio file to upload
+        grade_level=grade_level,
     )
 
     # ----------------------------------------------------

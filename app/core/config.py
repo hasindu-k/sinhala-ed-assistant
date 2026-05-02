@@ -12,6 +12,13 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY_V2: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
     GEMINI_LIGHT_API_KEY: Optional[str] = None
+    EVAL_GEMINI_OCR_CORRECTION_MAX_REQUESTS: int = 1
+    EVAL_GEMINI_ANSWER_MAPPING_MAX_REQUESTS: int = 10
+    EVAL_GEMINI_REFERENCE_SCHEMA_MAX_REQUESTS: int = 10
+    EVAL_GEMINI_OCR_MODEL: str = "gemini-2.5-flash"
+    EVAL_GEMINI_QUESTION_PARSING_MODEL: str = "gemini-2.5-flash"
+    EVAL_GEMINI_ANSWER_MAPPING_MODEL: str = "gemini-2.5-flash"
+    EVAL_GEMINI_REFERENCE_SCHEMA_MODEL: str = "gemini-2.5-flash"
 
     # Database (optional)
     DATABASE_URL: Optional[str] = None
@@ -22,12 +29,14 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 # 24 hours for development
     REFRESH_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 15
+    ADMIN_BOOTSTRAP_TOKEN: Optional[str] = None
 
     # Embedding model for RAG
     MODEL_EMBEDDING_NAME: str = "sentence-transformers/paraphrase-xlm-r-multilingual-v1"
 
     # HuggingFace Hub token (optional, suppresses rate-limit warnings)
     HF_TOKEN: Optional[str] = None
+    LOAD_WHISPER_ON_STARTUP: bool = False
 
     # Email (SMTP)
     MAIL_MAILER: str = "smtp"

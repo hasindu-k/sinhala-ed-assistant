@@ -25,7 +25,8 @@ class RAGService:
     """RAG orchestration with hybrid retrieval, grounded generation, and safety checks."""
     
     # Threshold for considering retrieved content relevant
-    RELEVANCE_THRESHOLD = 0.25  # Lowered threshold for better recall
+    RELEVANCE_THRESHOLD = 0.20  # Lowered to reduce false negatives; LLM will handle the final gate.
+
 
     def __init__(self, db: Session):
         self.db = db
@@ -50,6 +51,7 @@ class RAGService:
         bm25_k: int = 20,
         final_k: int = 8,
         grade_level: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict:
         """Hybrid retrieval → grounded generation → safety checks → logging"""
 
@@ -114,23 +116,6 @@ class RAGService:
                 content=refusal_text,
                 model_info={"model_name": "gemini-3-flash-preview"},
                 parent_msg_id=user_message_id
-            )
-            
-            # For unanswerable questions, save minimal report with is_unanswerable=True
-            from app.services.safety_summary_service import SafetySummaryService
-            
-            computed_values = SafetySummaryService.compute_from_flagged([], is_unanswerable=True)
-            
-            self.safety_service.create_safety_report(
-                assistant_msg.id,
-                {
-                    "missing_concepts": [],
-                    "extra_concepts": [],
-                    "flagged_sentences": [],
-                    "reasoning": "No relevant content found - legitimate refusal",
-                    **computed_values,
-                    "xai_explanation": None  # No XAI for unanswerable
-                }
             )
             
             return {
@@ -202,33 +187,6 @@ class RAGService:
                 ],
             )
             
-            # Save safety report for refusal (with is_unanswerable=True to skip safety checks)
-            from app.services.safety_summary_service import SafetySummaryService
-            
-            if is_unanswerable:
-                # Don't create a safety report for unanswerable questions
-                # Just return the response without safety data
-                return {
-                    "assistant_message_id": assistant_msg.id,
-                    "content": refusal_text,
-                    "sources": hits,
-                    "retrieval_metadata": {"bm25_k": bm25_k, "final_k": final_k, "used_chunks": len(hits)},
-                    "safety": None,  # This should remain None
-                    "xai_explanation": None
-                }
-            
-            self.safety_service.create_safety_report(
-                assistant_msg.id,
-                {
-                    "missing_concepts": [],
-                    "extra_concepts": [],
-                    "flagged_sentences": [],
-                    "reasoning": "Retrieved content lacks relevant information for question",
-                    **computed_values,
-                    "xai_explanation": None  # No XAI for unanswerable
-                }
-            )
-            
             return {
                 "assistant_message_id": assistant_msg.id,
                 "content": refusal_text,
@@ -273,17 +231,19 @@ class RAGService:
             prompt = build_qa_prompt(
                 context=context,
                 count=count,
-                query=user_query
+                query=user_query,
+                grade=grade_level
             )
-            message_grade_level = None
+            message_grade_level = grade_level
 
         # 🟢 DIRECT ANSWER
         elif intent == "qa_answer":
             prompt = build_direct_answer_prompt(
                 context=context,
-                query=user_query
+                query=user_query,
+                grade=grade_level
             )
-            message_grade_level = None
+            message_grade_level = grade_level
 
         # 🟡 Explanation fallback
         elif intent == "explanation":
@@ -305,13 +265,59 @@ class RAGService:
         # -----------------------------
         # 9. Generate response with Gemini
         # -----------------------------
-        generated_result = GeminiClient.generate_content(prompt)
+        generated_result = GeminiClient.generate_content(
+            prompt=prompt, 
+            user_id=user_id,
+            session_id=session_id,
+            message_id=user_message_id,
+            service_name="message_generation",
+        )
         generated = generated_result["text"]
         prompt_tokens = generated_result["prompt_tokens"]
         completion_tokens = generated_result["completion_tokens"]
         total_tokens = generated_result["total_tokens"]
 
         logger.info("Generated response of length %d", len(generated))
+
+        # -----------------------------
+        # 9.5. Check for LLM-detected unanswerability
+        # -----------------------------
+        REFUSAL_MARKER = "[NOT_ANSWERABLE]"
+        is_llm_refusal = generated.strip().startswith(REFUSAL_MARKER)
+
+        if is_llm_refusal:
+            logger.info("Gemini detected question is unanswerable (marker found)")
+            refusal_text = "මෙම ප්‍රශ්නයට අදාළ තොරතුරු ලබා දී ඇති අන්තර්ගතයේ නොමැත."
+            
+            assistant_msg = self.message_service.create_assistant_message(
+                session_id=session_id,
+                content=refusal_text,
+                model_info={"model_name": "gemini-3-flash-preview"},
+                parent_msg_id=user_message_id
+            )
+
+            # Log used chunks for metrics even if LLM refused
+            self.context_service.log_used_chunks(
+                user_message_id,
+                [
+                    {
+                        "chunk_id": h["id"],
+                        "similarity_score": h.get("similarity"),
+                        "rank": i + 1,
+                        "was_irrelevant": True
+                    }
+                    for i, h in enumerate(hits)
+                ],
+            )
+            
+            return {
+                "assistant_message_id": assistant_msg.id,
+                "content": refusal_text,
+                "sources": hits,
+                "retrieval_metadata": {"bm25_k": bm25_k, "final_k": final_k, "used_chunks": len(hits)},
+                "safety": None,
+                "xai_explanation": None
+            }
 
         # -----------------------------
         # 10. Safety & misconception checks (only for answerable questions)

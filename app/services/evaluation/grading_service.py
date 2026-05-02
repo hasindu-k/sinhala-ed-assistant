@@ -13,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import torch
 from rank_bm25 import BM25Okapi
-from sentence_transformers import util
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from sqlalchemy.orm.exc import StaleDataError
@@ -29,10 +28,19 @@ from app.shared.models.session_resources import SessionResource
 from app.shared.models.evaluation_session import EvaluationSession, PaperConfig
 from app.shared.models.resource_file import ResourceFile
 from app.shared.models.rubrics import Rubric, RubricCriterion
-from app.shared.ai.embeddings import xlmr, ml_semaphore, ensure_sentences_cached, _embedding_cache
+from app.shared.ai.embeddings import get_xlmr_model, ml_semaphore, ensure_sentences_cached, _embedding_cache
+from app.shared.ai.gemini_client import gemini_generate_evaluation
+from app.core.config import settings
 from app.core.gemini_client import GeminiClient
+from app.services.evaluation.gemini_cost_policy import EvaluationGeminiClient
 
 logger = logging.getLogger(__name__)
+
+
+def _cosine_util():
+    from sentence_transformers import util
+
+    return util
 
 
 class GradingService:
@@ -90,6 +98,31 @@ class GradingService:
 
         return 'Unknown'
 
+    def _iter_all_subquestions(self, sub_questions: List[SubQuestion]):
+        for sub_question in sub_questions or []:
+            yield sub_question
+            children = getattr(sub_question, "children", []) or []
+            if children:
+                yield from self._iter_all_subquestions(children)
+
+    def _has_any_mapped_descendant(self, question: Question, mapped_answers: Dict[str, Any]) -> bool:
+        all_subquestions = list(self._iter_all_subquestions(getattr(question, "sub_questions", []) or []))
+        if not all_subquestions:
+            return False
+
+        normalized_keys = {str(k).lower().replace(" ", "").replace(".", "").replace("(", "").replace(")", "") for k in mapped_answers.keys()}
+        question_number = str(question.question_number or "")
+
+        for sub_question in all_subquestions:
+            sq_id = str(sub_question.id)
+            sq_label = str(sub_question.label or "").strip()
+            composite_key = f"{question_number}{sq_label}".lower().replace(" ", "").replace(".", "").replace("(", "").replace(")", "")
+
+            if sq_id in mapped_answers or composite_key in normalized_keys:
+                return True
+
+        return False
+
 
     # ----------------------------------------------------------
     # PUBLIC ENTRY
@@ -102,6 +135,7 @@ class GradingService:
         syllabus_text: str,
         rubric_text: str,
         question_map: Dict,
+        reference_map: Optional[Dict[str, str]] = None,
         progress_callback: Optional[Callable[[str, str, Optional[int]], None]] = None,
         include_feedback: bool = True,
     ) -> EvaluationResult:
@@ -148,107 +182,28 @@ class GradingService:
         total_questions = len(answer_doc.mapped_answers)
         processed_count = 0
 
-        # -------------------------------------------------------
-        # PHASE -1: Clean Student OCR Noise
-        # -------------------------------------------------------
         if progress_callback:
-            progress_callback("evaluating_answers", "AI Cleaning OCR noise from student answers...", percent=1)
-        
-        cleaned_answers = self._batch_clean_student_answers(answer_doc.mapped_answers)
-        answer_doc.mapped_answers = cleaned_answers
+            progress_callback("evaluating_answers", "Scoring persisted mapped answers...", percent=2)
+            progress_callback("evaluating_answers", "Using confirmed schema references...", percent=3)
 
-        if progress_callback:
-            progress_callback("evaluating_answers", f"Scoring {total_questions} answers...", percent=2)
+        reference_map = reference_map or {}
+        if not reference_map:
+            raise ValueError("Marking schema must be confirmed before grading")
 
-        # -------------------------------------------------------
-        # PHASE 0: Gemini-based Reference Point Extraction
-        # -------------------------------------------------------
-        # Gemini reads the syllabus + question text and extracts the actual
-        # marking points. This replaces noisy BM25 retrieval as primary source.
-        # BM25 (_get_reference_context) is kept as fallback.
-        # -------------------------------------------------------
-        if progress_callback:
-            progress_callback("evaluating_answers", "Extracting reference answers from syllabus (AI)...", percent=3)
-
-        # Collect question info for Gemini batch extraction
-        questions_for_extraction: List[Dict] = []
-        for key, student_text in answer_doc.mapped_answers.items():
+        gemini_ref_map = {}
+        missing_reference_keys: List[str] = []
+        for key in answer_doc.mapped_answers.keys():
             target = self._find_matching_question(key, question_map)
             if not target:
                 continue
-            if not student_text or str(student_text).strip().lower() in ["null", "none", ""]:
-                continue
-            # Skip parents when sub-questions are mapped
-            if isinstance(target, Question) and getattr(target, 'sub_questions', []):
-                sub_mapped = any(
-                    str(sq.id) in answer_doc.mapped_answers or
-                    f"{str(target.question_number)}{sq.label}".lower().replace("(", "").replace(")", "") in answer_doc.mapped_answers
-                    for sq in target.sub_questions
-                )
-                if sub_mapped:
-                    continue
+            saved_reference = self._get_saved_reference_text(reference_map, key, target)
+            if saved_reference:
+                gemini_ref_map[key] = saved_reference
+            else:
+                missing_reference_keys.append(str(key))
 
-            # Use gold-standard correct_answer if available and NOT a placeholder — skip Gemini for those
-            correct = getattr(target, "correct_answer", None)
-            if correct and not self._is_placeholder_answer(correct):
-                continue  # _get_reference_context will return correct_answer directly
-
-            q_text = getattr(target, "question_text", "") or getattr(target, "sub_question_text", "")
-            max_marks = self._resolve_max_marks(target)
-            display_num = self._resolve_display_number(target, key)
-            q_type = getattr(target, "question_type", "short") or "short"
-
-            questions_for_extraction.append({
-                "key": key,
-                "target": target,
-                "question_text": q_text,
-                "max_marks": max_marks,
-                "display_number": display_num,
-                "question_type": q_type,
-            })
-
-        # Batch-extract reference points from Gemini
-        # NEW: Check for approved MarkingReference in DB first
-        db_refs = self.marking_refs.get_references_by_session(eval_session_id)
-        approved_refs = {str(ref.question_id or ref.sub_question_id): ref.reference_answer for ref in db_refs if ref.is_approved and ref.reference_answer}
-        
-        gemini_ref_map: Dict[str, str] = {}
-        
-        if approved_refs:
-            logger.info(f"Using {len(approved_refs)} approved marking references from DB.")
-            # Map back to keys used in question_map for compatibility
-            for q_info in questions_for_extraction:
-                target_id = str(q_info['target'].id)
-                if target_id in approved_refs:
-                    gemini_ref_map[q_info['key']] = approved_refs[target_id]
-
-        # If not all refs are covered by approved DB entries, use cache/Gemini as fallback
-        missing_any = any(q['key'] not in gemini_ref_map for q in questions_for_extraction)
-        
-        if missing_any:
-            cache_key = str(eval_session_id)
-            with GradingService._gemini_ref_cache_lock:
-                cached = GradingService._gemini_ref_cache.get(cache_key)
-
-            if cached is not None:
-                # Merge cached into our map (prioritize DB over cache if both exist, though unlikely)
-                for k, v in cached.items():
-                    if k not in gemini_ref_map:
-                        gemini_ref_map[k] = v
-                logger.info(f"Using cached Gemini references for session {cache_key}.")
-            elif syllabus_text and questions_for_extraction:
-                # Still missing some? Call Gemini for the remaining ones
-                remaining_questions = [q for q in questions_for_extraction if q['key'] not in gemini_ref_map]
-                if remaining_questions:
-                    new_refs = self._batch_extract_reference_points(
-                        remaining_questions, syllabus_text
-                    )
-                    gemini_ref_map.update(new_refs)
-                    # Store in class-level cache
-                    with GradingService._gemini_ref_cache_lock:
-                        GradingService._gemini_ref_cache[cache_key] = gemini_ref_map
-
-        logger.info(f"Final reference map size: {len(gemini_ref_map)}/{len(questions_for_extraction)}")
+        if missing_reference_keys:
+            raise ValueError("Marking schema must be confirmed before grading")
 
         # -------------------------------------------------------
         # PHASE 0.5: Pre-calculate all embeddings (SPEEDUP)
@@ -287,16 +242,8 @@ class GradingService:
             if not student_text or str(student_text).strip().lower() in ["null", "none", ""]:
                 continue
 
-            if isinstance(target, Question) and getattr(target, 'sub_questions', []):
-                sub_mapped = False
-                for sq in target.sub_questions:
-                    sq_id_str = str(sq.id)
-                    sq_label_key = f"{str(target.question_number)}{sq.label}".lower().replace("(", "").replace(")", "")
-                    if sq_id_str in answer_doc.mapped_answers or sq_label_key in answer_doc.mapped_answers:
-                        sub_mapped = True
-                        break
-                if sub_mapped:
-                    continue
+            if isinstance(target, Question) and self._has_any_mapped_descendant(target, answer_doc.mapped_answers):
+                continue
 
             max_marks = self._resolve_max_marks(target)
             # PRIMARY: Gemini-extracted reference points
@@ -342,18 +289,9 @@ class GradingService:
                 logger.warning(f"Skipping duplicate mapping for question: {key} (ID: {target_id})")
                 continue
 
-            if isinstance(target, Question) and getattr(target, 'sub_questions', []):
-                sub_mapped = False
-                for sq in target.sub_questions:
-                    sq_id_str = str(sq.id)
-                    sq_label_key = f"{str(target.question_number)}{sq.label}".lower().replace("(", "").replace(")", "")
-                    if sq_id_str in answer_doc.mapped_answers or sq_label_key in answer_doc.mapped_answers:
-                        sub_mapped = True
-                        break
-
-                if sub_mapped:
-                    logger.info(f"Skipping parent question {key} because sub-questions are mapped.")
-                    continue
+            if isinstance(target, Question) and self._has_any_mapped_descendant(target, answer_doc.mapped_answers):
+                logger.info(f"Skipping parent question {key} because descendant sub-questions are mapped.")
+                continue
 
             seen_question_ids.add(target_id)
             seen_keys.add(key)
@@ -404,6 +342,16 @@ class GradingService:
             })
 
         logger.info(f"Scoring loop finished. Scored {len(scored_items)} items total.")
+
+        # Pre-compute the exact marks that will be persisted so feedback can be
+        # written against the same score the user sees in the UI.
+        for item in scored_items:
+            system_ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
+            final_snapped_ratio = self._apply_discrete_bands(system_ratio, item["max_marks"])
+            final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
+            item["system_ratio"] = system_ratio
+            item["final_snapped_ratio"] = final_snapped_ratio
+            item["final_marks"] = final_marks
 
         # -------------------------------------------------------
         # PHASE 2: Gemini feedback ONLY — no marks from Gemini ever
@@ -515,12 +463,25 @@ class GradingService:
                 # _apply_discrete_bands snaps to clean mark steps.
                 # Gemini output is NOT read here for marks under any circumstance.
                 # -------------------------------------------------------
-                system_ratio = float(item["awarded_marks"]) / max(1, item["max_marks"])
-                final_snapped_ratio = self._apply_discrete_bands(system_ratio, item["max_marks"])
-                final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
+                system_ratio = item.get("system_ratio") or float(item["awarded_marks"]) / max(1, item["max_marks"])
+                final_snapped_ratio = item.get("final_snapped_ratio")
+                if final_snapped_ratio is None:
+                    final_snapped_ratio = self._apply_discrete_bands(system_ratio, item["max_marks"])
+                final_marks = item.get("final_marks")
+                if final_marks is None:
+                    final_marks = Decimal(str(final_snapped_ratio * item["max_marks"])).quantize(Decimal("0.5"))
                 # Feedback text from Gemini (text only, never marks)
                 meaning_data = eval_data_map.get(item["key"], {})
                 feedback = meaning_data.get("feedback", "පිළිතුර අගය කරන ලදී.")
+                if not feedback or self._feedback_contradicts_score(feedback, item):
+                    logger.warning(
+                        "Replacing missing or score-contradictory feedback for Q%s. final_marks=%s/%s feedback=%s",
+                        item["display_number"],
+                        final_marks,
+                        item["max_marks"],
+                        str(feedback)[:120],
+                    )
+                    feedback = self._build_score_aligned_feedback(item)
                 logger.info(
                     f"[FINAL_MARK] Q{item['display_number']} | "
                     f"system_ratio={system_ratio:.4f} -> snapped_ratio={final_snapped_ratio:.4f} -> "
@@ -569,6 +530,10 @@ class GradingService:
                                     
             logger.info(f"DEBUG: Saving QuestionScore for Q_ID={target.id}. Captured text: {student_text_captured[:50] if student_text_captured else 'None'}")
 
+            has_student_text = bool(
+                student_text_captured and str(student_text_captured).strip().lower() not in ["null", "none", ""]
+            )
+
             q_score_params = {
                 "evaluation_result_id": eval_result.id,
                 "awarded_marks": final_marks,
@@ -594,13 +559,17 @@ class GradingService:
             else:
                 if getattr(target, 'sub_questions', []): is_leaf = False
 
+            # New attempt tracking: count only rows that actually captured student text,
+            # so selection logic reflects real attempts instead of placeholder rows.
+            main_q_id = str(main_q.id) if main_q else "orphan"
+            if main_q_id not in part_scores[part_name]:
+                part_scores[part_name][main_q_id] = {"marks": [], "attempted": 0}
+
+            if has_student_text:
+                part_scores[part_name][main_q_id]["attempted"] += 1
+
             if is_leaf:
-                main_q_id = str(main_q.id) if main_q else "orphan"
-                if main_q_id not in part_scores[part_name]:
-                    part_scores[part_name][main_q_id] = {"marks": [], "attempted": 0}
                 part_scores[part_name][main_q_id]["marks"].append(final_marks)
-                if any(str(it["target"].id) == str(target.id) for it in scored_items):
-                    part_scores[part_name][main_q_id]["attempted"] += 1
 
         self.db.flush()
 
@@ -622,12 +591,24 @@ class GradingService:
             count = part_rules.get('count') or part_rules.get('total') or part_rules.get('choose_any')
 
             if is_selection_mode and count and len(main_q_entries) > int(count):
-                # SYNC: Sort by total marks (descending), then by attempted sub-questions (descending)
-                main_q_entries.sort(key=lambda x: (x[0], x[1]), reverse=True)
-                selected = main_q_entries[:int(count)]
+                # New selection rule: prefer genuinely attempted main questions;
+                # only backfill with unattempted zero-mark questions when the paper
+                # requires more selected slots than were actually answered.
+                attempted_entries = [e for e in main_q_entries if e[1] > 0]
+                unattempted_entries = [e for e in main_q_entries if e[1] <= 0]
+                attempted_entries.sort(key=lambda x: (x[0], x[1]), reverse=True)
+                unattempted_entries.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+                selected = attempted_entries[:int(count)]
+                if len(selected) < int(count):
+                    selected.extend(unattempted_entries[: int(count) - len(selected)])
+
                 selected_totals = [e[0] for e in selected]
                 attempted_count = sum(1 for e in selected if e[1] > 0)
-                logger.info(f"Part {part_name}: Selected best {count}/{len(main_q_entries)} questions ({attempted_count} attempted).")
+                logger.info(
+                    f"Part {part_name}: Selected best {count}/{len(main_q_entries)} questions "
+                    f"({attempted_count} actually attempted)."
+                )
                 total_score_val += sum(selected_totals)
             else:
                 total_score_val += sum(e[0] for e in main_q_entries)
@@ -678,6 +659,7 @@ class GradingService:
 
         syllabus_text, rubric_text, questions = workflow._get_evaluation_context(eval_session.id)
         question_map = workflow._build_question_map_helper(questions)
+        reference_map = self._load_confirmed_reference_map(eval_session.id, eval_session.session_id, user_id)
 
         scores = self.db.query(QuestionScore).filter(QuestionScore.evaluation_result_id == result.id).all()
 
@@ -692,21 +674,22 @@ class GradingService:
             if not target:
                 continue
 
-            key = None
-            for k, val in answer_doc.mapped_answers.items():
-                if str(target.id) in str(val) or k == str(target.id):
-                    key = k
-                    break
+            # New feedback guard: skip placeholder rows so generated feedback only
+            # talks about answers the student actually wrote.
+            student_text = (qs.student_answer or "").strip()
+            if not student_text or student_text.lower() in ["null", "none"]:
+                continue
 
-            if not key:
-                key = str(target.id)
+            key = str(target.id)
 
             display_number = self._resolve_display_number(target, key)
-            reference_text = self._get_reference_context(target, syllabus_text, rubric_text)
+            reference_text = self._get_saved_reference_text(reference_map, key, target)
+            if not reference_text:
+                continue
 
             scored_items.append({
                 "key": key,
-                "student_text": answer_doc.mapped_answers.get(key, ""),
+                "student_text": student_text,
                 "reference_text": reference_text,
                 "target": target,
                 "max_marks": self._resolve_max_marks(target),
@@ -720,23 +703,21 @@ class GradingService:
 
         logger.info(f"Generating on-demand batch & overall feedback for result {result.id}")
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            # Only send essays to Gemini
-            essay_items = [i for i in scored_items if i["max_marks"] > 2]
-            future_batch = executor.submit(self._get_batch_feedback_from_gemini, essay_items)
-            future_overall = executor.submit(self._generate_overall_feedback, result.total_score, result.id)
+        # Only send essays to Gemini. Keep feedback calls sequential because the
+        # paid API can still return transient 503s when several Flash requests
+        # are fired at once.
+        essay_items = [i for i in scored_items if i["max_marks"] > 2]
+        try:
+            eval_data_map = self._get_batch_feedback_from_gemini(essay_items)
+        except Exception as e:
+            logger.error(f"Batch feedback generation failed: {e}")
+            eval_data_map = {}
 
-            try:
-                eval_data_map = future_batch.result()
-            except Exception as e:
-                logger.error(f"Batch feedback generation failed: {e}")
-                eval_data_map = {}
-
-            try:
-                overall_feedback = future_overall.result()
-            except Exception as e:
-                logger.error(f"Overall feedback generation failed: {e}")
-                overall_feedback = f"Total Score: {result.total_score}"
+        try:
+            overall_feedback = self._generate_overall_feedback(result.total_score, result.id)
+        except Exception as e:
+            logger.error(f"Overall feedback generation failed: {e}")
+            overall_feedback = f"Total Score: {result.total_score}"
 
         # Generate short-answer feedback locally - improved templates
         for item in scored_items:
@@ -784,6 +765,98 @@ class GradingService:
         return result
 
 
+    def build_reference_map_for_targets(
+        self,
+        eval_session_id: UUID,
+        syllabus_text: str,
+        rubric_text: str,
+        targets: List[Dict[str, Any]],
+    ) -> Dict[str, str]:
+        questions_for_extraction: List[Dict[str, Any]] = []
+        for target_info in targets:
+            target = target_info["target"]
+            question_text = target_info.get("question_text") or ""
+            if not question_text.strip():
+                continue
+
+            questions_for_extraction.append(
+                {
+                    "key": target_info["key"],
+                    "target": target,
+                    "question_text": question_text,
+                    "max_marks": target_info.get("max_marks") or self._resolve_max_marks(target),
+                    "display_number": target_info.get("question_number") or target_info["key"],
+                    "question_type": getattr(target, "question_type", "short") or "short",
+                }
+            )
+
+        cache_key = str(eval_session_id)
+        gemini_ref_map: Dict[str, str] = {}
+        with GradingService._gemini_ref_cache_lock:
+            cached = GradingService._gemini_ref_cache.get(cache_key)
+
+        if cached is not None:
+            gemini_ref_map = cached
+            logger.info("Using cached marking references for session %s (%s refs).", cache_key, len(gemini_ref_map))
+        elif syllabus_text and questions_for_extraction:
+            gemini_ref_map = self._batch_extract_reference_points(questions_for_extraction, syllabus_text)
+            with GradingService._gemini_ref_cache_lock:
+                GradingService._gemini_ref_cache[cache_key] = gemini_ref_map
+
+        final_map: Dict[str, str] = {}
+        for target_info in targets:
+            target = target_info["target"]
+            extracted_reference = gemini_ref_map.get(target_info["key"], "")
+            if extracted_reference and not self._is_placeholder_answer(extracted_reference):
+                final_map[target_info["key"]] = extracted_reference
+                continue
+
+            syllabus_reference = self._get_reference_context(
+                target,
+                syllabus_text,
+                rubric_text,
+                prefer_gold_standard=False,
+            )
+            if syllabus_reference and not self._is_placeholder_answer(syllabus_reference):
+                final_map[target_info["key"]] = syllabus_reference
+                continue
+
+            final_map[target_info["key"]] = self._get_reference_context(
+                target,
+                syllabus_text,
+                rubric_text,
+                prefer_gold_standard=True,
+            )
+        return final_map
+
+    def _get_saved_reference_text(self, reference_map: Dict[str, str], key: str, target: Any) -> str:
+        candidates = [str(key), self._normalize_question_lookup_key(key)]
+        target_id = getattr(target, "id", None)
+        if target_id:
+            candidates.append(str(target_id))
+
+        display_number = self._resolve_display_number(target, key)
+        candidates.append(str(display_number))
+        candidates.append(self._normalize_question_lookup_key(display_number))
+
+        for candidate in candidates:
+            if candidate in reference_map and reference_map[candidate]:
+                return reference_map[candidate]
+        return ""
+
+    def _normalize_question_lookup_key(self, value: str) -> str:
+        return re.sub(r"[\s().]", "", str(value or "").lower())
+
+    def _load_confirmed_reference_map(self, eval_session_id: UUID, session_id: UUID, user_id: UUID) -> Dict[str, str]:
+        from app.services.evaluation.marking_schema_service import MarkingSchemaService
+
+        schema_service = MarkingSchemaService(self.db)
+        try:
+            return schema_service.get_confirmed_reference_map(eval_session_id, user_id)
+        except Exception:
+            return schema_service.get_confirmed_reference_map(session_id, user_id)
+
+
     # ----------------------------------------------------------
     # SCORING HELPERS
     # ----------------------------------------------------------
@@ -809,25 +882,25 @@ class GradingService:
         if not sentences:
             with ml_semaphore:
                 emb1 = student_emb if student_emb is not None else _embedding_cache.get(student_text)
-                if emb1 is None: emb1 = xlmr.encode(student_text, convert_to_tensor=True)
+                if emb1 is None: emb1 = get_xlmr_model().encode(student_text, convert_to_tensor=True)
 
                 emb2 = reference_emb if reference_emb is not None else _embedding_cache.get(reference_text)
-                if emb2 is None: emb2 = xlmr.encode(reference_text, convert_to_tensor=True)
+                if emb2 is None: emb2 = get_xlmr_model().encode(reference_text, convert_to_tensor=True)
 
-            raw_sim = util.cos_sim(emb1, emb2).item()
+            raw_sim = _cosine_util().cos_sim(emb1, emb2).item()
             return self._sinhala_sigmoid_boost(raw_sim, max_marks)
 
         s_emb = student_emb if student_emb is not None else _embedding_cache.get(student_text)
         if s_emb is None:
             with ml_semaphore:
-                s_emb = xlmr.encode(student_text, convert_to_tensor=True)
+                s_emb = get_xlmr_model().encode(student_text, convert_to_tensor=True)
 
         missing = [s for s in sentences if s not in _embedding_cache]
         if missing:
             ensure_sentences_cached(missing)
 
         ref_embs = torch.stack([_embedding_cache[s] for s in sentences])
-        sims = util.cos_sim(s_emb, ref_embs)[0]
+        sims = _cosine_util().cos_sim(s_emb, ref_embs)[0]
 
         # Blend max-match (70%) with top-3 average (30%) for stability
         k = min(3, len(sims))
@@ -870,7 +943,10 @@ class GradingService:
         - Paper I / Short: Below 0.20 gives zero
         - Paper II / Essay: Below 0.15 gives zero (more lenient for depth coverage)
         """
-        high_threshold = 0.78
+        # New essay calibration: do not auto-promote essays to full marks from
+        # merely "good" similarity. Paper II should keep separation between
+        # partial, good, and excellent answers.
+        high_threshold = 0.78 if max_marks <= 2 else 0.97
         low_threshold = 0.20 if max_marks <= 2 else 0.15
 
         if ratio >= high_threshold: return 1.0
@@ -883,6 +959,8 @@ class GradingService:
         snapped_marks = (Decimal(str(actual_marks)) / step).quantize(
             Decimal("1"), rounding=ROUND_HALF_UP
         ) * step
+        if max_marks > 2 and ratio < high_threshold:
+            snapped_marks = min(snapped_marks, Decimal(str(max_marks)) - step)
 
         final_ratio = float(snapped_marks / Decimal(str(max_marks)))
         return min(1.0, final_ratio)
@@ -920,10 +998,15 @@ class GradingService:
                     return True
         return False
 
-    def _get_reference_context(self, question, syllabus_text: str, rubric_text: str) -> str:
-        # Gold standard: use correct_answer if available and NOT a placeholder
+    def _get_reference_context(
+        self,
+        question,
+        syllabus_text: str,
+        rubric_text: str,
+        prefer_gold_standard: bool = True,
+    ) -> str:
         correct = getattr(question, "correct_answer", None)
-        if correct and not self._is_placeholder_answer(correct):
+        if prefer_gold_standard and correct and not self._is_placeholder_answer(correct):
             logger.info(f"Using Gold Standard context for question {getattr(question, 'id')}")
             return correct.strip()
 
@@ -932,6 +1015,9 @@ class GradingService:
 
         source = syllabus_text
         if not source:
+            if correct and not self._is_placeholder_answer(correct):
+                logger.info(f"Using Gold Standard context for question {getattr(question, 'id')}")
+                return correct.strip()
             return ""
 
         chunks = [c.strip() for c in source.split("\n") if len(c.strip()) > 5]
@@ -953,6 +1039,271 @@ class GradingService:
         if len(context) > 2000:
             context = context[:2000] + "... [Context Clipped]"
         return context
+
+    def _build_reference_context_block(self, question_info: Dict[str, Any], syllabus_text: str) -> str:
+        target = question_info.get("target")
+        question_text = (question_info.get("question_text") or "").strip()
+        display_number = str(question_info.get("display_number") or "")
+
+        context = ""
+        if target is not None:
+            context = self._get_reference_context(
+                target,
+                syllabus_text,
+                rubric_text="",
+                prefer_gold_standard=False,
+            )
+
+        if not context and syllabus_text:
+            chunks = [c.strip() for c in syllabus_text.split("\n") if len(c.strip()) > 5]
+            if chunks:
+                search_query = f"{display_number} {question_text}".strip()
+                bm25 = BM25Okapi([c.split() for c in chunks])
+                top_chunks = bm25.get_top_n(search_query.split(), chunks, n=8)
+                context = "\n\n".join(top_chunks[:4])
+
+        context = (context or "").strip()
+        if len(context) > 2200:
+            context = context[:2200] + "... [Context Clipped]"
+        return context
+
+    def _sanitize_extracted_reference(self, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return ""
+
+        disallowed_patterns = [
+            r"(?i)\bsyllabus content does not\b",
+            r"(?i)\busing internal knowledge\b",
+            r"(?i)\bthis document does not contain\b",
+            r"(?i)\bnot covered\b",
+            r"අඩංගු නොවේ",
+            r"සඳහන් නොවේ",
+            r"මෙම සාක්ෂිය",
+            r"ලබා දී ඇති සාක්ෂි",
+            r"මෙම සාධක",
+            r"මෙම ලේඛනයේ.+?තොරතුරු අඩංගු නොවේ",
+        ]
+        for pattern in disallowed_patterns:
+            if re.search(pattern, cleaned):
+                return ""
+
+        return cleaned[:1500]
+
+    def _normalize_reference_key(self, value: str) -> str:
+        cleaned = re.sub(r"\s+", "", str(value or ""))
+        return cleaned.replace("[", "(").replace("]", ")")
+
+    def _build_reference_key_aliases(self, idx_key: str, display_number: str) -> set[str]:
+        aliases = {self._normalize_reference_key(idx_key)}
+        normalized_display = self._normalize_reference_key(display_number)
+        if not normalized_display:
+            return aliases
+
+        aliases.add(normalized_display)
+        dotted_match = re.match(r"^(\d+)[\.\-]([^\.\-]+)$", normalized_display)
+        paren_match = re.match(r"^(\d+)\((.+)\)$", normalized_display)
+        if dotted_match:
+            main, sub = dotted_match.groups()
+            aliases.add(f"{main}({sub})")
+            aliases.add(f"{main}{sub}")
+        elif paren_match:
+            main, sub = paren_match.groups()
+            aliases.add(f"{main}.{sub}")
+            aliases.add(f"{main}{sub}")
+
+        return {alias for alias in aliases if alias}
+
+    def _split_reference_source_chunks(self, source: str) -> List[str]:
+        if not source:
+            return []
+
+        normalized = re.sub(r"---\s*(?:PAGE|TABLE)[^-]*---", "\n", source, flags=re.IGNORECASE)
+        normalized = normalized.replace("\r", "\n")
+        raw_segments = re.split(r"\n{2,}", normalized)
+        if len(raw_segments) <= 1:
+            raw_segments = normalized.split("\n")
+
+        disallowed_markers = [
+            "ශී ලංකා ජාතික ගීය",
+            "ගරු අධයාපන අමාත්යතුමාගේ පණිවුඩය",
+            "තිළිණය ලෙසින් රජයෙන්",
+            "අධයාපන පේ්කාශන දෙපාර්තමේන්තුව",
+            "වෙබ් අඩවියට පිවිසෙන්න",
+        ]
+
+        chunks: List[str] = []
+        for segment in raw_segments:
+            cleaned = re.sub(r"\s+", " ", segment).strip()
+            if len(cleaned) < 40:
+                continue
+            if any(marker in cleaned for marker in disallowed_markers):
+                continue
+            chunks.append(cleaned)
+        return chunks
+
+    def _is_placeholder_answer(self, text: str) -> bool:
+        """Detects useless placeholder answers generated during extraction."""
+        if not text:
+            return True
+
+        cleaned = text.strip()
+        lowered = cleaned.lower()
+        if len(cleaned) < 5:
+            return True
+
+        placeholder_markers = [
+            "syllabus mentions",
+            "description of",
+            "[context clipped]",
+            "--- page",
+            "--- table",
+            "this syllabus evidence does not contain",
+            "this document does not contain",
+            "not covered",
+            "අඩංගු නොවේ",
+            "සඳහන් නොවේ",
+            "සපයා නැත",
+            "මෙම සාක්ෂි",
+            "මෙම සාධක",
+            "මෙම ලේඛනයේ",
+            "ලබා දී ඇති සාක්ෂි",
+            "පිළිබඳව තොරතුරු",
+        ]
+        return any(marker in lowered or marker in cleaned for marker in placeholder_markers)
+
+    def _get_reference_context(
+        self,
+        question,
+        syllabus_text: str,
+        rubric_text: str,
+        prefer_gold_standard: bool = True,
+    ) -> str:
+        correct = getattr(question, "correct_answer", None)
+        if prefer_gold_standard and correct and not self._is_placeholder_answer(correct):
+            logger.info(f"Using Gold Standard context for question {getattr(question, 'id')}")
+            return correct.strip()
+
+        q_number = getattr(question, "question_number", "") or getattr(question, "label", "")
+        q_text = getattr(question, "question_text", "") or getattr(question, "sub_question_text", "")
+
+        source = syllabus_text
+        if not source:
+            if correct and not self._is_placeholder_answer(correct):
+                logger.info(f"Using Gold Standard context for question {getattr(question, 'id')}")
+                return correct.strip()
+            return ""
+
+        chunks = self._split_reference_source_chunks(source)
+        if not chunks:
+            return ""
+
+        search_query = q_text or q_number
+        if not search_query.strip():
+            return ""
+
+        bm25 = BM25Okapi([c.split() for c in chunks])
+        top_chunks = bm25.get_top_n(search_query.split(), chunks, n=15)
+        top_chunks = [chunk for chunk in top_chunks if not self._is_placeholder_answer(chunk)]
+        context = "\n\n".join(top_chunks[:5])
+
+        if len(context) > 2000:
+            context = context[:2000] + "... [Context Clipped]"
+        return context
+
+    def _build_reference_context_block(self, question_info: Dict[str, Any], syllabus_text: str) -> str:
+        target = question_info.get("target")
+        question_text = (question_info.get("question_text") or "").strip()
+        display_number = str(question_info.get("display_number") or "")
+
+        context = ""
+        if target is not None:
+            context = self._get_reference_context(
+                target,
+                syllabus_text,
+                rubric_text="",
+                prefer_gold_standard=False,
+            )
+
+        if not context and syllabus_text:
+            chunks = self._split_reference_source_chunks(syllabus_text)
+            if chunks:
+                search_query = question_text or display_number
+                bm25 = BM25Okapi([c.split() for c in chunks])
+                top_chunks = bm25.get_top_n(search_query.split(), chunks, n=8)
+                top_chunks = [chunk for chunk in top_chunks if not self._is_placeholder_answer(chunk)]
+                context = "\n\n".join(top_chunks[:4])
+
+        context = (context or "").strip()
+        if len(context) > 2200:
+            context = context[:2200] + "... [Context Clipped]"
+        return context
+
+    def _sanitize_extracted_reference(self, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return ""
+
+        disallowed_patterns = [
+            r"(?i)\bsyllabus content does not\b",
+            r"(?i)\bthis syllabus evidence does not contain\b",
+            r"(?i)\busing internal knowledge\b",
+            r"(?i)\bthis document does not contain\b",
+            r"(?i)\bnot covered\b",
+        ]
+        for pattern in disallowed_patterns:
+            if re.search(pattern, cleaned):
+                return ""
+
+        disallowed_substrings = [
+            "අඩංගු නොවේ",
+            "සඳහන් නොවේ",
+            "සපයා නැත",
+            "මෙම සාක්ෂි",
+            "ලබා දී ඇති සාක්ෂි",
+            "මෙම සාධක",
+            "මෙම ලේඛනයේ",
+            "--- PAGE",
+            "--- TABLE",
+            "[Context Clipped]",
+        ]
+        if any(marker in cleaned for marker in disallowed_substrings):
+            return ""
+
+        return cleaned[:1500]
+
+    def _sanitize_extracted_reference(self, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return ""
+
+        disallowed_patterns = [
+            r"(?i)\bsyllabus content does not\b",
+            r"(?i)\bthis syllabus evidence does not contain\b",
+            r"(?i)\busing internal knowledge\b",
+            r"(?i)\bthis document does not contain\b",
+            r"(?i)\bnot covered\b",
+        ]
+        for pattern in disallowed_patterns:
+            if re.search(pattern, cleaned):
+                return ""
+
+        disallowed_substrings = [
+            "\u0d85\u0da9\u0d82\u0d9c\u0dd4 \u0db1\u0ddc\u0dc0\u0dda",
+            "\u0dc3\u0db3\u0dc4\u0db1\u0dca \u0db1\u0ddc\u0dc0\u0dda",
+            "\u0dc3\u0db4\u0dba\u0dcf \u0db1\u0dd0\u0dad",
+            "\u0db8\u0dd9\u0db8 \u0dc3\u0dcf\u0d9a\u0dca\u0dc2\u0dd2",
+            "\u0dbd\u0db6\u0dcf \u0daf\u0dd3 \u0d87\u0dad\u0dd2 \u0dc3\u0dcf\u0d9a\u0dca\u0dc2\u0dd2",
+            "\u0db8\u0dd9\u0db8 \u0dc3\u0dcf\u0db0\u0d9a",
+            "\u0db8\u0dd9\u0db8 \u0dbd\u0dda\u0d9b\u0db1\u0dba\u0dda",
+            "--- PAGE",
+            "--- TABLE",
+            "[Context Clipped]",
+        ]
+        if any(marker in cleaned for marker in disallowed_substrings):
+            return ""
+
+        return cleaned[:1500]
 
 
     def generate_initial_marking_scheme(
@@ -986,6 +1337,7 @@ class GradingService:
             
             extraction_questions.append({
                 "key": q_id,
+                "target": target,
                 "display_number": q_num,
                 "question_text": q_info['text'],
                 "max_marks": max_marks
@@ -1045,32 +1397,27 @@ class GradingService:
         if not questions:
             return {}
 
-        # Truncate syllabus to fit Gemini context (keep first 12000 chars for better coverage)
-        syllabus_for_prompt = syllabus_text[:12000]
-        if len(syllabus_text) > 12000:
-            syllabus_for_prompt += "\n... [truncated]"
-        
         logger.info(f"[GEMINI_EXTRACTION] Starting extraction for {len(questions)} questions.")
         logger.info(f"[GEMINI_EXTRACTION] Syllabus text length: {len(syllabus_text)} chars.")
         if not syllabus_text.strip():
             logger.warning("[GEMINI_EXTRACTION] SYLLABUS TEXT IS EMPTY! Gemini will fallback to generation mode.")
 
-        base_prompt = f"""You are a Sinhala education expert. Your task is to READ the syllabus/marking scheme content below and EXTRACT the specific answer points that each question is looking for.
+        base_prompt = """You are a Sinhala education expert. Your task is to READ the syllabus evidence provided for each question and EXTRACT the specific answer points that question is looking for.
 
 IMPORTANT RULES:
-1. Use the syllabus content as your EXCLUSIVE source if the information is present. Do not summarize or simplify if the syllabus provides detail.
-2. If the syllabus DOES NOT cover the topic area of a question AT ALL, only then should you use your internal knowledge to provide a factually correct answer suitable for a student at this level.
-3. For short-answer questions (1-2 marks): provide the exact expected answer in 1-2 sentences.
-4. For essay questions (3+ marks): provide a numbered list of key points the answer should cover.
-5. Write answer points in Sinhala (matching the syllabus language).
+1. Use ONLY the syllabus evidence block given for that question.
+2. Do NOT use internal knowledge.
+3. Do NOT say "not covered", "not in the document", or similar phrases.
+4. If the evidence is partial, extract the closest useful answer points from that evidence anyway.
+5. For short-answer questions (1-2 marks): provide the exact expected answer in 1-2 Sinhala sentences.
 6. Be SPECIFIC — extract or generate actual facts, names, dates, and concepts.
-7. Match questions to syllabus content by TOPIC.
+7. Keep the answer grounded in the provided evidence. Do not add English explanations or meta commentary.
 
-=== SYLLABUS / MARKING SCHEME CONTENT ===
-{syllabus_for_prompt}
-=== END CONTENT ===
 
-For each question below, extract the answer points from the content above.
+
+
+
+
 
 OUTPUT FORMAT — return ONLY a valid JSON object:
 {{
@@ -1080,28 +1427,45 @@ OUTPUT FORMAT — return ONLY a valid JSON object:
 
 Questions:
 """
+        base_prompt = base_prompt.replace(
+            "extract or generate actual facts, names, dates, and concepts.",
+            "extract actual facts, names, dates, and concepts from the evidence block.",
+        )
+        base_prompt = base_prompt.replace(
+            'Do not add English explanations or meta commentary.\n',
+            'Do not add English explanations or meta commentary.\n8. If you cannot find a usable answer in the evidence, return the exact string "NOT_FOUND" for that key.\n',
+        )
 
-        def process_chunk(chunk: List[Dict]) -> Dict[str, str]:
+        def process_chunk(chunk: List[Dict], chunk_index: int, total_chunks: int) -> Dict[str, str]:
             chunk_prompt = base_prompt
             # Robust mapping: index -> UUID
             index_to_uuid = {}
+            alias_to_uuid = {}
             for i, q in enumerate(chunk):
                 idx_key = f"ref_{i+1}"
                 index_to_uuid[idx_key] = q['key']
+                for alias in self._build_reference_key_aliases(idx_key, q["display_number"]):
+                    alias_to_uuid[alias] = q["key"]
+                evidence_block = self._build_reference_context_block(q, syllabus_text)
                 chunk_prompt += f"\n--- Key: {idx_key} ---\n"
                 chunk_prompt += f"Question Number: {q['display_number']}\n"
                 chunk_prompt += f"Question: {q['question_text']}\n"
                 chunk_prompt += f"Max Marks: {q['max_marks']}\n"
                 chunk_prompt += f"Type: {'essay' if q['max_marks'] > 2 else 'short answer'}\n"
+                chunk_prompt += f"Evidence:\n{evidence_block or '[no matching evidence extracted]'}\n"
 
             try:
                 sent_indices = list(index_to_uuid.keys())
                 logger.info(f"[GEMINI_REF] Extracting references for surrogate keys: {sent_indices}")
 
-                response_data = self.gemini.generate_content(
-                    chunk_prompt, json_mode=True
+                response_json = gemini_generate_evaluation(
+                    chunk_prompt,
+                    budget=EvaluationGeminiClient.REFERENCE_SCHEMA,
+                    json_mode=True,
+                    reason=f"chunk_{chunk_index}_of_{total_chunks}",
                 )
-                response_json = response_data.get("text") or "{}"
+                if not response_json:
+                    return {}
 
                 clean_json = re.sub(
                     r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE
@@ -1121,24 +1485,25 @@ Questions:
                 if isinstance(data, dict):
                     for idx_key, value in data.items():
                         # Map back to original UUID key
-                        original_key = index_to_uuid.get(idx_key)
+                        original_key = alias_to_uuid.get(self._normalize_reference_key(idx_key))
                         if not original_key:
                             # Fallback: maybe Gemini returned the original key or something else
                             logger.warning(f"[GEMINI_REF] Unexpected key in response: {idx_key}")
                             continue
 
                         if isinstance(value, str) and value.strip() and value.strip() != "NOT_FOUND":
-                            # Cap reference text length
-                            clean_val = value.strip()[:1500]
-                            result[original_key] = clean_val
-                            logger.info(
-                                f"[GEMINI_REF] Key={original_key}: extracted {len(clean_val)} chars"
-                            )
+                            clean_val = self._sanitize_extracted_reference(value)
+                            if clean_val:
+                                result[original_key] = clean_val
+                                logger.info(
+                                    f"[GEMINI_REF] Key={original_key}: extracted {len(clean_val)} chars"
+                                )
                         elif isinstance(value, dict):
                             # Handle if Gemini returns nested object
                             text_val = value.get("answer", "") or value.get("points", "") or str(value)
-                            if text_val.strip() and text_val.strip() != "NOT_FOUND":
-                                result[original_key] = text_val.strip()[:1500]
+                            clean_val = self._sanitize_extracted_reference(text_val)
+                            if clean_val:
+                                result[original_key] = clean_val
                         else:
                             logger.info(f"[GEMINI_REF] Key={original_key}: NOT_FOUND in syllabus")
 
@@ -1147,6 +1512,13 @@ Questions:
                 missing_keys = [k for k in sent_uuids if k not in received_keys]
                 if missing_keys:
                     logger.warning(f"[GEMINI_REF] Missing UUIDs in response: {missing_keys}")
+                    for missing_key in missing_keys:
+                        question_info = next((q for q in chunk if q["key"] == missing_key), None)
+                        if not question_info:
+                            continue
+                        fallback_context = self._build_reference_context_block(question_info, syllabus_text)
+                        if fallback_context and not self._is_placeholder_answer(fallback_context):
+                            result[missing_key] = fallback_context
 
                 return result
 
@@ -1157,14 +1529,39 @@ Questions:
                 logger.error(f"[GEMINI_REF] Extraction failed: {e}")
                 return {}
 
-        # Batch questions — 8 per Gemini call to stay within context limits
-        batch_size = 8
-        chunks = [questions[i:i + batch_size] for i in range(0, len(questions), batch_size)]
+        max_requests = max(1, int(settings.EVAL_GEMINI_REFERENCE_SCHEMA_MAX_REQUESTS))
+        chunks: List[List[Dict]] = [[]]
+        current_chars = 0
+        max_chunk_chars = 2500
+        for question in questions:
+            evidence_preview = self._build_reference_context_block(question, syllabus_text)
+            estimated_chars = (
+                len(question.get("question_text", ""))
+                + len(evidence_preview or "")
+                + 300
+            )
+            if (
+                chunks[-1]
+                and current_chars + estimated_chars > max_chunk_chars
+                and len(chunks) < max_requests
+            ):
+                chunks.append([])
+                current_chars = 0
+            chunks[-1].append(question)
+            current_chars += estimated_chars
+
+        logger.info(
+            "[GEMINI_REF] duty_name=reference_extraction request_budget=%s requests_used=%s fallback_used=%s reason=chunk_plan",
+            max_requests,
+            len(chunks),
+            len(chunks) > 1,
+        )
 
         all_refs: Dict[str, str] = {}
-        with ThreadPoolExecutor(max_workers=min(len(chunks), 4)) as executor:
+        with ThreadPoolExecutor(max_workers=min(len(chunks), max_requests)) as executor:
             future_to_chunk = {
-                executor.submit(process_chunk, chunk): chunk for chunk in chunks
+                executor.submit(process_chunk, chunk, idx + 1, len(chunks)): chunk
+                for idx, chunk in enumerate(chunks)
             }
             for future in as_completed(future_to_chunk):
                 try:
@@ -1261,11 +1658,10 @@ Return ONLY a valid JSON object mirroring the keys provided.
         """
         Measures how many key concepts from the reference the student covered.
 
-        FIX: The denominator is now capped to max_marks * 2 instead of
-        len(sentences) * 0.70. This means:
-        - A 4-mark question expects ~8 key concept sentences.
-        - A student who covers 4 of them gets 4/8 = 0.50 coverage (not 4/14 = 0.28).
-        - This correctly reflects partial credit for partial answers.
+        The denominator is capped to a mark-aware expected concept count instead
+        of the full raw reference sentence count. This means a 4-mark question
+        expects roughly 4 distinct covered points, while long BM25 contexts do
+        not unfairly dilute otherwise relevant answers.
 
         Previously, BM25 could return 20 long syllabus sentences as context, and a
         student covering all the required points still got coverage ~0.21 because
@@ -1283,24 +1679,25 @@ Return ONLY a valid JSON object mirroring the keys provided.
         s_emb = student_emb if student_emb is not None else _embedding_cache.get(student_text)
         if s_emb is None:
             with ml_semaphore:
-                s_emb = xlmr.encode(student_text, convert_to_tensor=True)
+                s_emb = get_xlmr_model().encode(student_text, convert_to_tensor=True)
 
         missing_sentences = [s for s in sentences if s not in _embedding_cache]
         if missing_sentences:
             ensure_sentences_cached(missing_sentences)
 
         sentence_embs = torch.stack([_embedding_cache[s] for s in sentences])
-        sims = util.cos_sim(s_emb, sentence_embs)[0]
+        sims = _cosine_util().cos_sim(s_emb, sentence_embs)[0]
 
         # Threshold: how similar must a sentence be to count as "covered"
         # Relaxed from 0.32 to 0.28 to reward pooled concise bullet items without dilution.
         threshold = 0.28 if max_marks <= 2 else 0.28
         hits = int((sims >= threshold).sum().item())
 
-        # KEY FIX: Cap denominator to expected concept count for this question.
-        # Ensure deep essays (e.g. 18 marks) don't unreasonably penalize excellent answers
-        # by expecting 36 discrete points to score a 1.0 coverage. Cap to max_marks * 0.6.
-        expected_concepts = min(len(sentences), max_marks * 0.60)
+        # Cap the denominator to a fair expected concept count for this question.
+        # A 4-mark structured essay should normally need about 4 distinct points
+        # for full coverage. The previous max_marks * 0.60 cap let 2-3 loose
+        # matches count as perfect coverage and inflated Paper II scores.
+        expected_concepts = min(len(sentences), max(1, max_marks))
         ratio = hits / max(1, expected_concepts)
 
         return min(1.0, ratio), f"{hits}/{len(sentences)} concepts covered"
@@ -1580,6 +1977,82 @@ Return ONLY a valid JSON object mirroring the keys provided.
                 return str(question.label)
         return q_number
 
+    def _score_band_label(self, item: Dict[str, Any]) -> str:
+        final_marks = Decimal(str(item.get("final_marks", item.get("awarded_marks", 0))))
+        max_marks = Decimal(str(max(1, item.get("max_marks", 1))))
+        ratio = float(final_marks / max_marks)
+        if ratio >= 0.875:
+            return "excellent"
+        if ratio >= 0.625:
+            return "good"
+        if ratio >= 0.375:
+            return "partial"
+        if ratio > 0:
+            return "limited"
+        return "not_creditworthy"
+
+    def _build_score_aligned_feedback(self, item: Dict[str, Any]) -> str:
+        display = item.get("display_number", "")
+        final_marks = item.get("final_marks", item.get("awarded_marks", 0))
+        max_marks = item.get("max_marks", 1)
+        band = self._score_band_label(item)
+
+        if band == "excellent":
+            body = "ලබා දී ඇති ලකුණු අනුව පිළිතුර ඉතා හොඳ මට්ටමේ ඇත. ප්‍රධාන කරුණු බොහෝ දුරට නිවැරදිව ආවරණය කර ඇත."
+        elif band == "good":
+            body = "ලබා දී ඇති ලකුණු අනුව පිළිතුර බොහෝ දුරට නිවැරදිය. තවත් නිශ්චිත කරුණු කිහිපයක් එකතු කළහොත් පිළිතුර වඩා සම්පූර්ණ වේ."
+        elif band == "partial":
+            body = "ලබා දී ඇති ලකුණු අනුව පිළිතුර අර්ධ වශයෙන් නිවැරදිය. ප්‍රශ්නයට අදාළ ප්‍රධාන කරුණු තවදුරටත් පැහැදිලි කළ යුතුය."
+        elif band == "limited":
+            body = "ලබා දී ඇති ලකුණු අනුව පිළිතුර සීමිත මට්ටමේ ඇත. අදාළ කරුණු පැහැදිලිව සහ ප්‍රමාණවත් ලෙස දැක්වීම අවශ්‍ය වේ."
+        else:
+            body = "ලබා දී ඇති ලකුණු අනුව පිළිතුරට ලකුණු ලබා දීමට ප්‍රමාණවත් අදාළ කරුණු හමු නොවේ."
+
+        return f"**ප්‍රශ්නය {display}** {body} ({final_marks}/{max_marks})"
+
+    def _feedback_contradicts_score(self, feedback: str, item: Dict[str, Any]) -> bool:
+        if not feedback:
+            return True
+
+        text = str(feedback).lower()
+        unavailable_markers = [
+            "gemini",
+            "ප්‍රතිපෝෂණ ලබා ගත නොහැක",
+            "ලබා ගත නොහැක",
+        ]
+        if any(marker in text for marker in unavailable_markers):
+            return True
+
+        final_marks = Decimal(str(item.get("final_marks", item.get("awarded_marks", 0))))
+        max_marks = Decimal(str(max(1, item.get("max_marks", 1))))
+        ratio = float(final_marks / max_marks)
+
+        says_fully_correct = any(
+            marker in text
+            for marker in [
+                "සම්පූර්ණයෙන්ම නිවැරදි",
+                "සම්පූර්ණ නිවැරදි",
+                "fully correct",
+                "completely correct",
+            ]
+        )
+        says_wrong = any(
+            marker in text
+            for marker in [
+                "සම්පූර්ණයෙන්ම වැරදි",
+                "සම්පූර්ණයෙන්ම වැරදියි",
+                "නිවැරදි නොවේ",
+                "completely wrong",
+                "fully wrong",
+            ]
+        )
+
+        if ratio <= 0.25 and says_fully_correct:
+            return True
+        if ratio >= 0.75 and says_wrong:
+            return True
+        return False
+
 
     # ----------------------------------------------------------
     # GEMINI FEEDBACK — TEXT ONLY, NEVER MARKS
@@ -1608,6 +2081,8 @@ FEEDBACK REQUIREMENTS:
 3. Keep feedback concise (2-3 sentences).
 4. Use Markdown formatting: **bold** for emphasis, bullet points if needed.
 5. Language: Simple, professional written Sinhala.
+6. The final awarded mark is already fixed. Your feedback MUST match that mark.
+7. If the final mark is 0, do not say the answer is correct. If the final mark is high, do not say the answer is completely wrong.
 
 OUTPUT FORMAT (Pure JSON only):
 {
@@ -1628,6 +2103,8 @@ Questions to evaluate:
                 chunk_prompt += f"Question Number: {item['display_number']}\n"
                 chunk_prompt += f"Question: {q_text}\n"
                 chunk_prompt += f"Max Marks: {item['max_marks']}\n"
+                chunk_prompt += f"Final Awarded Marks: {item.get('final_marks', item['awarded_marks'])}/{item['max_marks']}\n"
+                chunk_prompt += f"Score Band: {self._score_band_label(item)}\n"
                 chunk_prompt += f"Student Answer: {str(item['student_text'])[:500]}\n"
                 chunk_prompt += f"Reference Context: {str(item['reference_text'])[:600]}\n"
 
@@ -1635,7 +2112,12 @@ Questions to evaluate:
                 sent_keys = [it["key"] for it in chunk]
                 logger.info(f"Sending Gemini feedback batch for keys: {sent_keys}")
 
-                res_data = self.gemini.generate_content(chunk_prompt, json_mode=True)
+                res_data = self.gemini.generate_content(
+                    chunk_prompt,
+                    json_mode=True,
+                    max_retries=2,
+                    model_name=settings.EVAL_GEMINI_QUESTION_PARSING_MODEL,
+                )
                 response_json = res_data.get("text") or "{}"
                 try:
                     clean_json = re.sub(r'^```json\s*|\s*```$', '', response_json.strip(), flags=re.MULTILINE)
@@ -1670,21 +2152,19 @@ Questions to evaluate:
                 logger.error(f"Gemini feedback batch failed: {e}")
                 return {}
 
-        # Batch size 8: Gemini context window handles this easily, reduces API call count
-        batch_size = 8
+        # Smaller chunks recover better when one model is overloaded or denied.
+        batch_size = 4
         chunks = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
 
         evaluation_data = {}
-        # max_workers 6: more parallelism to reduce total wall-clock time
-        with ThreadPoolExecutor(max_workers=min(len(chunks), 6)) as executor:
-            future_to_chunk = {executor.submit(process_chunk, chunk): chunk for chunk in chunks}
-            for future in as_completed(future_to_chunk):
-                try:
-                    result = future.result()
-                    if result:
-                        evaluation_data.update(result)
-                except Exception as exc:
-                    logger.error(f"Gemini feedback chunk failed: {exc}")
+        for chunk in chunks:
+            try:
+                result = process_chunk(chunk)
+                if result:
+                    evaluation_data.update(result)
+            except Exception as exc:
+                logger.error(f"Gemini feedback chunk failed: {exc}")
+            time.sleep(0.5)
 
         # Build final map — ONLY extract feedback text, never any numeric value
         final_map = {}
@@ -1698,6 +2178,21 @@ Questions to evaluate:
                 # NOTE: No "marks", "score", or numeric value is ever stored here.
                 # awarded_marks is set exclusively by _apply_discrete_bands().
             }
+            if not raw_feedback or raw_feedback.startswith("("):
+                raw_feedback = "ප්‍රතිපෝෂණ ලබා ගත නොහැක. Gemini සේවාව තාවකාලිකව අසාර්ථක විය."
+            final_map[key]["feedback"] = f"**ප්‍රශ්නය {item['display_number']}** {raw_feedback}"
+
+        for item in items:
+            key = item["key"]
+            feedback = (final_map.get(key) or {}).get("feedback")
+            if not feedback or self._feedback_contradicts_score(feedback, item):
+                logger.warning(
+                    "Replacing missing or score-contradictory Gemini feedback for Q%s. final_marks=%s/%s",
+                    item["display_number"],
+                    item.get("final_marks", item["awarded_marks"]),
+                    item["max_marks"],
+                )
+                final_map[key] = {"feedback": self._build_score_aligned_feedback(item)}
 
         return final_map
 
@@ -1711,6 +2206,14 @@ Evaluate the performance based on this score and generate a quality overall feed
 High quality feedback highlights strengths and provides specific advice for improvement.
 Use Markdown for presentation. Use simple and direct language.
 """
-            return self.gemini.generate_content(prompt).text or ""
-        except Exception:
+            res_data = self.gemini.generate_content(
+                prompt,
+                max_retries=2,
+                model_name=settings.EVAL_GEMINI_QUESTION_PARSING_MODEL,
+            )
+            if isinstance(res_data, dict):
+                return res_data.get("text") or f"Total Score: {total_score}"
+            return f"Total Score: {total_score}"
+        except Exception as e:
+            logger.error(f"Overall feedback generation failed: {e}")
             return f"Total Score: {total_score}"

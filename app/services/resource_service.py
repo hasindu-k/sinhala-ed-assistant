@@ -293,3 +293,16 @@ class ResourceService:
     def list_resources_by_ids(self, resource_ids: List[UUID]) -> List:
         """List resources by their IDs."""
         return self.repository.list_resources_by_ids(resource_ids)
+
+    def update_resource_extracted_text(
+        self,
+        resource_id: UUID,
+        extracted_text: Optional[str],
+        *,
+        commit: bool = True,
+    ):
+        return self.repository.update_resource_extracted_text(
+            resource_id=resource_id,
+            extracted_text=extracted_text,
+            commit=commit,
+        )
