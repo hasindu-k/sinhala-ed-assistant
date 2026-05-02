@@ -213,6 +213,7 @@ config/firebase_service_account.json
 
 #model
 app/models/whisper-sinhala-accent-model/
+app/models/whisper-small-sinhala-robust-FINAL/
 uploads/
 
 logs/

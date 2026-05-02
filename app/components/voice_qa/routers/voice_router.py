@@ -248,10 +248,11 @@ async def qa_from_text(
     resource_ids: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    grade_level: Optional[str] = Form(None),  # New field for grade level
 ):
     logger.info("Entered qa_from_text function")
     logger.info(f"Received text: {text[:50]}..., session_id: {session_id}, user_id: {current_user.id}")
-    
+        
     chat_session_service = ChatSessionService(db)
     message_service = MessageService(db)
     UsageService(db).check_learning_request_limit(current_user.id)
@@ -280,6 +281,7 @@ async def qa_from_text(
         modality="voice",
         transcript=text,  # Same as content since it's already transcribed
         audio_url=None,  # No audio file to upload
+        grade_level=grade_level,
     )
 
     # ----------------------------------------------------

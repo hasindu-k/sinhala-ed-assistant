@@ -141,6 +141,7 @@ def process_ocr_for_images_with_tables(
     force_layout_analysis: bool = False,
     progress_callback: Optional[Callable[[str, float, Optional[Dict[str, Any]]], None]] = None
 ) -> tuple:
+    print(f"LANG VALUE: {lang}")
     """
     OCR pipeline with:
     - Table detection

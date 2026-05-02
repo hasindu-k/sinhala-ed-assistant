@@ -1,7 +1,7 @@
 import os
 
 # Path to the saved model
-MODEL_PATH = os.getenv("WHISPER_MODEL_PATH", "app/models/whisper-sinhala-accent-model")
+MODEL_PATH = os.getenv("WHISPER_MODEL_PATH", "app/models/whisper-small-sinhala-robust-FINAL")
 
 class WhisperLoader:
     _processor = None
