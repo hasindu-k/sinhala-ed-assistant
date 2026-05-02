@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 # 24 hours for development
     REFRESH_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 15
+    ADMIN_BOOTSTRAP_TOKEN: Optional[str] = None
 
     # Embedding model for RAG
     MODEL_EMBEDDING_NAME: str = "sentence-transformers/paraphrase-xlm-r-multilingual-v1"

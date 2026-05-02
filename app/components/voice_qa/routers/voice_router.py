@@ -37,6 +37,7 @@ from app.services.chat_session_service import ChatSessionService
 from app.services.message_service import MessageService
 from app.services.message_attachment_service import MessageAttachmentService
 from app.services.session_resource_service import SessionResourceService
+from app.services.usage_service import UsageService
 
 
 router = APIRouter()
@@ -117,6 +118,7 @@ async def qa_from_voice(
     
     chat_session_service = ChatSessionService(db)
     message_service = MessageService(db)
+    UsageService(db).check_learning_request_limit(current_user.id)
 
     # ----------------------------------------------------
     # 1️⃣ ENSURE SESSION EXISTS
@@ -252,6 +254,7 @@ async def qa_from_text(
     
     chat_session_service = ChatSessionService(db)
     message_service = MessageService(db)
+    UsageService(db).check_learning_request_limit(current_user.id)
 
     # ----------------------------------------------------
     # 1️⃣ ENSURE SESSION EXISTS
