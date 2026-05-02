@@ -28,3 +28,4 @@ google-genai
 python-multipart
 
 ultralytics
+sinling
